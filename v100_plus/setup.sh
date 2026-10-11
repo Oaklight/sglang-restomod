@@ -22,11 +22,18 @@ uv sync --locked --no-build-isolation \
   --config-settings-package "sglang-kernel:build-dir=$PWD/artifacts/aot-build" \
   --config-settings-package "sglang-kernel:cmake.define.Torch_DIR=$torch_cmake_dir"
 marlin="$PWD/artifacts/marlin-v100"
-if [[ ! -d $marlin/.git ]]; then
-  git clone https://github.com/zhinianqin/marlin_v100.git "$marlin"
-  git -C "$marlin" checkout --detach 6d72a49939701d26b15b617a4cd2423174adb2d1
+marlin_revision=95b1e62e309fb6f58ea4d43391b539ed9f28a29f
+if [[ -d $marlin/.git && $(git -C "$marlin" rev-parse HEAD) != "$marlin_revision" ]]; then
+  # Preserve earlier builds and local edits; only the pinned checkout is active.
+  previous="$PWD/artifacts/marlin-v100-previous-$(date -u +%Y%m%dT%H%M%S)"
+  mv "$marlin" "$previous"
+  echo "Archived previous Marlin checkout at $previous"
 fi
-[[ $(git -C "$marlin" rev-parse HEAD) == 6d72a49939701d26b15b617a4cd2423174adb2d1 ]]
+if [[ ! -d $marlin/.git ]]; then
+  git clone https://github.com/heislera763/marlin_v100.git "$marlin"
+  git -C "$marlin" checkout --detach "$marlin_revision"
+fi
+[[ $(git -C "$marlin" rev-parse HEAD) == "$marlin_revision" ]]
 for patch in "$PWD"/v100_plus/patches/marlin-v100-*.patch; do
   if ! git -C "$marlin" apply --reverse --check "$patch" 2>/dev/null; then
     git -C "$marlin" apply "$patch"

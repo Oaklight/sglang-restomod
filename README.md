@@ -26,6 +26,7 @@ Pinned benchmark sources; sizes are weight-file totals, **not runtime VRAM**.
 | --- | --- | --- | ---: |
 | [Qwen/Qwen3.8-Flash-Next-FP8](https://huggingface.co/Qwen/Qwen3.8-Flash-Next-FP8/tree/236dfdf285828023ca3bcd3f37366c58a3469b13) | `236dfdf28582` | Official 128×128 block FP8, BF16 exclusions; FP8 PLE/MTP experts | 172.78 GiB |
 | [nvidia/GLM-5.3-Flash-NVFP4](https://huggingface.co/nvidia/GLM-5.3-Flash-NVFP4/tree/da920bb0b9f4a06727223a349e55468e38352348) | `da920bb0b9f4` | ModelOpt abs-max NVFP4; main shared experts remain BF16; FP8 KV metadata | 190.40 GiB |
+| Local GLM MTP FP8 | NVIDIA source above | Routed MTP experts converted to128×128 E4M3 block FP8/W8A16; other tensors unchanged. Used by current PP2 measurements; local `PROVENANCE.json` records conversion. | 7.10 GiB |
 
 NVIDIA GLM is the active GLM checkpoint. It uses an abs-max recipe, with BF16
 shared experts and MTP exclusions; publisher alone does not prove better quality.
@@ -58,7 +59,7 @@ in software; it does not imply native arithmetic in those formats.
 
 | Operation | Implementation / contract |
 | --- | --- |
-| NVFP4 GEMMs | [marlin_v100](https://github.com/zhinianqin/marlin_v100) at `6d72a499` plus local patches: W4A16, FP16 WMMA with FP32 accumulation; block/global scales remain distinct. Small routed groups use [Volta MMA](python/sglang/kernels/ops/gemm/sm70_nvfp4_routed.py) with M16 tiles and K-major decoded weights; FP16 dequantization/output and FP32 accumulation/scaling remain. Unused alternate-backend MoE scale buffers alias active scales, saving17.72GiB across GLM's8GPUs. |
+| NVFP4 GEMMs | [marlin_v100](https://github.com/heislera763/marlin_v100) at `95b1e62e` plus local patches: W4A16, FP16 WMMA with FP32 accumulation; block/global scales remain distinct. Small routed groups use [Volta MMA](python/sglang/kernels/ops/gemm/sm70_nvfp4_routed.py) with M16 tiles and K-major decoded weights; FP16 dequantization/output and FP32 accumulation/scaling remain. Unused alternate-backend MoE scale buffers alias active scales, saving17.72GiB across GLM's8GPUs. |
 | Block-FP8 GEMMs | Patched Marlin and small-row vector kernels: W8A16, complete 128×128 scale blocks. Qwen EP4/EP8 preserves whole experts. |
 | FP16 routed experts | [Volta MMA GEMM](python/sglang/kernels/ops/moe/sm70_fp16.py), used by NVIDIA GLM's unquantized MTP experts. FP16 inputs/weights/output, FP32 accumulation and router multiply; upstream routing, activation and expert sum retained. Automatically selected by the SM70 plugin; unsupported epilogues fail under strict dispatch. |
 | Qwen QSA/GDN/HC | Direct FP16-cache sparse prefill/decode/verification, masked Tensor Core prefill, SM70 GDN and gated-residual kernels; HC eager prefill partitions within each quad, including TP8. |
@@ -67,6 +68,12 @@ in software; it does not imply native arithmetic in those formats.
 | Storage | Unquantized FP16 attention KV for both models; Qwen FP16 QSA index, GLM's separate model-native FP8 indexer. KV-cache quantization is excluded from the project recipes. FP16 recurrent state is retained. |
 | Cold module loading | Return idle Torch allocator blocks to CUDA when first-use Triton loads have little headroom; leave live tensors unchanged. Skip capture/custom arenas; steady kernel replay has no callback. |
 | Vision / DFlash2 | SDPA vision. [DFlash2](https://huggingface.co/incoai/GLM-5.3-Flash-DFlash2/tree/bf582e4eacc1810f76656d1811693ff6c6737d2a) FP16/local W8A16 have prior experimental coverage; NVIDIA-target qualification is pending. |
+
+Strict dispatch checks backend selection; it does not imply every operation is
+Volta-specific. Routing/activation/reduction preparation still uses general CUDA,
+Torch and Triton kernels; vision uses FP16 SDPA. Compact GLM FP8 MTP prefill uses
+the generic SM70 Marlin scale path, while the explicit block-scale fast path is
+currently qualified only for Qwen shapes.
 
 For FP16 GLM, the plugin resolves checkpoint-inferred `auto` sparse KV to FP16,
 including NVIDIA's FP8 KV metadata; weight quantization is unchanged. Explicit cache
@@ -144,7 +151,7 @@ uv run --no-project .venv/bin/python -m sglang_v100_plus "${common[@]}" \
 | Variation | Change from reference |
 | --- | --- |
 | Qwen TP8 | TP8/EP8; omit PP and unset `SGLANG_PP_LAYER_PARTITION`/metadata flag. Keep HC/chunk4352. |
-| GLM PP2 MTP | TP4/PP2/EP1; `SGLANG_PP_LAYER_PARTITION=24,21`; context **262144**, total tokens **262656**, fraction **.95**, chunk2048. Add the MTP flags below. Omit `--language-only` for images; vision weights reside on the first PP stage. |
+| GLM PP2 MTP | TP4/PP2/EP1; `SGLANG_PP_LAYER_PARTITION=24,21`; context **262144**, total tokens **262656**, fraction **.95**, chunk2048. Add MTP flags below and `--speculative-draft-model-path "$HOME/models/sglang/local-GLM-5.3-Flash-MTP-FP8" --speculative-draft-model-quantization fp8` for the measured compact draft. Omit `--language-only` for images; vision weights reside on the first PP stage. |
 | MTP, either model | Add `--speculative-algorithm EAGLE --speculative-num-steps 3 --speculative-num-draft-tokens 4 --speculative-eagle-topk 1 --speculative-use-rejection-sampling`. PP2 also exports `SGLANG_ENABLE_PP_SPEC=1`. |
 
 Three draft steps plus one target/bonus position; built-in MTP head, one linear branch,
@@ -189,9 +196,11 @@ These are implementation gaps, not unused free speed flags.
 
 ## Performance and checks
 
-Three uncached coherent near8K requests/profile,512 sampled output tokens, one request,
-eager prefill/full decode graphs. GLM PP2 MTP uses two fresh processes, images enabled
-and262K context. Qwen MTP rows use fresh FP16-KV native-context screens;
+Three uncached coherent near8K requests/profile, one request, eager prefill/full
+decode graphs. Current GLM PP2 MTP uses256 sampled outputs,32-token warmups and
+fresh A/B/B/A processes (two candidates averaged below), images enabled and262K
+context. Other rows retain earlier512-output screens. Qwen MTP rows use fresh
+FP16-KV native-context screens;
 GLM TP8/ordinary rows remain earlier one-process screens. Seed531 does not guarantee
 sampled determinism. PP = input tokens/native prefill seconds; TG = output tokens
 excluding the first/native decode seconds. Warmups and profiling are excluded.
@@ -211,7 +220,7 @@ replaces full-reservation scoring and separate reduction passes: fresh paired
 48.1 → 53.2 TG (+10.6%), cycles ~10.2% shorter despite slightly lower acceptance.
 Prefill implementation is unchanged (~2,548 PP); baseline prefill varies between
 processes, so no prefill gain is attributed to this decode change. Same 262K
-context, chunks and FP16 KV. The tables below use the latest paired candidate.
+context, chunks and FP16 KV. The tables below use the latest confirmed candidate.
 [Attention tests](test/registered/kernels/ops/attention/test_triton_sparse_mla_fp16.py) and
 [expert tests](test/registered/kernels/ops/moe/test_sm70_fp16.py), [NVFP4 tests](test/registered/kernels/ops/gemm/test_sm70_nvfp4_gemv.py) and
 [indexer tests](test/registered/kernels/ops/attention/test_sm70_indexer.py) cover independent
@@ -220,24 +229,33 @@ MMA reduction order is not bit-exact to scalar outputs. Images, 262106-input/32-
 capacity and reuse pass; full-context quality is separate. TP8 below is an earlier
 screen preceding these implementations.
 
+The [NVFP4 input-gather patch](v100_plus/patches/marlin-v100-prefill-gather.patch)
+caches source rows in registers for each invocation and uses aligned128-bit
+loads at64×256×32. On the latest user Marlin baseline, fresh A/B/B/A confirms
+**2,902→3,117 PP (+7.4%)**, with category gains7.3–7.6%. Both stage banks are
+byte-exact to that baseline; changing routes/counts/masks under graphs,
+independent FP64 bounds, canaries and device memcheck pass. MMA/resources and
+precision boundaries are unchanged. Verification round wall-time is unchanged;
+sampled acceptance varies, so the higher TG below is not a decode speed claim.
+
 | Model / layout | MTP steps | Prefill tokens/s | Generation tokens/s |
 | --- | ---: | ---: | ---: |
 | Qwen FP8 TP8/EP8 | 3 | 4,831 | 79.4 |
 | Qwen FP8 TP4×PP2/EP4 | 3 | 7,588 | 72.5 |
 | NVIDIA GLM TP8/EP1 | 3 | 1,366 | 42.7 |
 | NVIDIA GLM TP4×PP2/EP1 | Off | 1,882 | 28.2 |
-| NVIDIA GLM TP4×PP2/EP1 | 3 | 2,865 | 58.9 |
+| NVIDIA GLM TP4×PP2/EP1 | 3 | 3,117 | 61.0 |
 
-MTP3 categories (PP/TG tokens/s; GLM PP2 averages two processes, others one):
+MTP3 categories (PP/TG tokens/s; GLM PP2 averages two candidate processes, others one):
 
 | Model / category | TP8 PP | TP8 TG | PP2 PP | PP2 TG |
 | --- | ---: | ---: | ---: | ---: |
 | Qwen coding | 4,882 | 82.3 | 7,668 | 82.2 |
 | Qwen book continuation | 4,831 | 82.6 | 7,607 | 66.3 |
 | Qwen document briefing | 4,779 | 73.3 | 7,489 | 69.0 |
-| NVIDIA GLM coding | 1,370 | 48.6 | 2,886 | 64.4 |
-| NVIDIA GLM book continuation | 1,367 | 37.6 | 2,852 | 54.9 |
-| NVIDIA GLM document briefing | 1,360 | 43.2 | 2,856 | 57.4 |
+| NVIDIA GLM coding | 1,370 | 48.6 | 3,142 | 67.8 |
+| NVIDIA GLM book continuation | 1,367 | 37.6 | 3,107 | 56.4 |
+| NVIDIA GLM document briefing | 1,360 | 43.2 | 3,101 | 58.9 |
 
 Inputs: [SPEED-Bench throughput_8k](https://huggingface.co/datasets/nvidia/SPEED-Bench/tree/454f88454792dfa3ccfd7ef15fff248efde44cd1),
 first turns `91d6ca2afe114d3c99312e8758b6f964` (code),
@@ -276,7 +294,7 @@ lanes per block, raising PP 2,747→2,865 (+4.3%) against
 [2d909783](https://github.com/heislera763/sglang-v100-plus/commit/2d909783).
 Full-K reductions and FP32 working state remain; captured outputs/final states
 and ragged/graph controls are bit-exact, with independent FP64 checks and zero
-memcheck errors. Decode cycles remain unchanged (+0.1%). The table shows this latest screen.
+memcheck errors. Decode cycles remain unchanged (+0.1%). That screen precedes the later prefill changes shown in the table.
 Single-request PP decode still serializes stages; receive waiting is not extra
 transfer work. Further prefill work centers on expert GEMMs, sparse MMA and KDA.
 

@@ -1,10 +1,10 @@
 diff --git a/csrc/moe/marlin_moe_wna16/sm70_marlin_fp8_gemm.cu b/csrc/moe/marlin_moe_wna16/sm70_marlin_fp8_gemm.cu
-index 1329091..a3cd573 100644
+index c84d27b..d84bd5a 100644
 --- a/csrc/moe/marlin_moe_wna16/sm70_marlin_fp8_gemm.cu
 +++ b/csrc/moe/marlin_moe_wna16/sm70_marlin_fp8_gemm.cu
 @@ -26,7 +26,8 @@ namespace {
  constexpr int kFp8ValuesPerAccess = 8;
- 
+
  template <typename Shape_, typename ThreadMap_, int GroupSize_,
 -          int PackedMacroN_, bool UseMetadataVectorWords_ = true>
 +          int PackedMacroN_, bool UseMetadataVectorWords_ = true,
@@ -22,11 +22,11 @@ index 1329091..a3cd573 100644
 +  mutable half2 cached_scales_[BlockScaleN128
 +                                  ? (ThreadMap::Iterations::kContiguous + 1) / 2
 +                                  : ThreadMap::Iterations::kContiguous * 4];
- 
+
   public:
    CUTLASS_DEVICE
 @@ -179,6 +184,18 @@ class Sm70MoeFp8IteratorB {
- 
+
    CUTLASS_DEVICE
    void cache_current_group_metadata(int group) const {
 +    if constexpr (BlockScaleN128) {
@@ -50,7 +50,7 @@ index 1329091..a3cd573 100644
      }
 +    }
    }
- 
+
    CUTLASS_DEVICE
 @@ -206,18 +224,18 @@ class Sm70MoeFp8IteratorB {
            int const frag_base = c * kAccess;
@@ -58,7 +58,7 @@ index 1329091..a3cd573 100644
            uint32_t const qword1 = qword_from_vector(qwords1, c);
 -          half2 const* scale_vec = cached_scales_ + c * 4;
 +          half2 const* scale_vec = cached_scales_ + (BlockScaleN128 ? c / 2 : c * 4);
- 
+
            half2 deq[2];
            half2* frag_vec = reinterpret_cast<half2*>(frag.data() + frag_base);
            marlin::dequant<half2, vllm::kFE4M3fn.id(), true>(
@@ -81,7 +81,7 @@ index 1329091..a3cd573 100644
            uint32_t const qword1 = qword_from_vector(qwords1, c);
 -          half2 const* scale_vec = cached_scales_ + c * 4;
 +          half2 const* scale_vec = cached_scales_ + (BlockScaleN128 ? c / 2 : c * 4);
- 
+
            half2 deq[2];
            half2* frag_vec = reinterpret_cast<half2*>(frag.data() + frag_base);
            marlin::dequant<half2, vllm::kFE4M3fn.id(), true>(
@@ -119,7 +119,7 @@ index 1329091..a3cd573 100644
              uint32_t const qword1 = qword_from_vector(qwords1, c);
 -            half2 const* scale_vec = cached_scales_ + c * 4;
 +            half2 const* scale_vec = cached_scales_ + (BlockScaleN128 ? c / 2 : c * 4);
- 
+
              half2 deq[2];
              half2* frag_vec = reinterpret_cast<half2*>(frag.data() + frag_base);
 @@ -297,13 +315,13 @@ class Sm70MoeFp8IteratorB {
@@ -145,7 +145,7 @@ index 1329091..a3cd573 100644
              uint32_t const qword1 = qword_from_vector(qwords1, c);
 -            half2 const* scale_vec = cached_scales_ + c * 4;
 +            half2 const* scale_vec = cached_scales_ + (BlockScaleN128 ? c / 2 : c * 4);
- 
+
              half2 deq[2];
              half2* frag_vec = reinterpret_cast<half2*>(frag.data() + frag_base);
 @@ -326,13 +344,13 @@ class Sm70MoeFp8IteratorB {
@@ -183,7 +183,7 @@ index 1329091..a3cd573 100644
 @@ -376,7 +394,7 @@ class Sm70MoeFp8IteratorB {
    }
  };
- 
+
 -template <bool UseMetadataVectorWords = true>
 +template <bool UseMetadataVectorWords = true, bool BlockScaleN128 = false>
  struct Sm70MoeFp8GemmSpec {
@@ -196,7 +196,7 @@ index 1329091..a3cd573 100644
 -                          UseMetadataVectorWords>;
 +                          UseMetadataVectorWords, BlockScaleN128>;
  };
- 
+
  template <int CtaM, int CtaN, int CtaK, int Warps, int WarpM,
            int WarpN, int WarpK, int GroupSize, int PackedMacroN,
 -          bool UseMetadataVectorWords = true>
@@ -206,12 +206,12 @@ index 1329091..a3cd573 100644
 -        Sm70MoeFp8GemmSpec<UseMetadataVectorWords>, CtaM, CtaN, CtaK,
 +        Sm70MoeFp8GemmSpec<UseMetadataVectorWords, BlockScaleN128>, CtaM, CtaN, CtaK,
          Warps, WarpM, WarpN, WarpK, GroupSize, PackedMacroN>;
- 
- template <bool UseMetadataVectorWords = true>
-@@ -470,4 +488,51 @@ torch::Tensor sm70_marlin_fp8_gemm(
+
+ template <bool HasBias, bool UseMetadataVectorWords = true>
+@@ -473,6 +491,45 @@ torch::Tensor sm70_marlin_fp8_gemm(
    return dispatch_sm70_marlin_moe_fp8_geometry(launcher, geometry, params.packed_macro_n, group_size);
  }
- 
+
 +
 +// Explicit block-scale contract; the generic FP8 operator permits scales that
 +// vary per N column and must retain its original metadata interpretation.
@@ -247,12 +247,17 @@ index 1329091..a3cd573 100644
 +      32, 256, 32, 4, 32, 64, 32, 128, 256>;
 +  auto zeros = torch::empty({0}, scales.options());
 +  auto global_scale = torch::empty({0}, scales.options().dtype(at::kFloat));
-+  return launch_sm70_marlin_moe_gemm<Traits>(a, c, w, scales, zeros, global_scale,
++  return launch_sm70_marlin_moe_gemm<Traits, false>(a, c, w, scales, zeros, zeros, global_scale,
 +      sorted, experts, count, weights, block_size, top_k, mul_weights, m, n, k, 1);
 +}
 +
  }  // namespace marlin_moe_wna16
-+
+
+ template torch::Tensor marlin_moe_wna16::sm70_marlin_fp8_gemm<false>(
+@@ -489,3 +546,10 @@ template torch::Tensor marlin_moe_wna16::sm70_marlin_fp8_gemm<true>(
+     torch::Tensor& num_tokens_past_padded, torch::Tensor& topk_weights,
+     int64_t moe_block_size, int64_t top_k, bool mul_topk_weights,
+     int64_t size_m, int64_t size_n, int64_t size_k, int64_t group_size);
 +TORCH_LIBRARY_FRAGMENT(_moe_C, m) {
 +  m.def("sm70_block_fp8_moe_gemm(Tensor a, Tensor(a!) c, Tensor w, Tensor scales, "
 +        "Tensor sorted, Tensor experts, Tensor count, Tensor weights, int block_size, "

@@ -1,12 +1,14 @@
 """Checkpoint-native MoE reference, clamping and live graph routing on SM70."""
 
 import os
+from unittest.mock import patch
 
 import pytest
 import torch
 
 from sglang.kernels.ops.moe.sm70_nvfp4 import sm70_nvfp4_moe
 from sglang.test.ci.ci_register import register_cuda_ci
+from sglang.test.test_utils import CustomTestCase
 
 register_cuda_ci(est_time=60, stage="jit-kernel-unit", runner_config="1-gpu-large")
 pytestmark = pytest.mark.skipif(
@@ -114,3 +116,193 @@ def test_checkpoint_reference_and_fresh_graph_routes(rows, width):
         assert torch.equal(actual.view(torch.uint8), eager.view(torch.uint8))
         for live, saved in zip((a, ids, router), before):
             assert torch.equal(live, saved)
+
+
+class TestSM70NVFP4PrefillGather(CustomTestCase):
+    def test_live_routes_and_unaligned_inputs(self):
+        """Cached rows must refresh on replay; wide loads must respect alignment.
+
+        Rotating expert tails, negative expert IDs and a shrinking live count
+        expose stale route caches and writes through padded or masked rows.
+        """
+        from sgl_kernel.scalar_type import scalar_types
+        from sglang_v100_plus.kernels.moe_marlin import _load_marlin_v100_op
+        from sglang_v100_plus.quantization import (
+            _dense_repack,
+            sm70_nvfp4_marlin_process_global_scale,
+            sm70_nvfp4_marlin_process_scales,
+        )
+
+        self.enterContext(
+            patch.dict(
+                os.environ,
+                SM70_MARLIN_MOE_CTA_GEOMETRY="64x256x32x4x64x64x32",
+                SM70_MARLIN_MOE_SPLIT_K="1",
+                SM70_MARLIN_MOE_METADATA_CACHE="vector_words",
+            )
+        )
+        op = _load_marlin_v100_op()
+        torch.manual_seed(651)
+        experts, n, k, routes = 12, 256, 64, 512
+        packed = torch.randint(
+            0, 256, (experts, n, k // 2), dtype=torch.uint8, device="cuda"
+        )
+        native_scales = (
+            torch.rand(experts, n, k // 16, device="cuda") * 0.03 + 0.002
+        ).to(torch.float8_e4m3fn)
+        native_global = torch.linspace(0.3, 0.9, experts, device="cuda")
+        scales, factor = sm70_nvfp4_marlin_process_scales(
+            native_scales.transpose(1, 2).contiguous(), torch.float16
+        )
+        global_scale = (
+            sm70_nvfp4_marlin_process_global_scale(native_global, torch.float16)
+            / factor
+        )
+        lookup = torch.tensor(
+            [0, 0.5, 1, 1.5, 2, 3, 4, 6, 0, -0.5, -1, -1.5, -2, -3, -4, -6],
+            dtype=torch.float64,
+        )
+        codes = torch.stack((packed.cpu().int() & 15, packed.cpu().int() >> 4), -1)
+        reference = (
+            lookup[codes.reshape(experts, n, k)]
+            * native_scales.cpu().double().repeat_interleave(16, -1)
+            * native_global.cpu().double()[:, None, None]
+        )
+        weight = _dense_repack(packed)
+        workspace = torch.zeros(320, dtype=torch.int32, device="cuda")
+        counts = [0, 1, 15, 16, 17, 31, 32, 33, 63, 64, 65, 175]
+        for top_k in (8, 1):
+            m = routes // top_k
+            sorted_ids = torch.full(
+                (routes + experts * 64,), routes, dtype=torch.int32, device="cuda"
+            )
+            expert_ids = torch.full(
+                (sorted_ids.numel() // 64,), 123456, dtype=torch.int32, device="cuda"
+            )
+            count = torch.zeros(1, dtype=torch.int32, device="cuda")
+            router = torch.rand(routes, device="cuda")
+            storage = torch.full(
+                (routes * n + 128,), 17.0, dtype=torch.float16, device="cuda"
+            )
+            out = storage[64:-64].view(routes, n)
+
+            def update(shift, masked):
+                perm = torch.randperm(routes)
+                route_expert = torch.empty(routes, dtype=torch.long)
+                ids, banks, offset = [], [], 0
+                for expert, rows in enumerate(counts[shift:] + counts[:shift]):
+                    live = perm[offset : offset + rows]
+                    offset += rows
+                    route_expert[live] = -1 if expert == masked else expert
+                    padded = (rows + 63) // 64 * 64
+                    if padded:
+                        block = torch.full((padded,), routes, dtype=torch.int32)
+                        block[:rows] = live.int()
+                        ids.append(block)
+                        banks.extend(
+                            [-1 if expert == masked else expert] * (padded // 64)
+                        )
+                ids = torch.cat(ids)
+                sorted_ids.fill_(routes)
+                sorted_ids[: ids.numel()].copy_(ids)
+                expert_ids.fill_(123456)
+                expert_ids[: len(banks)].copy_(torch.tensor(banks, dtype=torch.int32))
+                count.fill_(ids.numel())
+                return route_expert
+
+            # An offset view remains contiguous but cannot use aligned uint4 loads.
+            for extra, offset in ((0, 0), (0, 1)):
+                with self.subTest(top_k=top_k, stride_extra=extra, offset=offset):
+                    backing = (
+                        torch.randn(
+                            m * (k + extra) + offset, device="cuda", dtype=torch.float16
+                        )
+                        * 0.25
+                    )
+                    a = backing.as_strided((m, k), (k + extra, 1), offset)
+
+                    def run():
+                        out.zero_()
+                        op(
+                            a,
+                            out,
+                            weight,
+                            None,
+                            scales,
+                            None,
+                            global_scale,
+                            None,
+                            None,
+                            None,
+                            workspace,
+                            sorted_ids,
+                            expert_ids,
+                            count,
+                            router,
+                            64,
+                            top_k,
+                            top_k == 1,
+                            scalar_types.float4_e2m1f.id,
+                            m,
+                            n,
+                            k,
+                            True,
+                            False,
+                            False,
+                            False,
+                            -1,
+                            -1,
+                            -1,
+                        )
+
+                    update(0, -1)
+                    run()
+                    graph = torch.cuda.CUDAGraph()
+                    with torch.cuda.graph(graph):
+                        run()
+                    for shift, masked in ((0, -1), (3, 2), (7, -1), (1, 0)):
+                        route_expert = update(shift, masked)
+                        a.normal_(std=0.25)
+                        router.uniform_(0.1, 0.9)
+                        saved = [
+                            t.clone()
+                            for t in (backing, sorted_ids, expert_ids, count, router)
+                        ]
+                        graph.replay()
+                        actual = out.clone()
+                        expected = torch.zeros(routes, n, dtype=torch.float64)
+                        cpu_a, cpu_router = a.cpu().double(), router.cpu().double()
+                        for expert in range(experts):
+                            selected = torch.where(route_expert == expert)[0]
+                            if selected.numel():
+                                values = cpu_a[selected // top_k] @ reference[expert].T
+                                if top_k == 1:
+                                    values *= cpu_router[selected, None]
+                                expected[selected] = values
+                        torch.testing.assert_close(
+                            actual.cpu().double(), expected, rtol=0.001, atol=0.0002
+                        )
+                        run()
+                        self.assertTrue(
+                            torch.equal(actual.view(torch.uint8), out.view(torch.uint8))
+                        )
+                        for live, before in zip(
+                            (backing, sorted_ids, expert_ids, count, router), saved
+                        ):
+                            self.assertTrue(torch.equal(live, before))
+                        self.assertTrue(
+                            bool(
+                                (storage[:64] == 17).all()
+                                and (storage[-64:] == 17).all()
+                            )
+                        )
+                    count.zero_()
+                    expert_ids.fill_(123456)
+                    graph.replay()
+                    self.assertTrue(bool((out == 0).all()))
+
+
+if __name__ == "__main__":
+    import sys
+
+    sys.exit(pytest.main([__file__]))

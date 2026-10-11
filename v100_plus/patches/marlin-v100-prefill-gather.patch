@@ -1,0 +1,96 @@
+--- a/csrc/moe/marlin_moe_wna16/sm70_marlin_nvfp4_gemm.cu
++++ b/csrc/moe/marlin_moe_wna16/sm70_marlin_nvfp4_gemm.cu
+@@ -25,6 +25,82 @@
+ namespace {
+
+ constexpr int kNvfp4ValuesPerWord = 8;
++
++// Route metadata is immutable within a launch. Cache each thread's source rows
++// once, while graph replay rebuilds the cache from the live routing tensors.
++template <typename Shape, typename ThreadMap>
++class Sm70MoeNvfp4PrefillGatherA {
++ public:
++  using Element = cutlass::half_t;
++  using Fragment = typename Sm70MoeGatherIteratorA<Shape, ThreadMap>::Fragment;
++  using Params = typename Sm70MoeGatherIteratorA<Shape, ThreadMap>::Params;
++
++ private:
++  Element const* a_;
++  int lda_;
++  int k_offset_;
++  int k_thread_offset_;
++  int source_rows_[ThreadMap::Iterations::kStrided];
++  bool mask_enabled_;
++
++ public:
++  CUTLASS_DEVICE
++  Sm70MoeNvfp4PrefillGatherA(Params const& params, Element const* a,
++                           int32_t const* sorted, int thread_id, int moe_block,
++                           int local_m_offset, int k_offset)
++      : a_(a), lda_(params.lda), k_offset_(k_offset), mask_enabled_(true) {
++    auto thread_offset = ThreadMap::initial_offset(thread_id);
++    k_thread_offset_ = thread_offset.contiguous();
++    CUTLASS_PRAGMA_UNROLL
++    for (int s = 0; s < ThreadMap::Iterations::kStrided; ++s) {
++      int local_row = local_m_offset + thread_offset.strided() + s * ThreadMap::Delta::kStrided;
++      int route_row = moe_block * params.moe_block_size + local_row;
++      int id = -1;
++      if (local_row < params.moe_block_size && route_row < params.padded_tokens) id = sorted[route_row];
++      source_rows_[s] = id >= 0 && id < params.expanded_token_count ? id / params.top_k : -1;
++    }
++  }
++
++  CUTLASS_DEVICE
++  Sm70MoeNvfp4PrefillGatherA& operator++() { k_offset_ += Shape::kK; return *this; }
++  CUTLASS_DEVICE
++  void clear_mask(bool enable = true) { if (enable) mask_enabled_ = false; }
++  CUTLASS_DEVICE
++  void enable_mask() { mask_enabled_ = true; }
++
++  CUTLASS_DEVICE
++  void load(Fragment& fragment) const {
++    auto frag = fragment.data();
++    CUTLASS_PRAGMA_UNROLL
++    for (int i = 0; i < Fragment::kElements; ++i) frag[i] = Element(0);
++    if (!mask_enabled_) return;
++    CUTLASS_PRAGMA_UNROLL
++    for (int s = 0; s < ThreadMap::Iterations::kStrided; ++s) {
++      int row = source_rows_[s];
++      CUTLASS_PRAGMA_UNROLL
++      for (int c = 0; c < ThreadMap::Iterations::kContiguous; ++c) {
++        int k = k_offset_ + k_thread_offset_ + c * ThreadMap::Delta::kContiguous;
++        int index = (c + s * ThreadMap::Iterations::kContiguous) * ThreadMap::kElementsPerAccess;
++        if (row < 0 || k >= lda_) continue;
++        auto source = a_ + int64_t(row) * lda_ + k;
++        // Preserve the public input contract for unaligned/strided views and
++        // partial accesses; ordinary prepared FP16 matrices take the wide load.
++        if (k + 8 <= lda_ && (reinterpret_cast<uintptr_t>(source) & 15) == 0) {
++          uint4 words = *reinterpret_cast<uint4 const*>(source);
++          auto target = reinterpret_cast<uint32_t*>(frag + index);
++          target[0] = words.x; target[1] = words.y;
++          target[2] = words.z; target[3] = words.w;
++        } else {
++          CUTLASS_PRAGMA_UNROLL
++          for (int e = 0; e < ThreadMap::kElementsPerAccess; ++e) {
++            if (k + e < lda_) frag[index + e] = source[e];
++          }
++        }
++      }
++    }
++  }
++};
++
+
+ template <typename Shape_, typename ThreadMap_, int GroupSize_, int PackedMacroN_>
+ class Sm70MoeNvfp4IteratorB {
+@@ -336,7 +412,9 @@
+   static constexpr bool kUsesGlobalScale = true;
+
+   template <typename Shape, typename ThreadMap>
+-  using IteratorA = Sm70MoeGatherIteratorA<Shape, ThreadMap>;
++  using IteratorA = std::conditional_t<
++      Shape::kM == 64 && Shape::kN == 256 && Shape::kK == 32 && ThreadMap::kElementsPerAccess == 8,
++      Sm70MoeNvfp4PrefillGatherA<Shape, ThreadMap>, Sm70MoeGatherIteratorA<Shape, ThreadMap>>;
+
+   template <typename Shape, typename ThreadMap, int GroupSize, int PackedMacroN>
+   using IteratorB = Sm70MoeNvfp4IteratorB<Shape, ThreadMap, GroupSize, PackedMacroN>;
