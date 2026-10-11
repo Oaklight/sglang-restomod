@@ -63,7 +63,7 @@ in software; it does not imply native arithmetic in those formats.
 | FP16 routed experts | [Volta MMA GEMM](python/sglang/kernels/ops/moe/sm70_fp16.py), used by NVIDIA GLM's unquantized MTP experts. FP16 inputs/weights/output, FP32 accumulation and router multiply; upstream routing, activation and expert sum retained. Automatically selected by the SM70 plugin; unsupported epilogues fail under strict dispatch. |
 | Qwen QSA/GDN/HC | Direct FP16-cache sparse prefill/decode/verification, masked Tensor Core prefill, SM70 GDN and gated-residual kernels; HC eager prefill partitions within each quad, including TP8. |
 | GLM sparse MLA / indexer | Explicit Volta Tensor Core FP16 sparse prefill for128+queries/H8/H16/latent512/no-tail; direct selected-KV gather, FP32 reductions and FP16 probabilities. Small-row decode/verification uses Volta MMA split-K, FP16 normalized partials and FP32 LSE combine. Software FP8 learned indexer and request-owned pool4 compression. Decode/verification uses [live-history MMA scoring](python/sglang/kernels/ops/attention/dsa/sm70_indexer_decode.py) with fused FP32 head reduction; prefill keeps bounded FP32 scoring workspace. |
-| GLM KDA / mHC | Range-safe KDA; FP32 mHC projection/RMS/Sinkhorn, private prefill buffer reused for square/mean (~128MiB lower peak at2048rows). BF16-to-FP16 conversion needs operation-specific range handling. |
+| GLM KDA / mHC | Range-safe KDA with measured V100 value tiling for long prefills; FP32 mHC projection/RMS/Sinkhorn, private prefill buffer reused for square/mean (~128MiB lower peak at2048rows). BF16-to-FP16 conversion needs operation-specific range handling. |
 | Storage | Unquantized FP16 attention KV for both models; Qwen FP16 QSA index, GLM's separate model-native FP8 indexer. KV-cache quantization is excluded from the project recipes. FP16 recurrent state is retained. |
 | Cold module loading | Return idle Torch allocator blocks to CUDA when first-use Triton loads have little headroom; leave live tensors unchanged. Skip capture/custom arenas; steady kernel replay has no callback. |
 | Vision / DFlash2 | SDPA vision. [DFlash2](https://huggingface.co/incoai/GLM-5.3-Flash-DFlash2/tree/bf582e4eacc1810f76656d1811693ff6c6737d2a) FP16/local W8A16 have prior experimental coverage; NVIDIA-target qualification is pending. |
@@ -226,7 +226,7 @@ screen preceding these implementations.
 | Qwen FP8 TP4×PP2/EP4 | 3 | 7,588 | 72.5 |
 | NVIDIA GLM TP8/EP1 | 3 | 1,366 | 42.7 |
 | NVIDIA GLM TP4×PP2/EP1 | Off | 1,882 | 28.2 |
-| NVIDIA GLM TP4×PP2/EP1 | 3 | 2,749 | 58.9 |
+| NVIDIA GLM TP4×PP2/EP1 | 3 | 2,865 | 58.9 |
 
 MTP3 categories (PP/TG tokens/s; GLM PP2 averages two processes, others one):
 
@@ -235,9 +235,9 @@ MTP3 categories (PP/TG tokens/s; GLM PP2 averages two processes, others one):
 | Qwen coding | 4,882 | 82.3 | 7,668 | 82.2 |
 | Qwen book continuation | 4,831 | 82.6 | 7,607 | 66.3 |
 | Qwen document briefing | 4,779 | 73.3 | 7,489 | 69.0 |
-| NVIDIA GLM coding | 1,370 | 48.6 | 2,767 | 65.7 |
-| NVIDIA GLM book continuation | 1,367 | 37.6 | 2,742 | 53.0 |
-| NVIDIA GLM document briefing | 1,360 | 43.2 | 2,736 | 58.0 |
+| NVIDIA GLM coding | 1,370 | 48.6 | 2,886 | 64.4 |
+| NVIDIA GLM book continuation | 1,367 | 37.6 | 2,852 | 54.9 |
+| NVIDIA GLM document briefing | 1,360 | 43.2 | 2,856 | 57.4 |
 
 Inputs: [SPEED-Bench throughput_8k](https://huggingface.co/datasets/nvidia/SPEED-Bench/tree/454f88454792dfa3ccfd7ef15fff248efde44cd1),
 first turns `91d6ca2afe114d3c99312e8758b6f964` (code),
@@ -271,7 +271,12 @@ Matching the prefill Marlin row tile to its 64-row routing groups then raises PP
 [e23d40aa](https://github.com/heislera763/sglang-v100-plus/commit/e23d40aa).
 All four native expert banks remain bit-exact, including graph input/router updates;
 memcheck reports zero errors. Decode cycles are unchanged (+0.2%); sampled TG 59.6→58.9
-tracks acceptance variation. The table shows this latest PP2 screen, not a decode gain.
+tracks acceptance variation. Long small-head V100 KDA prefills then use two value
+lanes per block, raising PP 2,747→2,865 (+4.3%) against
+[2d909783](https://github.com/heislera763/sglang-v100-plus/commit/2d909783).
+Full-K reductions and FP32 working state remain; captured outputs/final states
+and ragged/graph controls are bit-exact, with independent FP64 checks and zero
+memcheck errors. Decode cycles remain unchanged (+0.1%). The table shows this latest screen.
 Single-request PP decode still serializes stages; receive waiting is not extra
 transfer work. Further prefill work centers on expert GEMMs, sparse MMA and KDA.
 
