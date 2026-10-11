@@ -215,7 +215,7 @@ register_kernel(
         op="attention.sparse_mla_prefill_sm70",
         backend=KernelBackend.JIT,
         target="sglang.kernels.ops.attention.dsa.sm70_sparse_prefill:sparse_mla_prefill_sm70",
-        description="TileLang-generated Volta MMA, JIT-compiled by nvcc; FP16 latent512.",
+        description="Volta MMA FP16 latent512; shared KV reuse and explicit tile synchronization.",
         capabilities={CapabilityRequirement.cuda(min_sm=(7, 0), max_sm=(7, 0))},
     )
 )

@@ -257,8 +257,10 @@ def test_sm70_tensorcore_preserves_support_ragged_tail_and_graph_replay(
         assert torch.equal(actual.view(torch.uint8), eager.view(torch.uint8))
 
 
-def test_sm70_tensorcore_graph_refreshes_explicit_length_bounds():
-    """Live length bounds must mask populated columns, including zero rows."""
+@pytest.mark.parametrize("heads", [8, 16])
+@pytest.mark.parametrize("topk", [67, 2051])
+def test_sm70_tensorcore_graph_refreshes_explicit_length_bounds(heads, topk):
+    """Shared-tile reuse must retain live bounds, masks and duplicate support."""
     if torch.cuda.get_device_capability() != (7, 0):
         pytest.skip("Volta Tensor Core sparse prefill")
     from sglang.kernels.ops.attention.dsa.sm70_sparse_prefill import (
@@ -266,10 +268,17 @@ def test_sm70_tensorcore_graph_refreshes_explicit_length_bounds():
     )
 
     torch.manual_seed(742)
-    q = torch.randn(3, 16, 512, device="cuda", dtype=torch.float16)
+    q = torch.randn(3, heads, 512, device="cuda", dtype=torch.float16)
     kv = torch.randn(257, 1, 512, device="cuda", dtype=torch.float16)
-    indices = torch.arange(67, dtype=torch.int32, device="cuda").repeat(3, 1)
-    lengths = torch.tensor([0, 1, 67], dtype=torch.int32, device="cuda")
+    indices = (
+        torch.arange(topk, dtype=torch.int32, device="cuda").remainder(257).repeat(3, 1)
+    )
+    indices[:, ::11] = -1
+    indices[:, ::17] = 257  # Out-of-pool padding.
+    indices[:, 33:41] = 256  # Duplicate keys keep their original multiplicity.
+    indices[:, 64:128] = -1  # Empty tile before later populated tiles.
+    indices[:, 0] = 7
+    lengths = torch.tensor([0, 1, topk], dtype=torch.int32, device="cuda")
     scale = 512**-0.5
 
     def run():
@@ -280,18 +289,24 @@ def test_sm70_tensorcore_graph_refreshes_explicit_length_bounds():
     graph = torch.cuda.CUDAGraph()
     with torch.cuda.graph(graph):
         actual = run()
-    for bounds in ((0, 1, 67), (100, -1, 65), (1, 67, 0)):
+    for bounds in ((0, 1, topk), (topk + 33, -1, 65), (1, topk, 0)):
         lengths.copy_(torch.tensor(bounds, dtype=torch.int32, device="cuda"))
+        q.normal_()
+        kv.normal_()
+        indices.copy_(indices.roll(1, dims=1))
         graph.replay()
+        eager = run()
         expected = torch.zeros_like(q, dtype=torch.float64)
         for row, count in enumerate(bounds):
-            selected = kv[: min(67, max(0, count)), 0].double()
+            ids = indices[row, : min(topk, max(0, count))]
+            selected = kv[ids[(ids >= 0) & (ids < kv.shape[0])].long(), 0].double()
             if selected.numel():
                 expected[row] = (q[row].double() @ selected.T * scale).softmax(
                     -1
                 ) @ selected
         assert torch.isfinite(actual).all()
         torch.testing.assert_close(actual[0].double(), expected, rtol=0.01, atol=0.001)
+        assert torch.equal(actual.view(torch.uint8), eager.view(torch.uint8))
 
 
 @pytest.mark.parametrize("topk", [67, 2051, 4096])

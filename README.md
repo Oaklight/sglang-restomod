@@ -287,6 +287,16 @@ increase did not repeat in reverse order. Explicit shared-scale half2 unpacking
 and a narrower-column scheduling trial also lost on captured banks; existing
 expert kernels remain selected.
 
+Explicit shared-tile synchronization then raises current NVIDIA/compact-FP8-MTP
+GLM prefill 2,865→2,900 (+1.2%) in matched A/B/B/A processes: coding2,888→2,920,
+book2,859→2,892,briefing2,848→2,888 PP. Same near8K/256-token sampled recipe;
+the change preserves QK/PV KV reuse and removes redundant per-row gather barriers.
+Sparse attention itself takes6.6% less time across both stages; all8 native bank
+outputs remain bit-exact. Graph/FP64 controls,16 kernel tests, image/reuse checks
+and memory/race/synchronization sanitizers pass. Decode kernels are unchanged;
+sampled TG variation is not claimed as a decode gain. Physical-slot sorting and
+smaller KV staging were rejected because total operator cost did not improve.
+
 Independent operator bounds plus exact state/payload/RNG checks where specified;
 native strict dispatch and EOS/logprob/penalty/cancel/reuse checks supplement them.
 Exact full-model token parity across quantizers or TP/PP reductions is not established.

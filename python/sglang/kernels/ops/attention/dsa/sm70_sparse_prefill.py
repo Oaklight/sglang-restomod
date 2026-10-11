@@ -14,6 +14,10 @@ from sglang.kernels.ops.kvcache.cache_ops import q8kv8_topk_length_from_indices
 _PASS_CONFIGS = {
     tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
     tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True,
+    # Automatic storage sync inserts a CTA barrier for every gathered KV row.
+    # Publish/reuse shared tiles explicitly instead. Reductions retain their
+    # internal cross-warp barriers.
+    tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC: True,
 }
 
 
@@ -54,14 +58,20 @@ def _prefill_kernel(heads):
             T.clear(l)
             limit = T.min(topk, T.max(0, Lengths[row]))
             for tile in T.serial(T.ceildiv(limit, bn)):
+                # Finish the previous PV/ID reads before overwriting the tile.
+                T.sync_threads()
                 for n in T.Parallel(bn):
                     ids[n] = T.if_then_else(
                         tile * bn + n < limit, Ids[row, tile * bn + n], -1
                     )
+                # Publish IDs once, outside the cooperative KV gather loop.
+                T.sync_threads()
                 for n, d in T.Parallel(bn, dim):
                     kv[n, d] = T.if_then_else(
                         (ids[n] >= 0) & (ids[n] < nk), KV[ids[n], d], 0
                     )
+                # The same published KV tile supplies both QK and PV.
+                T.sync_threads()
                 T.clear(scores)
                 T.gemm(
                     qs, kv, scores, transpose_B=True, policy=T.GemmWarpPolicy.FullCol
@@ -73,6 +83,7 @@ def _prefill_kernel(heads):
                         -1.0e30,
                     )
                 T.copy(m, old)
+                T.sync_threads()
                 T.reduce_max(scores, m, dim=1, clear=False)
                 for h in T.Parallel(bm):
                     alpha[h] = T.exp2(old[h] - m[h])
@@ -83,10 +94,14 @@ def _prefill_kernel(heads):
                     scores[h, n] = T.if_then_else(
                         (ids[n] >= 0) & (ids[n] < nk), T.exp2(scores[h, n] - m[h]), 0
                     )
+                T.sync_threads()
                 T.reduce_sum(scores, z, dim=1)
                 for h in T.Parallel(bm):
                     l[h] += z[h]
+                # Separate reduction scratch reuse and publish the FP16 P tile.
+                T.sync_threads()
                 T.copy(scores, ps)
+                T.sync_threads()
                 T.gemm(ps, kv, o, policy=T.GemmWarpPolicy.FullCol)
             for h, d in T.Parallel(bm, dim):
                 if h < heads:
