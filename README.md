@@ -280,12 +280,14 @@ memcheck errors. Decode cycles remain unchanged (+0.1%). The table shows this la
 Single-request PP decode still serializes stages; receive waiting is not extra
 transfer work. Further prefill work centers on expert GEMMs, sparse MMA and KDA.
 
-A subsequent PP2/MTP3 screen with an NVIDIA-derived FP8 draft rejected mixed
-64/16/32-row expert tiles: four fresh processes, three near8K prompts and256 sampled
-outputs gave 2,867→2,722 PP (−5.1%). Decode-cycle time was unchanged; a sampled TG
-increase did not repeat in reverse order. Explicit shared-scale half2 unpacking
-and a narrower-column scheduling trial also lost on captured banks; existing
-expert kernels remain selected.
+Other NVIDIA/compact-FP8-MTP PP2 screens rejected mixed64/16/32-row expert
+tiles (−5.1% PP), explicit scale/half2 unpacking and narrower-column scheduling.
+Eager shared/routed overlap also loses4.4% PP in a three-category near8K/256-token
+sampled screen (2,903→2,776). Whole-layer checks are bit-exact, but shared work
+mostly overlaps—and slows—the router, barely overlapping the~8.55ms routed branch.
+Reversing branch launch order saves less than1% per tested MoE layer; no model
+gain is established for that variant. Existing expert kernels and eager scheduling
+remain selected.
 
 Explicit shared-tile synchronization then raises current NVIDIA/compact-FP8-MTP
 GLM prefill 2,865→2,900 (+1.2%) in matched A/B/B/A processes: coding2,888→2,920,
