@@ -53,7 +53,7 @@ def _configure_sm70_nvfp4_stage(
     size_n: int,
     size_k: int,
 ) -> None:
-    """Select the measured Qwen TP4 / GLM TP8 decode geometry before CUDA-graph capture.
+    """Select measured SM70 NVFP4 geometries before CUDA-graph capture.
 
     marlin_v100 reads these variables synchronously when its host launcher is
     called.  SGLang captures the resulting kernels in the decode CUDA graph,
@@ -128,6 +128,24 @@ def _configure_sm70_nvfp4_stage(
     ):
         stage = 5
         values = ("32x64x64x4x32x64x16", "1", "vector_words")
+
+    elif (
+        b_scales.dtype == torch.float8_e4m3fn
+        and moe_block_size == 64
+        and (
+            (top_k == 8 and 128 <= size_m <= 2048 and (size_n, size_k) == (1024, 4096))
+            or (
+                top_k == 1
+                and 1024 <= size_m <= 16384
+                and (size_n, size_k) == (4096, 512)
+            )
+        )
+    ):
+        # A 32-row CTA reloads decoded weights for each half of the aligned
+        # expert group. Match all 64 rows while retaining the 32-deep K tile
+        # and split-K one: captured prefill outputs stay bit-exact.
+        stage = 6
+        values = ("64x256x32x4x64x64x32", "1", "vector_words")
 
     if stage == _sm70_nvfp4_tuning_stage:
         return

@@ -1,5 +1,6 @@
 """Reject silent V100 fallbacks while retaining opt-out dispatch semantics."""
 
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -341,6 +342,43 @@ class TestV100StrictDispatch(CustomTestCase):
                     torch.testing.assert_close(
                         actual, (x * (2 if optimized else 3)).flatten(1), rtol=0, atol=0
                     )
+
+    def test_nvfp4_prefill_geometry_does_not_leak_or_replace_user_tuning(self):
+        """Process-wide Marlin overrides must end at the qualified shape.
+
+        A stale prefill override can alter unrelated captured kernels; an
+        explicit vendor override belongs to the caller, including split-K.
+        Native bank comparisons cover the actual GPU geometry and arithmetic.
+        """
+        from sglang_v100_plus.kernels import moe_marlin
+
+        names = moe_marlin._SM70_MARLIN_MOE_ENV_NAMES
+        configured = moe_marlin._configure_sm70_nvfp4_stage
+        fp4 = SimpleNamespace(dtype=torch.float8_e4m3fn)
+        with (
+            patch.dict(os.environ),
+            patch.object(moe_marlin, "_IS_SM70", True),
+            patch.object(moe_marlin, "_sm70_marlin_user_tuning", False),
+            patch.object(moe_marlin, "_sm70_nvfp4_tuning_stage", None),
+        ):
+            for shape in ((2048, 1024, 4096, 8), (14032, 4096, 512, 1)):
+                m, n, k, topk = shape
+                for block, scales in (
+                    (32, fp4),
+                    (64, SimpleNamespace(dtype=torch.float32)),
+                ):
+                    configured(fp4, 64, topk, m, n, k)
+                    self.assertTrue(all(os.environ.get(name) for name in names))
+                    configured(scales, block, topk, m, n, k)
+                    self.assertTrue(all(name not in os.environ for name in names))
+            configured(fp4, 64, 8, 2048, 1024, 4096)
+            configured(fp4, 8, 8, 4, 1024, 4096)
+            self.assertTrue(all(name not in os.environ for name in names))
+            explicit = dict(zip(names, ("32x128x32x4x32x32x32", "2", "lane_vectors")))
+            os.environ.update(explicit)
+            with patch.object(moe_marlin, "_sm70_marlin_user_tuning", True):
+                configured(fp4, 64, 8, 2048, 1024, 4096)
+                self.assertEqual({name: os.environ[name] for name in names}, explicit)
 
     def test_nvfp4_routed_mma_preserves_vendor_override_and_epilogues(self):
         """A tuned replacement must not swallow unsupported Marlin contracts.

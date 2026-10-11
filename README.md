@@ -226,7 +226,7 @@ screen preceding these implementations.
 | Qwen FP8 TP4×PP2/EP4 | 3 | 7,588 | 72.5 |
 | NVIDIA GLM TP8/EP1 | 3 | 1,366 | 42.7 |
 | NVIDIA GLM TP4×PP2/EP1 | Off | 1,882 | 28.2 |
-| NVIDIA GLM TP4×PP2/EP1 | 3 | 2,548 | 59.9 |
+| NVIDIA GLM TP4×PP2/EP1 | 3 | 2,749 | 58.9 |
 
 MTP3 categories (PP/TG tokens/s; GLM PP2 averages two processes, others one):
 
@@ -235,9 +235,9 @@ MTP3 categories (PP/TG tokens/s; GLM PP2 averages two processes, others one):
 | Qwen coding | 4,882 | 82.3 | 7,668 | 82.2 |
 | Qwen book continuation | 4,831 | 82.6 | 7,607 | 66.3 |
 | Qwen document briefing | 4,779 | 73.3 | 7,489 | 69.0 |
-| NVIDIA GLM coding | 1,370 | 48.6 | 2,564 | 63.9 |
-| NVIDIA GLM book continuation | 1,367 | 37.6 | 2,540 | 59.9 |
-| NVIDIA GLM document briefing | 1,360 | 43.2 | 2,538 | 55.8 |
+| NVIDIA GLM coding | 1,370 | 48.6 | 2,767 | 65.7 |
+| NVIDIA GLM book continuation | 1,367 | 37.6 | 2,742 | 53.0 |
+| NVIDIA GLM document briefing | 1,360 | 43.2 | 2,736 | 58.0 |
 
 Inputs: [SPEED-Bench throughput_8k](https://huggingface.co/datasets/nvidia/SPEED-Bench/tree/454f88454792dfa3ccfd7ef15fff248efde44cd1),
 first turns `91d6ca2afe114d3c99312e8758b6f964` (code),
@@ -266,6 +266,12 @@ with verification cycles6.9% shorter and mean acceptance1.8% higher. Prefill is 
 The kernel uses92registers/18KiB shared versus Marlin192/36KiB;36 captured-bank
 routing/graph controls are bit-exact. Independent native-quant FP64 tests include
 FP8 scale extremes, changing routes and zero experts; device memcheck reports0errors.
+Matching the prefill Marlin row tile to its 64-row routing groups then raises PP
+2,545→2,749 (+8.0%) in four alternating processes against
+[e23d40aa](https://github.com/heislera763/sglang-v100-plus/commit/e23d40aa).
+All four native expert banks remain bit-exact, including graph input/router updates;
+memcheck reports zero errors. Decode cycles are unchanged (+0.2%); sampled TG 59.6→58.9
+tracks acceptance variation. The table shows this latest PP2 screen, not a decode gain.
 Single-request PP decode still serializes stages; receive waiting is not extra
 transfer work. Further prefill work centers on expert GEMMs, sparse MMA and KDA.
 
