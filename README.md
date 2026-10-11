@@ -14,7 +14,7 @@ Integrated upstream: [3831e7e0](https://github.com/sgl-project/sglang/commit/383
 Hardware adapters live in [v100_plus/sglang_v100_plus](v100_plus/sglang_v100_plus),
 reusable operators in [python/sglang/kernels/ops](python/sglang/kernels/ops), and
 build/Marlin changes in [v100_plus/aot](v100_plus/aot) and [v100_plus/patches](v100_plus/patches).
-[Provenance](v100_plus/provenance.json) and [32 recorded core changes](v100_plus/core-patches.json)
+[Provenance](v100_plus/provenance.json) and [34 recorded core changes](v100_plus/core-patches.json)
 make upstream updates auditable. Services, benchmark clients, traces and project notes
 stay outside Git. This assumes familiarity with SGLang.
 
@@ -279,6 +279,13 @@ and ragged/graph controls are bit-exact, with independent FP64 checks and zero
 memcheck errors. Decode cycles remain unchanged (+0.1%). The table shows this latest screen.
 Single-request PP decode still serializes stages; receive waiting is not extra
 transfer work. Further prefill work centers on expert GEMMs, sparse MMA and KDA.
+
+A subsequent PP2/MTP3 screen with an NVIDIA-derived FP8 draft rejected mixed
+64/16/32-row expert tiles: four fresh processes, three near8K prompts and256 sampled
+outputs gave 2,867→2,722 PP (−5.1%). Decode-cycle time was unchanged; a sampled TG
+increase did not repeat in reverse order. Explicit shared-scale half2 unpacking
+and a narrower-column scheduling trial also lost on captured banks; existing
+expert kernels remain selected.
 
 Independent operator bounds plus exact state/payload/RNG checks where specified;
 native strict dispatch and EOS/logprob/penalty/cancel/reuse checks supplement them.
