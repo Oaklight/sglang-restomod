@@ -50,7 +50,7 @@ build_python="$PWD/.venv/bin/python"
 
 # Standalone sparse attention; no vLLM runtime or dense FA compilation grid.
 fa="$PWD/artifacts/flash-attention-v100"
-fa_revision=b95cd878ad8067acc073cc920cdf4aed0162cbbc
+fa_revision=afa95deb5919eb012f273c95a0c02684b542bde8
 if [[ -d $fa/.git && $(git -C "$fa" rev-parse HEAD) != "$fa_revision" ]]; then
   previous="$PWD/artifacts/flash-attention-v100-previous-$(date -u +%Y%m%dT%H%M%S)"
   mv "$fa" "$previous"
