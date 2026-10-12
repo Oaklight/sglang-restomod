@@ -238,24 +238,35 @@ independent FP64 bounds, canaries and device memcheck pass. MMA/resources and
 precision boundaries are unchanged. Verification round wall-time is unchanged;
 sampled acceptance varies, so the higher TG below is not a decode speed claim.
 
+The sparse FA prefill integration (2026-10-11) uses a standalone AOT package
+from the personal FA fork, preserving selected keys and FP16 KV. Nsight Compute
+identified byte-sized CUTE operand copies; fixing their alignment reduced captured
+attention time by about 30% and improved near8K model prefill by 4.96–5.28%.
+The packaged operator passes reference, CUDA-graph and alignment tests, image
+reuse, and 262,106-input/32-output generation followed by request reuse.
+
+A split-K FA decode trial reduced complete attention cost by 23–29%, but model
+verification cycles improved only 0–0.54% and sampled generation throughput fell.
+The existing decoder is retained; no experimental decode path is installed.
+
 | Model / layout | MTP steps | Prefill tokens/s | Generation tokens/s |
 | --- | ---: | ---: | ---: |
 | Qwen FP8 TP8/EP8 | 3 | 4,831 | 79.4 |
 | Qwen FP8 TP4×PP2/EP4 | 3 | 7,588 | 72.5 |
 | NVIDIA GLM TP8/EP1 | 3 | 1,366 | 42.7 |
 | NVIDIA GLM TP4×PP2/EP1 | Off | 1,882 | 28.2 |
-| NVIDIA GLM TP4×PP2/EP1 | 3 | 3,117 | 61.0 |
+| NVIDIA GLM TP4×PP2/EP1 | 3 | 3,285 | 59.8 |
 
-MTP3 categories (PP/TG tokens/s; GLM PP2 averages two candidate processes, others one):
+MTP3 categories (PP/TG tokens/s; GLM PP2 averages two retained-model processes, others one):
 
 | Model / category | TP8 PP | TP8 TG | PP2 PP | PP2 TG |
 | --- | ---: | ---: | ---: | ---: |
 | Qwen coding | 4,882 | 82.3 | 7,668 | 82.2 |
 | Qwen book continuation | 4,831 | 82.6 | 7,607 | 66.3 |
 | Qwen document briefing | 4,779 | 73.3 | 7,489 | 69.0 |
-| NVIDIA GLM coding | 1,370 | 48.6 | 3,142 | 67.8 |
-| NVIDIA GLM book continuation | 1,367 | 37.6 | 3,107 | 56.4 |
-| NVIDIA GLM document briefing | 1,360 | 43.2 | 3,101 | 58.9 |
+| NVIDIA GLM coding | 1,370 | 48.6 | 3,314 | 66.0 |
+| NVIDIA GLM book continuation | 1,367 | 37.6 | 3,275 | 54.8 |
+| NVIDIA GLM document briefing | 1,360 | 43.2 | 3,266 | 58.7 |
 
 Inputs: [SPEED-Bench throughput_8k](https://huggingface.co/datasets/nvidia/SPEED-Bench/tree/454f88454792dfa3ccfd7ef15fff248efde44cd1),
 first turns `91d6ca2afe114d3c99312e8758b6f964` (code),
@@ -341,12 +352,3 @@ separate limits. Before/after upstream updates run
 
 [Apache-2.0](LICENSE). Credit: SGLang, original V100 fork, Marlin/vLLM and model authors;
 NCCL declarations retain their [license](v100_plus/nccl/LICENSE.txt).
-
-The sparse FA prefill integration (2026-10-11) replaces the existing SM70
-operator with a standalone AOT package from the personal FA fork, keeping the
-selected physical keys and FP16 KV. Matched Nsight Compute identified byte-sized
-CUTE shared operand copies; halfword alignment removes those instructions.
-Captured attention takes~30% less time; independent A/B/B/A improves all near8K
-categories4.96–5.28% PP. The packaged operator reproduces3313/3272/3273PP for
-coding/writing/document analysis, and passes image reuse plus262106-input/
-32-output generation and subsequent request reuse. No decode gain attributed.
