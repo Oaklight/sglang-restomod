@@ -63,7 +63,7 @@ in software; it does not imply native arithmetic in those formats.
 | Block-FP8 GEMMs | Patched Marlin and small-row vector kernels: W8A16, complete 128×128 scale blocks. Qwen EP4/EP8 preserves whole experts. |
 | FP16 routed experts | [Volta MMA GEMM](python/sglang/kernels/ops/moe/sm70_fp16.py), used by NVIDIA GLM's unquantized MTP experts. FP16 inputs/weights/output, FP32 accumulation and router multiply; upstream routing, activation and expert sum retained. Automatically selected by the SM70 plugin; unsupported epilogues fail under strict dispatch. |
 | Qwen QSA/GDN/HC | Direct FP16-cache sparse prefill/decode/verification, masked Tensor Core prefill, SM70 GDN and gated-residual kernels; HC eager prefill partitions within each quad, including TP8. |
-| GLM sparse MLA / indexer | Explicit Volta Tensor Core FP16 sparse prefill for128+queries/H8/H16/latent512/no-tail; direct selected-KV gather, FP32 reductions and FP16 probabilities. Small-row decode/verification uses Volta MMA split-K, FP16 normalized partials and FP32 LSE combine. Software FP8 learned indexer and request-owned pool4 compression. Decode/verification uses [live-history MMA scoring](python/sglang/kernels/ops/attention/dsa/sm70_indexer_decode.py) with fused FP32 head reduction; prefill keeps bounded FP32 scoring workspace. |
+| GLM sparse MLA / indexer | Standalone [V100 FA](https://github.com/heislera763/flash-attention-v100) AOT sparse prefill for128+queries/H8/H16/latent512/no-tail; direct selected-KV gather, FP32 reductions and FP16 probabilities. Small-row decode/verification uses Volta MMA split-K, FP16 normalized partials and FP32 LSE combine. Software FP8 learned indexer and request-owned pool4 compression. Decode/verification uses [live-history MMA scoring](python/sglang/kernels/ops/attention/dsa/sm70_indexer_decode.py) with fused FP32 head reduction; prefill keeps bounded FP32 scoring workspace. |
 | GLM KDA / mHC | Range-safe KDA with measured V100 value tiling for long prefills; FP32 mHC projection/RMS/Sinkhorn, private prefill buffer reused for square/mean (~128MiB lower peak at2048rows). BF16-to-FP16 conversion needs operation-specific range handling. |
 | Storage | Unquantized FP16 attention KV for both models; Qwen FP16 QSA index, GLM's separate model-native FP8 indexer. KV-cache quantization is excluded from the project recipes. FP16 recurrent state is retained. |
 | Cold module loading | Return idle Torch allocator blocks to CUDA when first-use Triton loads have little headroom; leave live tensors unchanged. Skip capture/custom arenas; steady kernel replay has no callback. |
@@ -84,7 +84,7 @@ Marlin/cuBLAS/Torch CUDA backends remain valid.
 
 ## Build and reference launches
 
-Python 3.12, `uv`, CUDA 12.9; [setup](v100_plus/setup.sh) builds pinned SM70 AOT/Marlin
+Python 3.12, `uv`, CUDA 12.9; [setup](v100_plus/setup.sh) builds pinned SM70 AOT/Marlin/standalone sparse FA
 kernels. Use a fresh shell and the common block below for each recipe. Device order
 must follow your topology. Local directory names are conventions; for Hub loading,
 use the checkpoint ID and full `--revision` above. These are manual single-request
@@ -169,7 +169,7 @@ classical sampled rejection. Lab sampling sources: [Qwen](https://huggingface.co
 | Eager prefill/full decode graphs | Qualified native paths; earlier Qwen prefill-graph screens lost. Chunk4352/2048 are measured per-model choices. |
 | Context and pool capacity | Qwen targets native262144 plus128page/workspace slots. FP16 PP2/MTP3 allocation,262106-input/32-output generation and request reuse pass. Explicit uncached max1 reservations fail instead of shrinking. |
 | Static fraction/state pool | Qwen uses the automatic fraction estimate. GLMTP8.92 is the short reference; GLMPP2MTP.95 qualifies the262K session. The fraction is a profiled allowance, not a physical VRAM allocation or speed setting. With radix off/max1, state slots derive from the request count; a state-memory ratio is redundant. Host PLE saves device memory. |
-| GLM sparse attention | The SM70 plugin selects Volta MMA for large prefill and rows1–4 decode/verification under the `triton` DSA entry points; no extra flag. |
+| GLM sparse attention | The SM70 plugin selects standalone sparse FA for large prefill and Volta MMA split-K for rows1–4 decode/verification under the `triton` DSA entry points; no extra flag. |
 | GLM mHC flags0 | Select supported mHC paths; fused DSA top-k retains its default1. |
 | CPU-only tests | `CUDA_VISIBLE_DEVICES=""`; numeric/disabled/UUID port allocation is supported. No999 workaround. |
 
@@ -341,3 +341,12 @@ separate limits. Before/after upstream updates run
 
 [Apache-2.0](LICENSE). Credit: SGLang, original V100 fork, Marlin/vLLM and model authors;
 NCCL declarations retain their [license](v100_plus/nccl/LICENSE.txt).
+
+The sparse FA prefill integration (2026-10-11) replaces the existing SM70
+operator with a standalone AOT package from the personal FA fork, keeping the
+selected physical keys and FP16 KV. Matched Nsight Compute identified byte-sized
+CUTE shared operand copies; halfword alignment removes those instructions.
+Captured attention takes~30% less time; independent A/B/B/A improves all near8K
+categories4.96–5.28% PP. The packaged operator reproduces3313/3272/3273PP for
+coding/writing/document analysis, and passes image reuse plus262106-input/
+32-output generation and subsequent request reuse. No decode gain attributed.

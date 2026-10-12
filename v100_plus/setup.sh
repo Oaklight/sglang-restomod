@@ -47,3 +47,21 @@ fi
 export CMAKE_ARGS="-DMARLIN_V100_NVFP4_ONLY=ON -DMARLIN_V100_FP8=ON -DCMAKE_CUDA_ARCHITECTURES=70 -DCMAKE_CUDA_FLAGS=-gencode=arch=compute_70,code=sm_70"
 build_python="$PWD/.venv/bin/python"
 (cd "$marlin" && "$build_python" setup.py build_ext --inplace)
+
+# Standalone sparse attention; no vLLM runtime or dense FA compilation grid.
+fa="$PWD/artifacts/flash-attention-v100"
+fa_revision=b95cd878ad8067acc073cc920cdf4aed0162cbbc
+if [[ -d $fa/.git && $(git -C "$fa" rev-parse HEAD) != "$fa_revision" ]]; then
+  previous="$PWD/artifacts/flash-attention-v100-previous-$(date -u +%Y%m%dT%H%M%S)"
+  mv "$fa" "$previous"
+  echo "Archived previous FA checkout at $previous"
+fi
+if [[ ! -d $fa/.git ]]; then
+  git clone https://github.com/heislera763/flash-attention-v100.git "$fa"
+  git -C "$fa" checkout --detach "$fa_revision"
+fi
+[[ $(git -C "$fa" rev-parse HEAD) == "$fa_revision" ]]
+git -C "$fa" submodule update --init csrc/cutlass
+CUDACXX="$CUDA_HOME/bin/nvcc" uv pip install --python .venv/bin/python \
+  --no-build-isolation --config-settings="build-dir=$PWD/artifacts/fa-sparse-build" \
+  "$fa/csrc/sparse_mla"

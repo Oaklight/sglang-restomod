@@ -213,9 +213,9 @@ register_kernel(
 register_kernel(
     KernelSpec(
         op="attention.sparse_mla_prefill_sm70",
-        backend=KernelBackend.JIT,
+        backend=KernelBackend.AOT,
         target="sglang.kernels.ops.attention.dsa.sm70_sparse_prefill:sparse_mla_prefill_sm70",
-        description="Volta MMA FP16 latent512; shared KV reuse and explicit tile synchronization.",
+        description="V100 FA selected FP16 latent512; cooperative MMA and packed shared copies.",
         capabilities={CapabilityRequirement.cuda(min_sm=(7, 0), max_sm=(7, 0))},
     )
 )

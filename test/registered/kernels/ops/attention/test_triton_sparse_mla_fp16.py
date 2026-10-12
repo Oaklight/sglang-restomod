@@ -452,6 +452,58 @@ def test_sm70_tensorcore_decode_rejects_unaligned_storage_views(misaligned):
         sparse_mla_decode_sm70(q, kv, ids, 0.0625)
 
 
+@pytest.mark.parametrize("heads", [8, 16])
+def test_sm70_sparse_prefill_realigns_contiguous_offset_views(heads):
+    if torch.cuda.get_device_capability() != (7, 0):
+        pytest.skip("SM70 sparse FA")
+    from sglang.kernels.ops.attention.dsa.sm70_sparse_prefill import (
+        sparse_mla_prefill_sm70,
+    )
+
+    torch.manual_seed(743)
+    q = torch.randn(3 * heads * 512 + 1, device="cuda", dtype=torch.float16)[1:]
+    q = q.view(3, heads, 512)
+    kv = torch.randn(67 * 512 + 1, device="cuda", dtype=torch.float16)[1:]
+    kv = kv.view(67, 512)
+    assert q.is_contiguous() and kv.is_contiguous()
+    assert q.data_ptr() % 16 and kv.data_ptr() % 16
+    ids = torch.tensor(
+        [[1, 1, -1], [-1, -1, -1], [5, 31, 66]], device="cuda", dtype=torch.int32
+    )
+    lengths = torch.tensor([3, 3, 3], device="cuda", dtype=torch.int32)
+    before = ids.clone()
+    actual = sparse_mla_prefill_sm70(q, kv, ids, 0.0625, lengths)[0]
+    expected = torch.zeros_like(q, dtype=torch.float64)
+    for row in (0, 2):
+        selected = kv[ids[row][ids[row] >= 0].long()].double()
+        expected[row] = (q[row].double() @ selected.T * 0.0625).softmax(-1) @ selected
+    torch.testing.assert_close(actual.double(), expected, rtol=0.01, atol=0.001)
+    assert torch.equal(ids, before)
+
+
+@pytest.mark.parametrize("invalid", ["dtype", "lengths", "heads", "alignment"])
+def test_sm70_sparse_fa_binding_rejects_unsafe_operands(invalid):
+    if torch.cuda.get_device_capability() != (7, 0):
+        pytest.skip("SM70 sparse FA binding")
+    from sglang_fa_sm70 import ensure_loaded
+
+    ensure_loaded()
+    q = torch.zeros(2, 8, 512, device="cuda", dtype=torch.float16)
+    kv = torch.zeros(67, 512, device="cuda", dtype=torch.float16)
+    ids = torch.zeros(2, 3, device="cuda", dtype=torch.int32)
+    lengths = torch.full((2,), 3, device="cuda", dtype=torch.int32)
+    if invalid == "dtype":
+        q = q.float()
+    elif invalid == "lengths":
+        lengths = lengths[:1]
+    elif invalid == "heads":
+        q = q[:, :4].contiguous()
+    else:
+        q = torch.empty(q.numel() + 1, device="cuda", dtype=q.dtype)[1:].view_as(q)
+    with pytest.raises(RuntimeError, match="SM70 sparse MLA"):
+        torch.ops.sglang_fa_sm70.prefill(q, kv, ids, lengths, 0.0625)
+
+
 if __name__ == "__main__":
     import sys
 

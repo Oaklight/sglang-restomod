@@ -1,117 +1,17 @@
-"""Volta Tensor Core sparse MLA prefill over selected FP16 latent KV rows.
+"""Selected-key FP16 sparse MLA through the standalone V100 FA AOT library.
 
-One CTA owns a query's local heads and reuses each gathered tile for QK and PV.
-Support/masks and FP16 probability boundaries are unchanged; MMA and online
-softmax change reduction order, so this is not bit-exact to scalar Triton.
+The personal flash-attention-v100 fork owns CUDA/CUTLASS code. This adapter
+preserves the selected support, FP16 KV/probabilities/output and FP32 reductions.
+No weights or full selected KV bank are materialized.
 """
 
-import tilelang
-import tilelang.language as T
 import torch
 
 from sglang.kernels.ops.kvcache.cache_ops import q8kv8_topk_length_from_indices
 
-_PASS_CONFIGS = {
-    tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
-    tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True,
-    # Automatic storage sync inserts a CTA barrier for every gathered KV row.
-    # Publish/reuse shared tiles explicitly instead. Reductions retain their
-    # internal cross-warp barriers.
-    tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC: True,
-}
-
-
-@tilelang.jit(out_idx=[5], pass_configs=_PASS_CONFIGS)
-def _prefill_kernel(heads):
-    bn, threads = 64, 128
-    nt = T.dynamic("nt")
-    nk = T.dynamic("nk")
-    topk = T.dynamic("topk")
-    bm = 16
-    dim = 512
-
-    @T.prim_func
-    def main(
-        Q: T.Tensor([nt, heads, dim], T.float16),
-        KV: T.Tensor([nk, dim], T.float16),
-        Ids: T.Tensor([nt, topk], T.int32),
-        Lengths: T.Tensor([nt], T.int32),
-        scale: T.float32,
-        Out: T.Tensor([nt, heads, dim], T.float16),
-    ):
-        with T.Kernel(nt, threads=threads) as row:
-            qs = T.alloc_shared([bm, dim], T.float16)
-            kv = T.alloc_shared([bn, dim], T.float16)
-            ps = T.alloc_shared([bm, bn], T.float16)
-            ids = T.alloc_shared([bn], T.int32)
-            scores = T.alloc_fragment([bm, bn], T.float32)
-            o = T.alloc_fragment([bm, dim], T.float32)
-            m = T.alloc_fragment([bm], T.float32)
-            old = T.alloc_fragment([bm], T.float32)
-            l = T.alloc_fragment([bm], T.float32)
-            z = T.alloc_fragment([bm], T.float32)
-            alpha = T.alloc_fragment([bm], T.float32)
-            for h, d in T.Parallel(bm, dim):
-                qs[h, d] = T.if_then_else(h < heads, Q[row, h, d], 0)
-            T.clear(o)
-            T.fill(m, -1.0e30)
-            T.clear(l)
-            limit = T.min(topk, T.max(0, Lengths[row]))
-            for tile in T.serial(T.ceildiv(limit, bn)):
-                # Finish the previous PV/ID reads before overwriting the tile.
-                T.sync_threads()
-                for n in T.Parallel(bn):
-                    ids[n] = T.if_then_else(
-                        tile * bn + n < limit, Ids[row, tile * bn + n], -1
-                    )
-                # Publish IDs once, outside the cooperative KV gather loop.
-                T.sync_threads()
-                for n, d in T.Parallel(bn, dim):
-                    kv[n, d] = T.if_then_else(
-                        (ids[n] >= 0) & (ids[n] < nk), KV[ids[n], d], 0
-                    )
-                # The same published KV tile supplies both QK and PV.
-                T.sync_threads()
-                T.clear(scores)
-                T.gemm(
-                    qs, kv, scores, transpose_B=True, policy=T.GemmWarpPolicy.FullCol
-                )
-                for h, n in T.Parallel(bm, bn):
-                    scores[h, n] = T.if_then_else(
-                        (ids[n] >= 0) & (ids[n] < nk),
-                        scores[h, n] * scale * 1.4426950408889634,
-                        -1.0e30,
-                    )
-                T.copy(m, old)
-                T.sync_threads()
-                T.reduce_max(scores, m, dim=1, clear=False)
-                for h in T.Parallel(bm):
-                    alpha[h] = T.exp2(old[h] - m[h])
-                    l[h] *= alpha[h]
-                for h, d in T.Parallel(bm, dim):
-                    o[h, d] *= alpha[h]
-                for h, n in T.Parallel(bm, bn):
-                    scores[h, n] = T.if_then_else(
-                        (ids[n] >= 0) & (ids[n] < nk), T.exp2(scores[h, n] - m[h]), 0
-                    )
-                T.sync_threads()
-                T.reduce_sum(scores, z, dim=1)
-                for h in T.Parallel(bm):
-                    l[h] += z[h]
-                # Separate reduction scratch reuse and publish the FP16 P tile.
-                T.sync_threads()
-                T.copy(scores, ps)
-                T.sync_threads()
-                T.gemm(ps, kv, o, policy=T.GemmWarpPolicy.FullCol)
-            for h, d in T.Parallel(bm, dim):
-                if h < heads:
-                    Out[row, h, d] = T.cast(o[h, d] / T.max(l[h], 1.0e-30), T.float16)
-
-    return main
-
 
 def sparse_mla_prefill_sm70(q, kv, indices, sm_scale, topk_length=None):
-    """Return [1, tokens, heads8/16, 512] using FP16 inputs and FP32 reductions.
+    """Return [1, tokens, heads8/16, 512] with the AOT sparse SM70 FA kernel.
 
     Index rows address physical KV slots, with negative padding. Optional lengths
     bound the last valid column; otherwise a device scan derives that bound.
@@ -144,10 +44,16 @@ def sparse_mla_prefill_sm70(q, kv, indices, sm_scale, topk_length=None):
         and topk_length.numel() == q.shape[0]
     ):
         raise ValueError("SM70 sparse prefill lengths must be one CUDA int32 per query")
-    return _prefill_kernel(q.shape[1])(
-        q.contiguous(),
-        kv.reshape(-1, 512).contiguous(),
-        indices,
-        topk_length.reshape(-1).contiguous(),
-        float(sm_scale),
+    from sglang_fa_sm70 import ensure_loaded
+
+    ensure_loaded()
+    q = q.contiguous()
+    kv = kv.reshape(-1, 512).contiguous()
+    # Contiguous offset views can still violate the vector-load alignment.
+    if q.data_ptr() % 16:
+        q = q.clone()
+    if kv.data_ptr() % 16:
+        kv = kv.clone()
+    return torch.ops.sglang_fa_sm70.prefill(
+        q, kv, indices, topk_length.reshape(-1).contiguous(), float(sm_scale)
     ).unsqueeze(0)
