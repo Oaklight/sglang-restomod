@@ -23,7 +23,15 @@ def resolve_profile(original, view):
         )
     if view.dtype not in ("float16", "half") or view.kv_cache_dtype != "auto":
         raise ValueError("v100_plus attention requires FP16 model/KV/state")
-    if view.enable_prefill_cp or view.dcp_size != 1 or view.dp_size != 1:
+    if view.enable_prefill_cp or any(
+        size != 1
+        for size in (
+            view.dcp_size,
+            view.dp_size,
+            view.attn_dp_size,
+            view.attn_cp_size,
+        )
+    ):
         raise ValueError("v100_plus attention currently supports TP/PP with DP/CP1")
     if view.max_running_requests != 1:
         raise ValueError(

@@ -361,7 +361,12 @@ class TestV100StrictDispatch(CustomTestCase):
             patch.object(moe_marlin, "_sm70_marlin_user_tuning", False),
             patch.object(moe_marlin, "_sm70_nvfp4_tuning_stage", None),
         ):
-            for shape in ((2048, 1024, 4096, 8), (14032, 4096, 512, 1)):
+            for shape in (
+                (2048, 512, 4096, 8),
+                (2048, 1024, 4096, 8),
+                (14032, 4096, 256, 1),
+                (14032, 4096, 512, 1),
+            ):
                 m, n, k, topk = shape
                 for block, scales in (
                     (32, fp4),
@@ -437,6 +442,22 @@ class TestV100StrictDispatch(CustomTestCase):
                 torch.testing.assert_close(
                     moe_marlin.moe_wna16_marlin_gemm(**base), torch.full_like(c, 7)
                 )
+                # TP8 checkpoint shards have half the routed output/reduction
+                # width. Missing either selection silently keeps padded M32.
+                for m, topk, n, k in ((4, 8, 512, 4096), (32, 1, 4096, 256)):
+                    result = moe_marlin.moe_wna16_marlin_gemm(
+                        **dict(
+                            base,
+                            a=torch.zeros(m, k, dtype=torch.float16),
+                            c_or_none=torch.empty(m * topk, n, dtype=torch.float16),
+                            b_q_weight=SimpleNamespace(shape=(288, k // 16, n * 2)),
+                            size_m=m,
+                            size_n=n,
+                            size_k=k,
+                            top_k=topk,
+                        )
+                    )
+                    torch.testing.assert_close(result, torch.full_like(result, 7))
                 for change in (
                     dict(b_bias_or_none=torch.ones(1024)),
                     dict(b_zeros_or_none=torch.ones(1)),

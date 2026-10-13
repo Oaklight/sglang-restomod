@@ -126,7 +126,13 @@ def test_checkpoint_reference_and_graph_replay(m, topk, n, k):
 
 @pytest.mark.parametrize(
     "m,topk,n,k,mul_router",
-    [(1, 8, 128, 64, False), (3, 8, 1024, 4096, False), (32, 1, 4096, 512, True)],
+    [
+        (1, 8, 128, 64, False),
+        (3, 8, 512, 4096, False),
+        (3, 8, 1024, 4096, False),
+        (24, 1, 4096, 256, True),
+        (32, 1, 4096, 512, True),
+    ],
 )
 def test_routed_mma_native_quant_reference_and_graph(m, topk, n, k, mul_router):
     """Pin encoded nibble/scale ordering, scatter and graph metadata lifetime.

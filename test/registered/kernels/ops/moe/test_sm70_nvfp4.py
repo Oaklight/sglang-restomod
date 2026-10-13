@@ -10,7 +10,7 @@ from sglang.kernels.ops.moe.sm70_nvfp4 import sm70_nvfp4_moe
 from sglang.test.ci.ci_register import register_cuda_ci
 from sglang.test.test_utils import CustomTestCase
 
-register_cuda_ci(est_time=60, stage="jit-kernel-unit", runner_config="1-gpu-large")
+register_cuda_ci(est_time=80, stage="jit-kernel-unit", runner_config="1-gpu-large")
 pytestmark = pytest.mark.skipif(
     not torch.cuda.is_available() or torch.cuda.get_device_capability() != (7, 0),
     reason="Volta encoded NVFP4 experts",
@@ -120,6 +120,14 @@ def test_checkpoint_reference_and_fresh_graph_routes(rows, width):
 
 class TestSM70NVFP4PrefillGather(CustomTestCase):
     def test_live_routes_and_unaligned_inputs(self):
+        self._check_live_routes_and_unaligned_inputs(256, 64)
+
+    def test_tp8_shards(self):
+        for n, k in ((512, 4096), (4096, 256)):
+            with self.subTest(n=n, k=k):
+                self._check_live_routes_and_unaligned_inputs(n, k)
+
+    def _check_live_routes_and_unaligned_inputs(self, n, k):
         """Cached rows must refresh on replay; wide loads must respect alignment.
 
         Rotating expert tails, negative expert IDs and a shrinking live count
@@ -143,7 +151,7 @@ class TestSM70NVFP4PrefillGather(CustomTestCase):
         )
         op = _load_marlin_v100_op()
         torch.manual_seed(651)
-        experts, n, k, routes = 12, 256, 64, 512
+        experts, routes = 12, 512
         packed = torch.randint(
             0, 256, (experts, n, k // 2), dtype=torch.uint8, device="cuda"
         )

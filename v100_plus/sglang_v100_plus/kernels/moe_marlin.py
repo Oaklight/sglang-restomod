@@ -9,7 +9,6 @@ import torch
 
 if TYPE_CHECKING:
     from sgl_kernel.scalar_type import ScalarType
-    from tvm_ffi.module import Module
 
 logger = logging.getLogger(__name__)
 
@@ -57,8 +56,8 @@ def _configure_sm70_nvfp4_stage(
 
     marlin_v100 reads these variables synchronously when its host launcher is
     called.  SGLang captures the resulting kernels in the decode CUDA graph,
-    so there is no environment handling on graph replay. The 1K gate/up and
-    large-prefill down shapes use separately measured CTA geometries; other
+    so there is no environment handling on graph replay. The routed prefill
+    gate/up and down shapes use measured CTA geometries at TP4 and TP8; other
     shapes clear the override and retain marlin_v100's generic/model selectors.
     """
 
@@ -133,11 +132,15 @@ def _configure_sm70_nvfp4_stage(
         b_scales.dtype == torch.float8_e4m3fn
         and moe_block_size == 64
         and (
-            (top_k == 8 and 128 <= size_m <= 2048 and (size_n, size_k) == (1024, 4096))
+            (
+                top_k == 8
+                and 128 <= size_m <= 2048
+                and (size_n, size_k) in ((512, 4096), (1024, 4096))
+            )
             or (
                 top_k == 1
                 and 1024 <= size_m <= 16384
-                and (size_n, size_k) == (4096, 512)
+                and (size_n, size_k) in ((4096, 256), (4096, 512))
             )
         )
     ):
@@ -329,11 +332,15 @@ def moe_wna16_marlin_gemm(
             not _sm70_marlin_user_tuning
             and moe_block_size == 8
             and (
-                (1 <= size_m <= 4 and top_k == 8 and (size_n, size_k) == (1024, 4096))
+                (
+                    1 <= size_m <= 4
+                    and top_k == 8
+                    and (size_n, size_k) in ((512, 4096), (1024, 4096))
+                )
                 or (
                     size_m in (8, 16, 24, 32)
                     and top_k == 1
-                    and (size_n, size_k) == (4096, 512)
+                    and (size_n, size_k) in ((4096, 256), (4096, 512))
                 )
             )
             and a.dtype == torch.float16
@@ -352,7 +359,7 @@ def moe_wna16_marlin_gemm(
                 sm70_nvfp4_routed_gemm,
             )
 
-            # Small expert groups use M16 and K-major shared decoded weights;
+            # TP4/TP8 small expert groups share M16 and K-major decoded weights;
             # keep the existing activation, expert sum and Half boundaries.
             # use_atomic_add permits split-K, not accumulation into prior C;
             # this implementation owns the full K reduction and overwrites C.
