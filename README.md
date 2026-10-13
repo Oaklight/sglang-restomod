@@ -367,27 +367,33 @@ NCCL declarations retain their [license](v100_plus/nccl/LICENSE.txt).
 
 ### Unified GLM attention on dev
 
-Fresh single-process screens, 2026-10-12: same NVIDIA weights, compact FP8 MTP,
-PP2×TP4/EP1,24/21,262K FP16 KV/state,chunk2048,MTP3,near8K coherent prompts,
-32-token warmups and256 outputs. **Temperature0** for comparison; earlier lab-sampled
-measurements above remain separate. One matching main reference was collected.
+Paired-KV prefill screen, 2026-10-13, reusing the matching 2026-10-12 dev reference:
+NVIDIA weights, compact FP8 MTP, PP2×TP4/EP1, 24/21 split, 262K FP16 KV/state,
+chunk2048, MTP3, near8K coherent prompts, 32-token warmups and 256 outputs.
+**Temperature 0** for comparison; earlier lab-sampled measurements remain separate.
 
-| Category | Main PP | Dev PP | Main TG | Dev TG |
+| Category | Previous PP | Paired PP | Previous TG | Paired TG |
 | --- | ---: | ---: | ---: | ---: |
-| Coding |3313|3347|66.2|62.6|
-| Writing |3274|3305|54.6|54.5|
-| Document analysis |3270|3304|57.5|59.1|
+| Coding |3347|3420|62.6|67.6|
+| Writing |3305|3375|54.5|57.1|
+| Document analysis |3304|3355|59.1|61.6|
 
-Values are tokens/s. Native KDA preparation cuts complete operator time26–29%;
-empty sparse tiles preserve byte-exact results and help the first chunk. This single screen shows about1% higher whole-model prefill, too small
-to establish a robust throughput gain. Generation acceptance differs, so no
-decode speedup is claimed. Main stays frozen. Full-query register staging was rejected: the current
-SM70 MMA layout replicates too much D512 query data and spills at255 registers.
-The next substantial attention work needs streamed Q tiles or a different MMA
-partition, plus a stable KDA chunk formulation.
+Values are tokens/s. Adjacent queries share an exact multiset of selected keys;
+common/exclusive regions avoid redundant loads and masked MMA. A 32-key tile,
+separate QK/PV warp partitions and rotated shared-memory layout reduce shared
+storage from 82 to 34.4 KiB and permit two resident blocks without spilling.
+Complete sparse-operation time falls 20% across eight captured stage/chunk banks,
+including support preparation. Whole-model prefill rises 1.5–2.2% in this single
+screen, consistent with sparse attention's limited share of total prefill work.
+Decode's implementation is preserved. MTP acceptance rose from 75.5/59.4/67.1%
+to 82.4/64.8/70.3%; verification-cycle cost stayed within about 1%. The TG changes
+therefore do not establish a faster decoder. Main stays frozen.
 
-Qualification includes both pipeline stages, independent FP64 operator references,
-unchanged `rtol=.001, atol=.0002` bounds, live CUDA-graph inputs, state/output
-canaries and Compute Sanitizer. Image changes, request reuse, a262106-input/32-output
-capacity check, TP8 MTP and Qwen FP8 PP2 MTP smoke pass. These establish functional coverage,
-not full-context model quality or a generation speedup.
+Selected keys, duplicate multiplicity and FP16 KV are preserved; changed key
+ordering and softmax tile boundaries are not bit-identical. Captured outputs
+retain `rtol=.001, atol=.0002` bounds against the previous kernel. FP64 support
+checks, changing graph inputs, large physical pools, and memory/race/sync
+sanitizers pass. Changed/repeated images and text reuse also pass. The earlier
+262106-input capacity run and Qwen PP2 smoke predate this sparse-prefill change;
+they were not repeated. KDA preparation remains 26–29% faster at operator level;
+its sequential recurrence and routed experts still limit larger model gains.
