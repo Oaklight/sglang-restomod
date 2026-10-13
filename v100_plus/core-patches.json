@@ -31,7 +31,6 @@
     "python/sglang/test/test_utils.py": "Handle CPU-only and UUID CUDA visibility without breaking numeric CI test-port lanes.",
     "python/sglang/kernels/ops/attention/dsa/sm70_indexer_decode.py": "Volta MMA decode/verification index scoring: live causal tile bounds and fused FP32 head reduction, without dense per-head score scratch.",
     "python/sglang/kernels/ops/gemm/sm70_nvfp4_routed.py": "Volta MMA small-row routed NVFP4 GEMM with encoded Marlin scales, K-major decoded weights and unchanged precision boundaries.",
-    "python/sglang/kernels/ops/attention/fla/kda.py": "Measured SM70 small-head long-prefill recurrence value tile; full-K reductions and FP32 working state preserved.",
     "python/sglang/kernels/ops/attention/v100.py": "Lazy canonical V100 sparse, dense vision and recurrent CUDA adapters; backend-owned bounded scratch.",
     "python/sglang/srt/arg_groups/fields/exec_.py": "Expose canonical V100 DSA profile and resolvable linear-attention backend fields.",
     "python/sglang/srt/arg_groups/fields/mm.py": "Expose resolvable V100 vision attention for the unified GLM profile.",

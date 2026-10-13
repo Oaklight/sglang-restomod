@@ -74,19 +74,6 @@ def fused_recurrent_kda_fwd(
     HV = v.shape[2]
     N = B if cu_seqlens is None else len(cu_seqlens) - 1
     BK, BV = next_power_of_2(K), min(next_power_of_2(V), 8)
-    if (
-        is_nvidia
-        and q.is_cuda
-        and q.dtype == k.dtype == v.dtype == torch.float16
-        and (K, V) == (128, 128)
-        and T >= 512
-        and N * HV <= 32
-        and torch.cuda.get_device_capability(q.device) == (7, 0)
-    ):
-        # Long recurrence with few heads underfills Volta. More independent
-        # value tiles hide latency while retaining the full-K reduction and
-        # FP32 working state; BV=1 changes reduction rounding and is slower.
-        BV = 2
     NK, NV = cdiv(K, BK), cdiv(V, BV)
     assert NK == 1, "NK > 1 is not supported yet"
     num_stages = 3

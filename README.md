@@ -393,7 +393,17 @@ Selected keys, duplicate multiplicity and FP16 KV are preserved; changed key
 ordering and softmax tile boundaries are not bit-identical. Captured outputs
 retain `rtol=.001, atol=.0002` bounds against the previous kernel. FP64 support
 checks, changing graph inputs, large physical pools, and memory/race/sync
-sanitizers pass. Changed/repeated images and text reuse also pass. The earlier
-262106-input capacity run and Qwen PP2 smoke predate this sparse-prefill change;
-they were not repeated. KDA preparation remains 26–29% faster at operator level;
-its sequential recurrence and routed experts still limit larger model gains.
+sanitizers pass. The installed FA0.2.1 engine also passes changed/repeated images,
+text reuse, and 262106-input/32-output generation followed by request reuse
+(2026-10-13). This is capacity coverage, not a long-context quality claim.
+Qwen's earlier PP2 smoke was not repeated; its execution paths are unchanged.
+
+The completion pass rejected an extra prefill barrier optimization (0.6% complete
+attention gain) and live-only index gathering (large operator gain, no consistent
+model TG improvement). A fresh unchanged control also varied in MTP acceptance;
+temperature0 does not guarantee identical execution across processes. No additional
+prefill or decode throughput gain is claimed. Superseded Triton union/KDA changes
+were removed. KDA preparation remains 26–29% faster at operator level; sequential
+FP32 recurrence and routed GEMMs remain larger prefill costs. Sparse/KDA kernels
+occupy only about4–5% of each stage's decode compute union in the existing trace;
+further large decode gains require work beyond the sparse attention kernel.

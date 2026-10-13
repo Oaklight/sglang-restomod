@@ -632,9 +632,6 @@ def _sparse_mla_fused_kernel(
     USE_I64_PAGE: tl.constexpr = True,
     PIPE_STAGES: tl.constexpr = 3,
     SKIP_EMPTY_TILES: tl.constexpr = False,
-    union_bits_ptr=None,
-    UNION_GROUP_SIZE: tl.constexpr = 1,
-    BASE_HEADS: tl.constexpr = 0,
 ):
     """Single-pass with head-block splitting. grid=(seq, head_blocks)."""
     t = tl.program_id(0)
@@ -653,12 +650,6 @@ def _sparse_mla_fused_kernel(
         p_dot_scale = 1.0
 
     qn_row = q_nope_ptr + t * STRIDE_QN_T + h_offs[:, None] * STRIDE_QN_H
-    if UNION_GROUP_SIZE > 1:
-        qn_row = (
-            q_nope_ptr
-            + (t * UNION_GROUP_SIZE + h_offs[:, None] // BASE_HEADS) * STRIDE_QN_T
-            + (h_offs[:, None] % BASE_HEADS) * STRIDE_QN_H
-        )
     q0 = tl.load(qn_row + g[None, :], mask=h_mask[:, None], other=0.0).to(input_type)
     if NUM_GROUPS >= 2:
         q1 = tl.load(
@@ -750,18 +741,7 @@ def _sparse_mla_fused_kernel(
             if D_TAIL > 0:
                 scores += tl.dot(q_tail, tl.trans(kv_tail))
             scores = scores * qk_scale
-            if UNION_GROUP_SIZE > 1:
-                bits = tl.load(
-                    union_bits_ptr + t * topk + k_pos,
-                    mask=k_pos < valid_topk,
-                    other=0,
-                )
-                owned = ((bits[None, :] >> (h_offs[:, None] // BASE_HEADS)) & 1) != 0
-                # Other queries own nonzero KV values. Their masked scores
-                # must contribute zero even before this row's first valid tile.
-                scores = tl.where(valid[None, :] & owned, scores, -float("inf"))
-            else:
-                scores = tl.where(valid[None, :], scores, neg_large)
+            scores = tl.where(valid[None, :], scores, neg_large)
 
             m_block = tl.max(scores, axis=1)
             m_new = tl.maximum(m_i, m_block)
