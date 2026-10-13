@@ -473,4 +473,4 @@ class SM70SparseAttnBackend(DeepseekSparseAttnBackend):
         workspace = self.v100_sparse_workspaces.setdefault(stream, {})
         return sparse_attention_v100(
             q_nope, kv_cache, page_table_1, sm_scale, workspace=workspace
-        ).unsqueeze(0)
+        )

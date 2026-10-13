@@ -27,7 +27,7 @@ from sglang.srt.speculative.eagle_draft_cuda_graph_runner import (
 from sglang.test.ci.ci_register import register_cpu_ci
 from sglang.test.test_utils import CustomTestCase
 
-register_cpu_ci(est_time=10, suite="base-a-test-cpu")
+register_cpu_ci(est_time=10, stage="base-a")
 
 CAPTURE_BS = 4
 SEQ_LEN_FILL_VALUE = 1
@@ -201,6 +201,62 @@ class TestEagleDraftCudaGraphRunner(CustomTestCase):
         for observation in backend.observations:
             self.assertIsNone(observation.seq_lens_sum, msg=observation.phase)
         self.assertIsNone(forward_batch.seq_lens_sum)
+
+
+class TestDraftExtendCaptureWidth(CustomTestCase):
+    def test_four_token_request_does_not_expand_to_four_requests(self):
+        """Attention-TP4 needs four token rows, not four MTP4 requests.
+
+        Stop at the attention backend's allocation boundary: the old caller
+        requested sixteen token rows and exceeded the small-row indexer limit.
+        """
+        from sglang.srt.model_executor.cuda_graph_config import (
+            default_cuda_graph_config,
+        )
+        from sglang.srt.runtime_context import get_context, get_exec, get_parallel
+        from sglang.srt.speculative.eagle_draft_extend_cuda_graph_runner import (
+            EAGLEDraftExtendCudaGraphRunner,
+        )
+
+        class BeforeAllocation(Exception):
+            pass
+
+        class AttentionAllocation:
+            def init_cuda_graph_state(self, requests, tokens):
+                self.capacity = requests, tokens
+                raise BeforeAllocation()
+
+        config = default_cuda_graph_config()
+        config.decode.bs = [1]
+        backend = AttentionAllocation()
+        worker = SimpleNamespace(
+            draft_runner=SimpleNamespace(
+                device="cpu", req_to_token_pool=SimpleNamespace(size=1)
+            ),
+            draft_extend_attn_backend=backend,
+        )
+        with (
+            get_context().override_server_args(
+                model_path="dummy",
+                device="cpu",
+                tp_size=8,
+                attn_dp_size=2,
+                speculative_num_steps=3,
+                speculative_num_draft_tokens=4,
+                speculative_eagle_topk=1,
+                disable_overlap_schedule=True,
+            ),
+            get_exec().graph.override(cuda_graph_config=config),
+            get_parallel().override(
+                attn_tp_size=4,
+                attn_cp_size=1,
+                attn_dp_enabled=True,
+                num_dp_ranks=2,
+            ),
+        ):
+            with self.assertRaises(BeforeAllocation):
+                EAGLEDraftExtendCudaGraphRunner(worker)
+        self.assertEqual(backend.capacity, (1, 4))
 
 
 if __name__ == "__main__":

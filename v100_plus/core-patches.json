@@ -38,6 +38,8 @@
     "python/sglang/srt/layers/attention/linear/kernels/kernel_backend.py": "Explicit safe-gate decode/verification capability contract.",
     "python/sglang/srt/layers/attention/linear/kernels/kda_triton.py": "Declare existing Triton safe-gate capabilities.",
     "python/sglang/srt/layers/attention/vision.py": "Permit canonical V100 attention to consume packed strided vision Q/K/V.",
-    "python/sglang/srt/speculative/draft_utils.py": "Reuse DSA draft metadata ownership with canonical V100 backend identity."
+    "python/sglang/srt/speculative/draft_utils.py": "Reuse DSA draft metadata ownership with canonical V100 backend identity.",
+    "python/sglang/srt/model_executor/runner/base_cuda_graph_runner.py": "Keep the smallest legal row-aligned graph bucket when an explicit small batch would otherwise be filtered out; bound it independently of request-pool capacity.",
+    "python/sglang/srt/speculative/eagle_draft_extend_cuda_graph_runner.py": "Select graph request buckets using the resolved draft-extension token width, avoiding artificial request padding."
   }
 }

@@ -212,25 +212,34 @@ Current GLM on `dev` (2026-10-13): NVIDIA NVFP4 target, compact FP8 MTP3, vision
 FP16 KV/state, 262,144-token context, 262,656 cache slots, max1, chunk2048, eager
 prefill/full decode graphs and strict dispatch. PP2 uses TP4/EP1 with24/21 layers;
 TP8 uses EP1 and the small-allreduce tuner. **Temperature 0**, 32-token warmups
-and 256 outputs per
-coherent near8K request. PP2 reuses the matching unchanged-code dev control;
-TP8 uses one fresh process per candidate. Profiles are outside timed requests.
+and 256 outputs per coherent near8K request. PP2 reuses the matching unchanged-code
+dev control; TP8 includes the latest adapter/graph qualification. Each topology
+candidate gets one fresh process. Profiles are outside timed requests.
 
 | Category | PP2 prefill | PP2 generation | TP8 prefill | TP8 generation |
 | --- | ---: | ---: | ---: | ---: |
-| Coding |3,417|69.9|2,226|83.0|
-| Writing |3,365|52.4|2,226|75.2|
-| Document analysis |3,359|61.7|2,226|78.0|
+| Coding |3,417|69.9|2,229|85.0|
+| Writing |3,365|52.4|2,227|70.3|
+| Document analysis |3,359|61.7|2,224|76.2|
 
 Values are tokens/s. TP8 starts at 2,034 prefill / 67.8 generation (category means).
 Extending the existing M16 routed NVFP4 path to TP8 shortens verification
 cycles 10.5%; matching prefill route groups to the 64-row cached gather raises
 prefill 9.4%. The size-limited tuner adds about 2% shorter cycles. Together the
 screen gives **2,034→2,226 prefill** and **67.8→78.8 generation** (+16.2%).
-Acceptance changes are recorded separately from execution: TP8 before/after
-75.6/77.1% coding, 64.4/67.1% writing, 69.9/71.1% documents. Temperature 0 does not
-make floating-point execution or MTP acceptance identical across processes.
-PP2 remains faster at prefill; TP8 uses both quads concurrently during decode.
+The latest adapter/graph fixes leave execution unchanged: category means
+2,227 prefill /77.2 generation, verification cycles39.91 versus39.88ms. The
+generation variation follows acceptance, averaging69.7% versus71.8%; no further
+speed gain is claimed. Temperature0 does not make floating-point execution or
+MTP acceptance identical across processes. PP2 remains faster at prefill; TP8
+uses both quads concurrently during decode.
+
+Quad-local attention was tested inside TP8 with attention DP2/TP4 and distributed
+experts. EP2×expert-TP4 produced2,002 prefill /56.9 generation; EP8×expert-TP1
+produced1,935/55.1. Both lose to the matching2,226/78.8 TP8 control; execution
+cycles also lengthen. Attention locality alone does not remove distributed
+expert transport, padded scheduling or expert compute costs. These layouts stay
+unqualified; no extra dispatch branches or tuning flags were retained.
 
 Selected-key paired attention is unchanged in this pass. The canonical FA
 engine shares exact selected-key multisets between adjacent queries, uses
@@ -246,13 +255,19 @@ changing routes/counts/router/inputs under graph replay, masked/empty experts,
 alignment and output canaries. Prefill is byte-exact to current Marlin; small-row
 gate/up is bit-exact; eager down sub-bank differences are ≤6.1e-5. Independent
 native-quant FP64 and graph checks retain `rtol=.001, atol=.0002`; memory sanitizer reports zero
-errors. Swapped/repeated images and subsequent text reuse pass. Unsupported
+errors. Swapped/repeated images and subsequent text reuse pass. Canonical adapters
+now preserve token-major sparse output and trim snapshot indices to current
+sequence capacity. Graph capture uses the smallest aligned request bucket and
+the resolved draft-extension width. Live graph, zero-tail and snapshot-canary
+regressions pass with zero memory-sanitizer errors. Unsupported
 attention DP/CP configurations fail at profile resolution. Kernel tests:
 [NVFP4 GEMM](test/registered/kernels/ops/gemm/test_sm70_nvfp4_gemv.py),
 [expert/gather](test/registered/kernels/ops/moe/test_sm70_nvfp4.py),
+[adapter contracts](test/registered/kernels/ops/attention/test_v100_backend.py),
 [canonical attention](https://github.com/heislera763/flash-attention-v100/blob/bcf95352fcb602cd4c43f82fd22f1b1368bed359/csrc/sparse_mla/tests/test_attention.py).
-A narrower TP8 gate/up tile lost on densely active routing and was rejected
-without a model run. Large-collective protocol overrides also failed the screen.
+Narrower tiles and six unpacking/scheduling prototypes lost their operator
+screens and were rejected without redundant model runs. Large-collective
+protocol overrides also failed the screen.
 
 Inputs: pinned [SPEED-Bench throughput_8k](https://huggingface.co/datasets/nvidia/SPEED-Bench/tree/454f88454792dfa3ccfd7ef15fff248efde44cd1),
 first turns `91d6ca2afe114d3c99312e8758b6f964` (code),

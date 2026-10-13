@@ -20,6 +20,7 @@ import gc
 import logging
 from abc import abstractmethod
 from contextlib import contextmanager
+from math import gcd
 from typing import TYPE_CHECKING, Any, List, Optional, Sequence, Tuple
 
 from sglang.srt.model_executor.runner.base_runner import BaseRunner
@@ -95,6 +96,10 @@ def get_batch_sizes_to_capture(
     # Model input token count = bs * alignment_width; must be a multiple of attn_tp_size.
     capture_bs = [bs for bs in capture_bs if bs * alignment_width % mul_base == 0]
     capture_bs = [bs for bs in capture_bs if bs <= num_max_requests]
+    if not capture_bs and num_max_requests > 0:
+        # A requested small bucket can require padding even when the pool is
+        # large. Capture the smallest aligned request bucket, not the whole pool.
+        capture_bs = [mul_base // gcd(mul_base, alignment_width)]
     capture_bs = list(sorted(set(capture_bs)))
 
     assert len(capture_bs) > 0 and capture_bs[0] > 0, f"{capture_bs=}"

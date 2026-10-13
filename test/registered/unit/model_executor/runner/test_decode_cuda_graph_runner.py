@@ -36,7 +36,7 @@ from sglang.srt.utils import profile_utils as putils
 from sglang.test.ci.ci_register import register_cpu_ci
 from sglang.test.test_utils import CustomTestCase
 
-register_cpu_ci(est_time=11, suite="base-a-test-cpu")
+register_cpu_ci(est_time=11, stage="base-a")
 
 _CAPTURE_TRACE = "SGLANG_ENABLE_CUDA_GRAPH_CAPTURE_TRACE"
 _BATCH_CAPTURE = "SGLANG_GRAPH_BATCH_CAPTURE"
@@ -281,6 +281,44 @@ class TestRaggedVerifyLayoutPerTier(CustomTestCase):
                     layout.qo_indptr_device, expected.qo_indptr_device
                 )
                 torch.testing.assert_close(layout.verify_lens, expected.verify_lens)
+
+
+class TestSmallAlignedCaptureBucket(CustomTestCase):
+    def test_single_request_bucket_respects_row_width_and_stays_bounded(self):
+        """Small DP buckets must survive alignment without capturing the pool.
+
+        Batch one was filtered to an empty list with attention TP4. Wider
+        requests already contain aligned rows; a large pool must not become
+        an oversized capture just to repair the small configured bucket.
+        """
+        from sglang.srt.model_executor.cuda_graph_config import (
+            default_cuda_graph_config,
+        )
+        from sglang.srt.model_executor.runner.base_cuda_graph_runner import (
+            get_batch_sizes_to_capture,
+        )
+        from sglang.srt.runtime_context import get_context, get_exec, get_parallel
+
+        config = default_cuda_graph_config()
+        config.decode.bs = [1]
+        with (
+            get_context().override_server_args(
+                model_path="dummy", device="cpu", tp_size=8, attn_dp_size=2
+            ),
+            get_exec().graph.override(cuda_graph_config=config),
+            get_parallel().override(attn_tp_size=4, attn_cp_size=1),
+        ):
+            for pool_size in (1, 1024):
+                runner = SimpleNamespace(
+                    req_to_token_pool=SimpleNamespace(size=pool_size)
+                )
+                for width, expected in ((1, [4]), (2, [2]), (3, [4]), (4, [1])):
+                    with self.subTest(pool=pool_size, width=width):
+                        captured, compiled = get_batch_sizes_to_capture(
+                            runner, width, gathered_buffer_required=True
+                        )
+                        self.assertEqual(captured, expected)
+                        self.assertEqual(compiled, [])
 
 
 if __name__ == "__main__":

@@ -231,7 +231,9 @@ class V100KDAKernel(LinearAttnKernelBase):
             raw_beta=True,
             write_state=False,
             snapshots=intermediate_states_buffer,
-            snapshot_slots=intermediate_state_indices.int(),
+            snapshot_slots=intermediate_state_indices[
+                : query_start_loc.numel() - 1
+            ].int(),
             parents=None
             if retrieve_parent_token is None
             else retrieve_parent_token.int(),
