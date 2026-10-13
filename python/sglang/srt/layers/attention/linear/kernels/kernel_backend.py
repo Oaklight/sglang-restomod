@@ -22,6 +22,8 @@ class LinearAttnKernelBase(ABC):
     # unwritten and corrupts prefix-cache restores. Kernels that reject
     # tracked batches loudly (NotImplementedError) keep the default False.
     supports_track_state_snapshot: bool = False
+    supports_safe_gate_decode: bool = False
+    supports_safe_gate_verify: bool = False
 
     @abstractmethod
     def decode(

@@ -62,104 +62,19 @@ def sm70_glm_kv_cache_dtype(original, **kwargs):
     return original(**kwargs)
 
 
-def sparse_prefill(original, q_nope, q_rope, kv, indices, sm_scale, d_v=512, **kwargs):
-    """Use Volta MMA for qualified FP16 latent-only prefill/verification."""
-    from sglang.kernels.ops.attention.dsa.triton_sparse_mla import (
-        _sm70_sparse_mla_small_rows,
-        _validate_input_dtypes,
-    )
-
-    if _sm70_sparse_mla_small_rows(q_nope, q_rope, kv, d_v):
-        _validate_input_dtypes(q_nope, q_rope, kv)
-        from sglang.kernels.ops.attention.dsa.sm70_sparse_decode import (
-            sparse_mla_decode_sm70,
-        )
-
-        return sparse_mla_decode_sm70(
-            q_nope, kv, indices, sm_scale, topk_length=kwargs.get("topk_length")
-        )
-    if (
-        q_nope.shape[0] >= 128
-        and q_nope.shape[1] in (8, 16)
-        and q_nope.dtype == kv.dtype == torch.float16
-        and d_v == kv.shape[-1] == 512
-        and q_rope.shape[-1] == 0
-        and not torch.cuda.is_current_stream_capturing()
-    ):
-        from sglang.kernels.ops.attention.dsa.sm70_sparse_prefill import (
-            sparse_mla_prefill_sm70,
-        )
-
-        return sparse_mla_prefill_sm70(
-            q_nope, kv, indices, sm_scale, kwargs.get("topk_length")
-        )
-    return original(q_nope, q_rope, kv, indices, sm_scale, d_v, **kwargs)
-
-
-def sparse_decode(
-    original,
-    q_nope,
-    q_rope,
-    kv,
-    indices,
-    sm_scale,
-    d_v=512,
-    kv_splits=None,
-    workspace=None,
-):
-    """Keep backend-owned decode workspace while replacing the SM70 math."""
-    from sglang.kernels.ops.attention.dsa.triton_sparse_mla import (
-        _sm70_sparse_mla_small_rows,
-        _validate_input_dtypes,
-    )
-
-    if _sm70_sparse_mla_small_rows(q_nope, q_rope, kv, d_v):
-        _validate_input_dtypes(q_nope, q_rope, kv)
-        from sglang.kernels.ops.attention.dsa.sm70_sparse_decode import (
-            sparse_mla_decode_sm70,
-        )
-
-        return sparse_mla_decode_sm70(
-            q_nope, kv, indices, sm_scale, kv_splits=kv_splits, workspace=workspace
-        )
-    return original(
-        q_nope,
-        q_rope,
-        kv,
-        indices,
-        sm_scale,
-        d_v,
-        kv_splits=kv_splits,
-        workspace=workspace,
-    )
-
-
 def sm70_dsa_cache_default(original, view):
     from sglang.srt.arg_groups.overrides import model_config_of
 
     config = model_config_of(view).hf_config
-    if (
-        config.architectures[0] == "Glm5NextForConditionalGeneration"
-        and view.dtype in ("float16", "half")
-        and view.kv_cache_dtype == "auto"
-        and view.dsa_prefill_backend == view.dsa_decode_backend == "triton"
-    ):
-        # Keep auto so the cache inherits FP16 from the resolved model dtype.
+    if config.architectures[0] == "Glm5NextForConditionalGeneration":
+        if view.attention_backend != "v100_plus":
+            raise ValueError("GLM on SM70 requires --attention-backend v100_plus")
+        if view.dtype not in ("float16", "half") or view.kv_cache_dtype != "auto":
+            raise ValueError(
+                "V100 GLM requires float16 weights/state and compute-dtype auto KV"
+            )
         return {}
     return original(view)
-
-
-def sm70_dsa_constraints(
-    original, kv_cache_dtype, prefill_backend, decode_backend, *, hip
-):
-    if (
-        not hip
-        and torch.cuda.get_device_capability() == (7, 0)
-        and kv_cache_dtype == "auto"
-        and prefill_backend == decode_backend == "triton"
-    ):
-        return
-    return original(kv_cache_dtype, prefill_backend, decode_backend, hip=hip)
 
 
 def pooled_locations(token_table, pool_ids, *, token_page_size, index_page_size):
@@ -539,6 +454,23 @@ class SM70SparseAttnBackend(DeepseekSparseAttnBackend):
         return
 
     def _check_kpool_tail_backend(self, topk_indices, dsa_impl, phase):
-        if dsa_impl == "triton":
+        if dsa_impl == "v100_plus":
             return
         return super()._check_kpool_tail_backend(topk_indices, dsa_impl, phase)
+
+    def _forward_v100_sparse(
+        self, q_nope, q_rope, kv_cache, page_table_1, sm_scale, v_head_dim
+    ):
+        from sglang.kernels.ops.attention.v100 import sparse_attention_v100
+
+        if q_rope.shape[-1] or v_head_dim != 512:
+            raise ValueError(
+                "v100_plus sparse attention requires latent512 and no separate RoPE tail"
+            )
+        if not hasattr(self, "v100_sparse_workspaces"):
+            self.v100_sparse_workspaces = {}
+        stream = int(torch.cuda.current_stream(q_nope.device).cuda_stream)
+        workspace = self.v100_sparse_workspaces.setdefault(stream, {})
+        return sparse_attention_v100(
+            q_nope, kv_cache, page_table_1, sm_scale, workspace=workspace
+        ).unsqueeze(0)

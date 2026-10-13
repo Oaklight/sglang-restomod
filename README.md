@@ -6,15 +6,18 @@ in two NVLink quads**. We rebuilt useful SM70 support from
 effectively rebasing it into an independent fork. Qwen3.8-Flash-Next FP8 and
 GLM-5.3-Flash NVFP4 work is consolidated on `main`.
 
-`main` contains validated changes; `dev` is the integration branch. Keep upstream
-updates and experiments on `dev`, then advance `main` after relevant checks.
+`main` contains validated changes and stays frozen during the unified GLM
+attention rewrite on `dev`. The [FA fork](https://github.com/heislera763/flash-attention-v100)
+owns native CUDA sparse, vision and KDA attention; SGLang owns thin adapters,
+metadata and cache/state lifetimes. Advance `main` after correctness and model
+throughput checks. Qwen retains its existing backend during this work.
 Clone remotes: `origin` is this fork; `upstream` is `sgl-project/sglang`.
 
 Integrated upstream: [3831e7e0](https://github.com/sgl-project/sglang/commit/3831e7e0918052be50ef38b3ff62154573e213d7), pinned 2026-10-10.
 Hardware adapters live in [v100_plus/sglang_v100_plus](v100_plus/sglang_v100_plus),
 reusable operators in [python/sglang/kernels/ops](python/sglang/kernels/ops), and
 build/Marlin changes in [v100_plus/aot](v100_plus/aot) and [v100_plus/patches](v100_plus/patches).
-[Provenance](v100_plus/provenance.json) and [34 recorded core changes](v100_plus/core-patches.json)
+[Provenance](v100_plus/provenance.json) and [recorded core changes](v100_plus/core-patches.json)
 make upstream updates auditable. Services, benchmark clients, traces and project notes
 stay outside Git. This assumes familiarity with SGLang.
 
@@ -59,19 +62,19 @@ in software; it does not imply native arithmetic in those formats.
 
 | Operation | Implementation / contract |
 | --- | --- |
-| NVFP4 GEMMs | [marlin_v100](https://github.com/heislera763/marlin_v100) at `95b1e62e` plus local patches: W4A16, FP16 WMMA with FP32 accumulation; block/global scales remain distinct. Small routed groups use [Volta MMA](python/sglang/kernels/ops/gemm/sm70_nvfp4_routed.py) with M16 tiles and K-major decoded weights; FP16 dequantization/output and FP32 accumulation/scaling remain. Unused alternate-backend MoE scale buffers alias active scales, saving17.72GiB across GLM's8GPUs. |
+| NVFP4 GEMMs | [marlin-v100](https://github.com/heislera763/marlin-v100) at `95b1e62e` plus local patches: W4A16, FP16 WMMA with FP32 accumulation; block/global scales remain distinct. Small routed groups use [Volta MMA](python/sglang/kernels/ops/gemm/sm70_nvfp4_routed.py) with M16 tiles and K-major decoded weights; FP16 dequantization/output and FP32 accumulation/scaling remain. Unused alternate-backend MoE scale buffers alias active scales, saving17.72GiB across GLM's8GPUs. |
 | Block-FP8 GEMMs | Patched Marlin and small-row vector kernels: W8A16, complete 128×128 scale blocks. Qwen EP4/EP8 preserves whole experts. |
 | FP16 routed experts | [Volta MMA GEMM](python/sglang/kernels/ops/moe/sm70_fp16.py), used by NVIDIA GLM's unquantized MTP experts. FP16 inputs/weights/output, FP32 accumulation and router multiply; upstream routing, activation and expert sum retained. Automatically selected by the SM70 plugin; unsupported epilogues fail under strict dispatch. |
 | Qwen QSA/GDN/HC | Direct FP16-cache sparse prefill/decode/verification, masked Tensor Core prefill, SM70 GDN and gated-residual kernels; HC eager prefill partitions within each quad, including TP8. |
-| GLM sparse MLA / indexer | Standalone [V100 FA](https://github.com/heislera763/flash-attention-v100) AOT sparse prefill for128+queries/H8/H16/latent512/no-tail; direct selected-KV gather, FP32 reductions and FP16 probabilities. Small-row decode/verification uses Volta MMA split-K, FP16 normalized partials and FP32 LSE combine. Software FP8 learned indexer and request-owned pool4 compression. Decode/verification uses [live-history MMA scoring](python/sglang/kernels/ops/attention/dsa/sm70_indexer_decode.py) with fused FP32 head reduction; prefill keeps bounded FP32 scoring workspace. |
-| GLM KDA / mHC | Range-safe KDA with measured V100 value tiling for long prefills; FP32 mHC projection/RMS/Sinkhorn, private prefill buffer reused for square/mean (~128MiB lower peak at2048rows). BF16-to-FP16 conversion needs operation-specific range handling. |
+| GLM attention | [Canonical V100 CUDA backend](python/sglang/kernels/ops/attention/v100.py) from the [FA fork](https://github.com/heislera763/flash-attention-v100): selected-key FP16 sparse prefill/decode/MTP, FP32 reductions and FP16 probabilities/partials. Empty tiles skip identity work. The model-native FP8 indexer retains [live-history MMA scoring](python/sglang/kernels/ops/attention/dsa/sm70_indexer_decode.py) and bounded prefill scoring. |
+| GLM KDA / mHC | Native CUDA full-K FP32 recurrence, FP16 state and per-step verification carry. Prefill prepares normalized Q/K and gates once in runner-owned FP32 working vectors. KDA remains scalar FP32 CUDA; Tensor Core chunk formulation is future work. mHC retains its existing SM70 projection/RMS/Sinkhorn paths. |
 | Storage | Unquantized FP16 attention KV for both models; Qwen FP16 QSA index, GLM's separate model-native FP8 indexer. KV-cache quantization is excluded from the project recipes. FP16 recurrent state is retained. |
 | Cold module loading | Return idle Torch allocator blocks to CUDA when first-use Triton loads have little headroom; leave live tensors unchanged. Skip capture/custom arenas; steady kernel replay has no callback. |
-| Vision / DFlash2 | SDPA vision. [DFlash2](https://huggingface.co/incoai/GLM-5.3-Flash-DFlash2/tree/bf582e4eacc1810f76656d1811693ff6c6737d2a) FP16/local W8A16 have prior experimental coverage; NVIDIA-target qualification is pending. |
+| Vision / DFlash2 | GLM uses the FA port’s native FP16 D64 varlen attention; Qwen retains SDPA vision. [DFlash2](https://huggingface.co/incoai/GLM-5.3-Flash-DFlash2/tree/bf582e4eacc1810f76656d1811693ff6c6737d2a) FP16/local W8A16 have prior experimental coverage; NVIDIA-target qualification is pending. |
 
 Strict dispatch checks backend selection; it does not imply every operation is
 Volta-specific. Routing/activation/reduction preparation still uses general CUDA,
-Torch and Triton kernels; vision uses FP16 SDPA. Compact GLM FP8 MTP prefill uses
+Torch and Triton kernels; GLM vision uses native FP16 FA and Qwen uses SDPA. Compact GLM FP8 MTP prefill uses
 the generic SM70 Marlin scale path, while the explicit block-scale fast path is
 currently qualified only for Qwen shapes.
 
@@ -82,9 +85,15 @@ Qwen's current FP32-state path fails an existing operator bound; GLM's passes bu
 showed no speed gain. Strict dispatch rejects unsupported guarded paths; declared
 Marlin/cuBLAS/Torch CUDA backends remain valid.
 
+The `dev` attention profile uses one selector, `--attention-backend v100_plus`,
+for sparse, KDA and vision. It requires FP16 compute/state, compute-dtype `auto`
+KV, `no_buffer` recurrent caching and one running request. Conflicting backend
+choices fail before loading. Legacy GLM sparse hooks and separate kernel modules
+have been removed; Qwen keeps its existing operators.
+
 ## Build and reference launches
 
-Python 3.12, `uv`, CUDA 12.9; [setup](v100_plus/setup.sh) builds pinned SM70 AOT/Marlin/standalone sparse FA
+Python 3.12, `uv`, CUDA 12.9; [setup](v100_plus/setup.sh) builds pinned SM70 AOT/Marlin/canonical FA
 kernels. Use a fresh shell and the common block below for each recipe. Device order
 must follow your topology. Local directory names are conventions; for Hub loading,
 use the checkpoint ID and full `--revision` above. These are manual single-request
@@ -105,7 +114,7 @@ export NCCL_P2P_LEVEL=PHB NCCL_NVLS_ENABLE=0
 common=(
   --host 0.0.0.0 --port 9000 --api-key test-only --random-seed 531 --dtype float16 --trust-remote-code
   --moe-runner-backend marlin --sampling-backend pytorch --reasoning-parser auto --tool-call-parser auto
-  --disable-overlap-schedule --disable-radix-cache --mm-attention-backend sdpa
+  --disable-overlap-schedule --disable-radix-cache
   --mamba-ssm-dtype float16 --max-running-requests 1 --disable-prefill-cuda-graph
   --cuda-graph-backend-decode full --cuda-graph-bs-decode 1
 )
@@ -125,7 +134,7 @@ uv run --no-project .venv/bin/python -m sglang_v100_plus "${common[@]}" \
   --quantization fp8 --json-model-override-args '{"language_model_only":true}' \
   --tensor-parallel-size 4 --pipeline-parallel-size 2 --expert-parallel-size 4 \
   --context-length 262144 --max-total-tokens 262272 \
-  --chunked-prefill-size 4352 --attention-backend triton \
+  --chunked-prefill-size 4352 --attention-backend triton --mm-attention-backend sdpa \
   --linear-attn-prefill-backend tilelang_v100 --linear-attn-decode-backend triton \
   --page-size 64 --kv-cache-dtype auto --qsa-indexer-dtype float16 \
   --ple-offload-embedding --mamba-radix-cache-strategy extra_buffer \
@@ -138,11 +147,10 @@ uv run --no-project .venv/bin/python -m sglang_v100_plus "${common[@]}" \
 ```bash
 export SGLANG_OPT_USE_TILELANG_MHC_PRE=0 SGLANG_OPT_USE_TILELANG_MHC_POST=0 SGLANG_OPT_FUSE_MHC_POST_PRE=0
 uv run --no-project .venv/bin/python -m sglang_v100_plus "${common[@]}" \
-  --model-path "$HOME/models/sglang/nvidia-GLM-5.3-Flash-NVFP4" --served-model-name glm5.3-flash --language-only \
+  --model-path "$HOME/models/sglang/nvidia-GLM-5.3-Flash-NVFP4" --served-model-name glm5.3-flash \
   --quantization modelopt_fp4 --fp4-gemm-backend marlin --tensor-parallel-size 8 --expert-parallel-size 1 \
   --context-length 12288 --max-total-tokens 12288 \
-  --mem-fraction-static 0.92 --chunked-prefill-size 2048 --attention-backend dsa \
-  --dsa-prefill-backend triton --dsa-decode-backend triton --linear-attn-prefill-backend triton --linear-attn-decode-backend triton \
+  --mem-fraction-static 0.92 --chunked-prefill-size 2048 --attention-backend v100_plus \
   --page-size 256 --kv-cache-dtype auto --mamba-radix-cache-strategy no_buffer \
   --default-chat-template-kwargs '{"reasoning_effort":"max","clear_thinking":true}' \
   --preferred-sampling-params '{"temperature":1.0,"top_p":0.95,"top_k":-1,"min_p":0.0,"presence_penalty":0.0,"frequency_penalty":0.0,"repetition_penalty":1.0}'
@@ -151,12 +159,12 @@ uv run --no-project .venv/bin/python -m sglang_v100_plus "${common[@]}" \
 | Variation | Change from reference |
 | --- | --- |
 | Qwen TP8 | TP8/EP8; omit PP and unset `SGLANG_PP_LAYER_PARTITION`/metadata flag. Keep HC/chunk4352. |
-| GLM PP2 MTP | TP4/PP2/EP1; `SGLANG_PP_LAYER_PARTITION=24,21`; context **262144**, total tokens **262656**, fraction **.95**, chunk2048. Add MTP flags below and `--speculative-draft-model-path "$HOME/models/sglang/local-GLM-5.3-Flash-MTP-FP8" --speculative-draft-model-quantization fp8` for the measured compact draft. Omit `--language-only` for images; vision weights reside on the first PP stage. |
+| GLM PP2 MTP | TP4/PP2/EP1; `SGLANG_PP_LAYER_PARTITION=24,21`; context **262144**, total tokens **262656**, fraction **.95**, chunk2048. Add MTP flags below and `--speculative-draft-model-path "$HOME/models/sglang/local-GLM-5.3-Flash-MTP-FP8" --speculative-draft-model-quantization fp8` for the measured compact draft. Images are enabled; vision weights reside on the first PP stage. |
 | MTP, either model | Add `--speculative-algorithm EAGLE --speculative-num-steps 3 --speculative-num-draft-tokens 4 --speculative-eagle-topk 1 --speculative-use-rejection-sampling`. PP2 also exports `SGLANG_ENABLE_PP_SPEC=1`. |
 
 Three draft steps plus one target/bonus position; built-in MTP head, one linear branch,
 classical sampled rejection. Lab sampling sources: [Qwen](https://huggingface.co/Qwen/Qwen3.8-Flash-Next#api-usage),
-[ZAI](https://huggingface.co/zai-org/GLM-5.3-Flash#footnotes). Greedy decoding is not the benchmark baseline.
+[ZAI](https://huggingface.co/zai-org/GLM-5.3-Flash#footnotes). Use lab sampling for model use; comparative tuning screens use temperature0.
 
 ## Settings rationale
 
@@ -169,7 +177,7 @@ classical sampled rejection. Lab sampling sources: [Qwen](https://huggingface.co
 | Eager prefill/full decode graphs | Qualified native paths; earlier Qwen prefill-graph screens lost. Chunk4352/2048 are measured per-model choices. |
 | Context and pool capacity | Qwen targets native262144 plus128page/workspace slots. FP16 PP2/MTP3 allocation,262106-input/32-output generation and request reuse pass. Explicit uncached max1 reservations fail instead of shrinking. |
 | Static fraction/state pool | Qwen uses the automatic fraction estimate. GLMTP8.92 is the short reference; GLMPP2MTP.95 qualifies the262K session. The fraction is a profiled allowance, not a physical VRAM allocation or speed setting. With radix off/max1, state slots derive from the request count; a state-memory ratio is redundant. Host PLE saves device memory. |
-| GLM sparse attention | The SM70 plugin selects standalone sparse FA for large prefill and Volta MMA split-K for rows1–4 decode/verification under the `triton` DSA entry points; no extra flag. |
+| GLM attention | `--attention-backend v100_plus` selects the shared native sparse engine, KDA and vision; rows1–4 use bounded split work. Conflicting mode overrides fail. |
 | GLM mHC flags0 | Select supported mHC paths; fused DSA top-k retains its default1. |
 | CPU-only tests | `CUDA_VISIBLE_DEVICES=""`; numeric/disabled/UUID port allocation is supported. No999 workaround. |
 
@@ -196,6 +204,9 @@ These are implementation gaps, not unused free speed flags.
 
 ## Performance and checks
 
+The following history describes frozen `main`; the unified `dev` screen appears
+below and uses temperature0. Historical sampled runs are separate controls.
+
 Three uncached coherent near8K requests/profile, one request, eager prefill/full
 decode graphs. Current GLM PP2 MTP uses256 sampled outputs,32-token warmups and
 fresh A/B/B/A processes (two candidates averaged below), images enabled and262K
@@ -210,7 +221,7 @@ the earlier E5M2 results are historical controls. Earlier GLM rows:
 compatible post-sync paths; NVIDIA PP2 MTP additionally uses the allocator fix
 [a85513f5](https://github.com/heislera763/sglang-v100-plus/commit/a85513f5) and exact mHC buffer reuse
 [9f057466](https://github.com/heislera763/sglang-v100-plus/commit/9f057466).
-GLM PP2 MTP uses [Volta MMA sparse prefill](python/sglang/kernels/ops/attention/dsa/sm70_sparse_prefill.py)
+GLM PP2 MTP uses [Volta MMA sparse prefill](python/sglang/kernels/ops/attention/v100.py)
 and [FP16 routed expert GEMMs](python/sglang/kernels/ops/moe/sm70_fp16.py).
 Fresh native A/B/B/A passes on 2026-10-10 gave 1,713 → 2,359 prefill tokens/s
 for sparse attention (+37.7%), then 2,357 → 2,548 PP for routed experts (+8.1%).
@@ -247,7 +258,8 @@ reuse, and 262,106-input/32-output generation followed by request reuse.
 
 A split-K FA decode trial reduced complete attention cost by 23–29%, but model
 verification cycles improved only 0–0.54% and sampled generation throughput fell.
-The existing decoder is retained; no experimental decode path is installed.
+Frozen `main` retains its existing decoder. The unified `dev` backend is
+qualified separately below; this historical trial is not a current speed claim.
 
 | Model / layout | MTP steps | Prefill tokens/s | Generation tokens/s |
 | --- | ---: | ---: | ---: |
@@ -343,7 +355,7 @@ rechecked Qwen request-level video configuration. These are functional, not broa
 | --- | --- |
 | Qwen1M YaRN | Ordinary PP2, HC/metadata off, `--max-mamba-cache-size 1`, `SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1`; [official RoPE](https://huggingface.co/Qwen/Qwen3.8-Flash-Next-FP8#best-practices): factor4/original262144/theta10000000/partial.25/interleaved MRoPE[11,11,10]. Native977,312-input/512-output functional run; three separated planted codes retrieved. |
 | Qwen images/video | `language_model_only:false`, HC/metadata off; SDPA vision. Historical image/H264 and request-level4/8/4-frame checks pass; current unquantized-KV qualification is pending. Request `video_config` overrides startup values without shared mutation. |
-| NVIDIA GLM images | PP2/MTP3,262K context allocation,FP16 KV,SDPA vision; omit `--language-only`. Two swapped images, repeated-image reuse and subsequent8K/512-token text inference pass. Vision weights load only on the first PP stage; image embeddings reach last-stage MTP. Full-context image requests and NVIDIA video remain unqualified. |
+| NVIDIA GLM images | PP2/MTP3,262K context allocation,FP16 KV,native D64 FA vision on `dev`. Two swapped images, repeated-image reuse and subsequent8K/512-token text inference pass. Vision weights load only on the first PP stage; image embeddings reach last-stage MTP. Full-context image requests and NVIDIA video remain unqualified. |
 | Qwen long video | Startup `--mm-process-config`:2fps/max64frames; optional size budget `{longest_edge:469762048,shortest_edge:4096}`. One-hour fixture sampled full duration; bounded functional coverage, not general video quality. |
 
 Keep original RoPE for short-context benchmarks. Frame/pixel/encoder/KV budgets are
@@ -352,3 +364,30 @@ separate limits. Before/after upstream updates run
 
 [Apache-2.0](LICENSE). Credit: SGLang, original V100 fork, Marlin/vLLM and model authors;
 NCCL declarations retain their [license](v100_plus/nccl/LICENSE.txt).
+
+### Unified GLM attention on dev
+
+Fresh single-process screens, 2026-10-12: same NVIDIA weights, compact FP8 MTP,
+PP2×TP4/EP1,24/21,262K FP16 KV/state,chunk2048,MTP3,near8K coherent prompts,
+32-token warmups and256 outputs. **Temperature0** for comparison; earlier lab-sampled
+measurements above remain separate. One matching main reference was collected.
+
+| Category | Main PP | Dev PP | Main TG | Dev TG |
+| --- | ---: | ---: | ---: | ---: |
+| Coding |3313|3347|66.2|62.6|
+| Writing |3274|3305|54.6|54.5|
+| Document analysis |3270|3304|57.5|59.1|
+
+Values are tokens/s. Native KDA preparation cuts complete operator time26–29%;
+empty sparse tiles preserve byte-exact results and help the first chunk. This single screen shows about1% higher whole-model prefill, too small
+to establish a robust throughput gain. Generation acceptance differs, so no
+decode speedup is claimed. Main stays frozen. Full-query register staging was rejected: the current
+SM70 MMA layout replicates too much D512 query data and spills at255 registers.
+The next substantial attention work needs streamed Q tiles or a different MMA
+partition, plus a stable KDA chunk formulation.
+
+Qualification includes both pipeline stages, independent FP64 operator references,
+unchanged `rtol=.001, atol=.0002` bounds, live CUDA-graph inputs, state/output
+canaries and Compute Sanitizer. Image changes, request reuse, a262106-input/32-output
+capacity check, TP8 MTP and Qwen FP8 PP2 MTP smoke pass. These establish functional coverage,
+not full-context model quality or a generation speedup.

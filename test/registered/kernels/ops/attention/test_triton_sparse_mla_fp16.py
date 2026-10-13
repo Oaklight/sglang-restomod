@@ -198,9 +198,7 @@ def test_sm70_tensorcore_preserves_support_ragged_tail_and_graph_replay(
     """Gather/softmax MMA tiles must preserve independent sparse query support."""
     if torch.cuda.get_device_capability() != (7, 0):
         pytest.skip("Volta Tensor Core sparse prefill")
-    from sglang.kernels.ops.attention.dsa.sm70_sparse_prefill import (
-        sparse_mla_prefill_sm70,
-    )
+    from sglang.kernels.ops.attention.v100 import sparse_attention_v100
 
     torch.manual_seed(740)
     # Head-strided input, odd query count and non-power-of-two pool4 width.
@@ -210,10 +208,10 @@ def test_sm70_tensorcore_preserves_support_ragged_tail_and_graph_replay(
     indices = torch.full((seq, 1, topk), -1, device="cuda", dtype=torch.int32)
     scale = 256**-0.5
     for _ in range(3):
-        sparse_mla_prefill_sm70(q, kv, indices, scale)
+        sparse_attention_v100(q, kv, indices, scale).unsqueeze(0)
     graph = torch.cuda.CUDAGraph()
     with torch.cuda.graph(graph):
-        actual = sparse_mla_prefill_sm70(q, kv, indices, scale)
+        actual = sparse_attention_v100(q, kv, indices, scale).unsqueeze(0)
     for update in range(3):
         packed.normal_()
         kv.normal_()
@@ -238,7 +236,7 @@ def test_sm70_tensorcore_preserves_support_ragged_tail_and_graph_replay(
             indices[4, 0, 16:32] = -1
         before = indices.clone()
         graph.replay()
-        eager = sparse_mla_prefill_sm70(q, kv, indices, scale)
+        eager = sparse_attention_v100(q, kv, indices, scale).unsqueeze(0)
         expected = torch.zeros_like(q, dtype=torch.float64)
         for row in range(seq):
             ids = indices[row, 0]
@@ -263,9 +261,7 @@ def test_sm70_tensorcore_graph_refreshes_explicit_length_bounds(heads, topk):
     """Shared-tile reuse must retain live bounds, masks and duplicate support."""
     if torch.cuda.get_device_capability() != (7, 0):
         pytest.skip("Volta Tensor Core sparse prefill")
-    from sglang.kernels.ops.attention.dsa.sm70_sparse_prefill import (
-        sparse_mla_prefill_sm70,
-    )
+    from sglang.kernels.ops.attention.v100 import sparse_attention_v100
 
     torch.manual_seed(742)
     q = torch.randn(3, heads, 512, device="cuda", dtype=torch.float16)
@@ -282,7 +278,7 @@ def test_sm70_tensorcore_graph_refreshes_explicit_length_bounds(heads, topk):
     scale = 512**-0.5
 
     def run():
-        return sparse_mla_prefill_sm70(q, kv, indices, scale, lengths)
+        return sparse_attention_v100(q, kv, indices, scale, lengths).unsqueeze(0)
 
     for _ in range(3):
         run()
@@ -341,9 +337,7 @@ def test_sm70_tensorcore_decode_reference_graph_and_workspace(
     """Split partials must retain sparse support, stride and live graph inputs."""
     if torch.cuda.get_device_capability() != (7, 0):
         pytest.skip("Volta Tensor Core sparse decode")
-    from sglang.kernels.ops.attention.dsa.sm70_sparse_decode import (
-        sparse_mla_decode_sm70,
-    )
+    from sglang.kernels.ops.attention.v100 import sparse_attention_v100
 
     torch.manual_seed(743)
     pages = 262273 if topk == 2051 else 257
@@ -358,18 +352,22 @@ def test_sm70_tensorcore_decode_reference_graph_and_workspace(
     lengths = (
         torch.zeros(rows, device="cuda", dtype=torch.int32) if use_lengths else None
     )
-    workspace = [] if owned_workspace else None
+    workspace = {} if owned_workspace else None
     scale = 256**-0.5
 
     def run():
-        return sparse_mla_decode_sm70(q, kv, ids, scale, splits, workspace, lengths)
+        return sparse_attention_v100(
+            q, kv, ids, scale, lengths, workspace, splits
+        ).unsqueeze(0)
 
     for _ in range(3):
         run()
     graph = torch.cuda.CUDAGraph()
     with torch.cuda.graph(graph):
         actual = run()
-    old_buffers = [(lse.data_ptr(), acc.data_ptr()) for lse, acc in (workspace or [])]
+    old_buffers = [
+        (lse.data_ptr(), acc.data_ptr()) for lse, acc in (workspace or {}).values()
+    ]
     for update, count in enumerate((0, 1, 65, 2048, 2051, 0)):
         packed.normal_()
         kv.normal_()
@@ -428,7 +426,7 @@ def test_sm70_tensorcore_decode_reference_graph_and_workspace(
         assert torch.equal(ids, before)
         assert torch.equal(actual.view(torch.uint8), eager.view(torch.uint8))
         assert old_buffers == [
-            (lse.data_ptr(), acc.data_ptr()) for lse, acc in (workspace or [])
+            (lse.data_ptr(), acc.data_ptr()) for lse, acc in (workspace or {}).values()
         ]
 
 
@@ -437,28 +435,28 @@ def test_sm70_tensorcore_decode_rejects_unaligned_storage_views(misaligned):
     """A contiguous view can still violate the vector-load pointer alignment."""
     if torch.cuda.get_device_capability() != (7, 0):
         pytest.skip("Volta Tensor Core sparse decode")
-    from sglang.kernels.ops.attention.dsa.sm70_sparse_decode import (
-        sparse_mla_decode_sm70,
-    )
+    from sglang.kernels.ops.attention.v100 import sparse_attention_v100
 
     q = torch.zeros(1, 8, 512, device="cuda", dtype=torch.float16)
     kv = torch.zeros(65, 512, device="cuda", dtype=torch.float16)
     ids = torch.zeros(1, 1, 67, device="cuda", dtype=torch.int32)
     if misaligned == "q":
         q = torch.empty(q.numel() + 1, device="cuda", dtype=q.dtype)[1:].view_as(q)
+        q.zero_()
     else:
         kv = torch.empty(kv.numel() + 1, device="cuda", dtype=kv.dtype)[1:].view_as(kv)
-    with pytest.raises(ValueError, match="SM70 sparse decode requires"):
-        sparse_mla_decode_sm70(q, kv, ids, 0.0625)
+    if misaligned == "kv":
+        with pytest.raises(RuntimeError, match="alignment"):
+            sparse_attention_v100(q, kv, ids, 0.0625)
+    else:
+        assert torch.count_nonzero(sparse_attention_v100(q, kv, ids, 0.0625)) == 0
 
 
 @pytest.mark.parametrize("heads", [8, 16])
 def test_sm70_sparse_prefill_realigns_contiguous_offset_views(heads):
     if torch.cuda.get_device_capability() != (7, 0):
         pytest.skip("SM70 sparse FA")
-    from sglang.kernels.ops.attention.dsa.sm70_sparse_prefill import (
-        sparse_mla_prefill_sm70,
-    )
+    from sglang.kernels.ops.attention.v100 import sparse_attention_v100
 
     torch.manual_seed(743)
     q = torch.randn(3 * heads * 512 + 1, device="cuda", dtype=torch.float16)[1:]
@@ -472,7 +470,10 @@ def test_sm70_sparse_prefill_realigns_contiguous_offset_views(heads):
     )
     lengths = torch.tensor([3, 3, 3], device="cuda", dtype=torch.int32)
     before = ids.clone()
-    actual = sparse_mla_prefill_sm70(q, kv, ids, 0.0625, lengths)[0]
+    # The shared API realigns Q; the cache must already meet its storage contract.
+    with pytest.raises(RuntimeError, match="alignment"):
+        sparse_attention_v100(q, kv, ids, 0.0625, lengths)
+    actual = sparse_attention_v100(q, kv.clone(), ids, 0.0625, lengths)
     expected = torch.zeros_like(q, dtype=torch.float64)
     for row in (0, 2):
         selected = kv[ids[row][ids[row] >= 0].long()].double()

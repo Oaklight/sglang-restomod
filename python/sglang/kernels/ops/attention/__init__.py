@@ -58,6 +58,22 @@ for _mod, _fn in _TRITON_KERNELS:
     )
 del _mod, _fn
 
+for _name in (
+    "sparse_attention_v100",
+    "dense_attention_v100",
+    "recurrent_attention_v100",
+):
+    register_kernel(
+        KernelSpec(
+            op=f"attention.{_name}",
+            backend=KernelBackend.AOT,
+            target=f"sglang.kernels.ops.attention.v100:{_name}",
+            capabilities={CapabilityRequirement.cuda(min_sm=(7, 0), max_sm=(7, 0))},
+            description="Canonical V100 attention CUDA package; FP16 operands/cache/state.",
+        )
+    )
+del _name
+
 register_kernel(
     KernelSpec(
         op="attention.kda_qwen38_qsa_sm121",
@@ -196,26 +212,6 @@ register_kernel(
         backend=KernelBackend.JIT,
         target="sglang.kernels.ops.attention.dsa.sm70_indexer_decode:mqa_logits_decode_sm70",
         description="Volta MMA batched index scoring; live causal bounds and FP32 head reduction.",
-        capabilities={CapabilityRequirement.cuda(min_sm=(7, 0), max_sm=(7, 0))},
-    )
-)
-
-register_kernel(
-    KernelSpec(
-        op="attention.sparse_mla_decode_sm70",
-        backend=KernelBackend.JIT,
-        target="sglang.kernels.ops.attention.dsa.sm70_sparse_decode:sparse_mla_decode_sm70",
-        description="Volta MMA split-K decode/verification; FP16 latent512 and partials.",
-        capabilities={CapabilityRequirement.cuda(min_sm=(7, 0), max_sm=(7, 0))},
-    )
-)
-
-register_kernel(
-    KernelSpec(
-        op="attention.sparse_mla_prefill_sm70",
-        backend=KernelBackend.AOT,
-        target="sglang.kernels.ops.attention.dsa.sm70_sparse_prefill:sparse_mla_prefill_sm70",
-        description="V100 FA selected FP16 latent512; cooperative MMA and packed shared copies.",
         capabilities={CapabilityRequirement.cuda(min_sm=(7, 0), max_sm=(7, 0))},
     )
 )

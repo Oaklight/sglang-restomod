@@ -32,7 +32,9 @@ class Mm(msgspec.Struct):
         Optional[str],
         Arg(
             help="Set multimodal attention backend.",
+            resolvable=True,
             choices=[
+                "v100_plus",
                 "sdpa",
                 "fa3",
                 "fa4",

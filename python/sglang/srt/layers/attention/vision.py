@@ -1058,7 +1058,7 @@ QKV_BACKEND_IMPL = {
 
 # backends that read q/k/v through explicit per-dim strides, and so accept the
 # strided views of the packed qkv projection output instead of dense copies
-STRIDED_QKV_BACKENDS = frozenset({"fa3", "fa4", "triton_attn", "amx_attn"})
+STRIDED_QKV_BACKENDS = frozenset({"fa3", "fa4", "triton_attn", "amx_attn", "v100_plus"})
 
 
 class VisionAttention(nn.Module):

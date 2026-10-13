@@ -107,6 +107,7 @@ class DraftBackendFactory:
             "cutedsl_mla": self._create_cutedsl_mla_decode_backend,
             "tokenspeed_mla": self._create_tokenspeed_mla_decode_backend,
             "dsa": self._create_dsa_decode_backend,
+            "v100_plus": lambda: ("v100_plus", self._create_dsa_decode_backend()[1]),
             "nsa": self._create_dsa_decode_backend,  # Deprecated alias for "dsa"
             "ascend": self._create_ascend_decode_backend,
             "fa4": self._create_fa4_decode_backend,
@@ -139,6 +140,7 @@ class DraftBackendFactory:
             "cutedsl_mla": self._create_trtllm_mla_prefill_backend,
             "tokenspeed_mla": self._create_tokenspeed_mla_prefill_backend,
             "dsa": self._create_dsa_prefill_backend,
+            "v100_plus": lambda: ("v100_plus", self._create_dsa_prefill_backend()[1]),
             "nsa": self._create_dsa_prefill_backend,  # Deprecated alias for "dsa"
             "ascend": self._create_ascend_prefill_backend,
             "fa4": self._create_fa4_prefill_backend,

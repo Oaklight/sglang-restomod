@@ -319,12 +319,10 @@ class KDAKernelDispatcher:
         lower_bound: Optional[float] = None,
         **kwargs,
     ) -> torch.Tensor:
-        if lower_bound is not None and not isinstance(
-            self.decode_kernel, TritonKDAKernel
-        ):
+        if lower_bound is not None and not self.decode_kernel.supports_safe_gate_decode:
             raise NotImplementedError(
-                f"lower_bound (safe gate) is only supported by TritonKDAKernel; "
-                f"got {self.decode_kernel.__class__.__name__}."
+                f"lower_bound (safe gate) decode is unsupported by "
+                f"{self.decode_kernel.__class__.__name__}."
             )
         return self.decode_kernel.decode(
             q,
@@ -364,12 +362,10 @@ class KDAKernelDispatcher:
         """MTP / speculative-decode verify, routed to ``self.verify_kernel``
         (FlashInfer decode -> recurrent_kda; Triton / CuTe DSL decode -> the Triton
         fused KDA verify)."""
-        if lower_bound is not None and not isinstance(
-            self.verify_kernel, TritonKDAKernel
-        ):
+        if lower_bound is not None and not self.verify_kernel.supports_safe_gate_verify:
             raise NotImplementedError(
-                "lower_bound (safe gate) target verify is only supported by "
-                f"TritonKDAKernel; got {self.verify_kernel.__class__.__name__}."
+                "lower_bound (safe gate) target verify is unsupported by "
+                f"{self.verify_kernel.__class__.__name__}."
             )
         return self.verify_kernel.target_verify(
             A_log=A_log,

@@ -68,16 +68,15 @@ def install():
     norms._flashinfer_rmsnorm_quant_available = False
     QSATokenToKVPool.index_state_dtype = torch.float16
     add_linear_attn_kernel_backend_choices(["tilelang_v100"])
+    from .attention import kda_dispatcher_init, register_profile, resolve_profile
+
+    register_profile()
     from .glm_dsa import (
         SM70IndexerKPool,
         SM70SparseAttnBackend,
         sm70_dsa_cache_default,
-        sm70_dsa_constraints,
         sm70_glm_kv_cache_dtype,
-        sparse_decode,
-        sparse_prefill,
     )
-    from .glm_kda import SM70KDAKernel
     from .glm_mhc import mhc_post, mhc_pre
     from .hc_state import SM70GatedResidualState
     from .mqa import qsa_mqa_prefill
@@ -92,6 +91,16 @@ def install():
             raise ValueError("The enabled SM70 profile requires float16 model weights")
 
     hooks = [
+        (
+            "sglang.srt.arg_groups.overrides._dsa_split_backend_resolution",
+            resolve_profile,
+            HookType.AROUND,
+        ),
+        (
+            "sglang.srt.layers.attention.linear.kda_backend.KDAKernelDispatcher.__init__",
+            kda_dispatcher_init,
+            HookType.AROUND,
+        ),
         (
             "sglang.kernels.ops.moe.fused_moe_triton_kernels.invoke_fused_moe_kernel",
             invoke_fp16_moe,
@@ -235,11 +244,6 @@ def install():
             HookType.AROUND,
         ),
         (
-            "sglang.srt.arg_groups.overrides._check_dsa_backend_constraints",
-            sm70_dsa_constraints,
-            HookType.AROUND,
-        ),
-        (
             "sglang.srt.layers.attention.dsa.dsa_indexer_kpool.IndexerKPool",
             SM70IndexerKPool,
             HookType.REPLACE,
@@ -247,21 +251,6 @@ def install():
         (
             "sglang.srt.layers.attention.dsa_backend.DeepseekSparseAttnBackend",
             SM70SparseAttnBackend,
-            HookType.REPLACE,
-        ),
-        (
-            "sglang.kernels.ops.attention.dsa.triton_sparse_mla.triton_sparse_mla_fwd",
-            sparse_prefill,
-            HookType.AROUND,
-        ),
-        (
-            "sglang.kernels.ops.attention.dsa.triton_sparse_mla_decode.triton_sparse_mla_decode_splitk",
-            sparse_decode,
-            HookType.AROUND,
-        ),
-        (
-            "sglang.srt.layers.attention.linear.kernels.kda_triton.TritonKDAKernel",
-            SM70KDAKernel,
             HookType.REPLACE,
         ),
         (

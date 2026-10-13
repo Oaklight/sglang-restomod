@@ -4,8 +4,6 @@
     "python/sglang/kernels/ops/attention/__init__.py": "Register SM70 sparse indexer and fused K-pool decode operators.",
     "python/sglang/kernels/ops/attention/dsa/sm70_indexer.py": "Volta sparse-attention indexer with FP16 cache support.",
     "python/sglang/kernels/ops/attention/dsa/sm70_pool4_decode.py": "Volta fused K-pool/indexer decode operator.",
-    "python/sglang/kernels/ops/attention/dsa/sm70_sparse_prefill.py": "Standalone V100 FA AOT sparse prefill adapter; selected FP16 latent KV, FP32 reductions, packed halfword operand copies and aligned input preparation.",
-    "python/sglang/kernels/ops/attention/dsa/sm70_sparse_decode.py": "Volta Tensor Core split-K decode and MTP verification, strided FP16 queries, selected physical KV and original FP16 partial/log-space reduction boundaries.",
     "python/sglang/kernels/ops/attention/dsa/triton_sparse_mla.py": "FP16 sparse MLA prefill dispatch and shared SM70 small-row tile policy for target verification.",
     "python/sglang/kernels/ops/attention/dsa/triton_sparse_mla_decode.py": "FP16 sparse MLA decode, bounded temporary storage and shared SM70 small-row tile policy.",
     "python/sglang/kernels/ops/attention/fla/fused_sigmoid_gating_recurrent.py": "Optional FP16 recurrent state rounding at each verification step.",
@@ -33,6 +31,14 @@
     "python/sglang/test/test_utils.py": "Handle CPU-only and UUID CUDA visibility without breaking numeric CI test-port lanes.",
     "python/sglang/kernels/ops/attention/dsa/sm70_indexer_decode.py": "Volta MMA decode/verification index scoring: live causal tile bounds and fused FP32 head reduction, without dense per-head score scratch.",
     "python/sglang/kernels/ops/gemm/sm70_nvfp4_routed.py": "Volta MMA small-row routed NVFP4 GEMM with encoded Marlin scales, K-major decoded weights and unchanged precision boundaries.",
-    "python/sglang/kernels/ops/attention/fla/kda.py": "Measured SM70 small-head long-prefill recurrence value tile; full-K reductions and FP32 working state preserved."
+    "python/sglang/kernels/ops/attention/fla/kda.py": "Measured SM70 small-head long-prefill recurrence value tile; full-K reductions and FP32 working state preserved.",
+    "python/sglang/kernels/ops/attention/v100.py": "Lazy canonical V100 sparse, dense vision and recurrent CUDA adapters; backend-owned bounded scratch.",
+    "python/sglang/srt/arg_groups/fields/exec_.py": "Expose canonical V100 DSA profile and resolvable linear-attention backend fields.",
+    "python/sglang/srt/arg_groups/fields/mm.py": "Expose resolvable V100 vision attention for the unified GLM profile.",
+    "python/sglang/srt/layers/attention/linear/kda_backend.py": "Check safe-gate backend capability independently of Triton implementation identity.",
+    "python/sglang/srt/layers/attention/linear/kernels/kernel_backend.py": "Explicit safe-gate decode/verification capability contract.",
+    "python/sglang/srt/layers/attention/linear/kernels/kda_triton.py": "Declare existing Triton safe-gate capabilities.",
+    "python/sglang/srt/layers/attention/vision.py": "Permit canonical V100 attention to consume packed strided vision Q/K/V.",
+    "python/sglang/srt/speculative/draft_utils.py": "Reuse DSA draft metadata ownership with canonical V100 backend identity."
   }
 }

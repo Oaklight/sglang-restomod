@@ -30,7 +30,7 @@ if [[ -d $marlin/.git && $(git -C "$marlin" rev-parse HEAD) != "$marlin_revision
   echo "Archived previous Marlin checkout at $previous"
 fi
 if [[ ! -d $marlin/.git ]]; then
-  git clone https://github.com/heislera763/marlin_v100.git "$marlin"
+  git clone https://github.com/heislera763/marlin-v100.git "$marlin"
   git -C "$marlin" checkout --detach "$marlin_revision"
 fi
 [[ $(git -C "$marlin" rev-parse HEAD) == "$marlin_revision" ]]
@@ -48,9 +48,9 @@ export CMAKE_ARGS="-DMARLIN_V100_NVFP4_ONLY=ON -DMARLIN_V100_FP8=ON -DCMAKE_CUDA
 build_python="$PWD/.venv/bin/python"
 (cd "$marlin" && "$build_python" setup.py build_ext --inplace)
 
-# Standalone sparse attention; no vLLM runtime or dense FA compilation grid.
+# Canonical SM70 attention package; no vLLM runtime or dense compilation grid.
 fa="$PWD/artifacts/flash-attention-v100"
-fa_revision=afa95deb5919eb012f273c95a0c02684b542bde8
+fa_revision=5bf990ac1f5f57878b0968b9729430414494ba2f
 if [[ -d $fa/.git && $(git -C "$fa" rev-parse HEAD) != "$fa_revision" ]]; then
   previous="$PWD/artifacts/flash-attention-v100-previous-$(date -u +%Y%m%dT%H%M%S)"
   mv "$fa" "$previous"

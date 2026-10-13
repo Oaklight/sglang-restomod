@@ -212,6 +212,7 @@ class ExecKernel(msgspec.Struct):
         Arg(
             help="DSA (DeepSeek Sparse Attention) prefill backend. If not specified, auto-detects based on hardware and kv_cache_dtype.",
             choices=[
+                "v100_plus",
                 "flashmla_sparse",
                 "flashmla_sparse_q8",
                 "flashmla_kv",
@@ -254,6 +255,7 @@ class ExecKernel(msgspec.Struct):
         Arg(
             help="DSA (DeepSeek Sparse Attention) decode backend. If not specified, auto-detects based on hardware and kv_cache_dtype.",
             choices=[
+                "v100_plus",
                 "flashmla_sparse",
                 "flashmla_sparse_q8",
                 "flashmla_kv",
@@ -443,6 +445,7 @@ class ExecMamba(msgspec.Struct):
         Arg(
             help="The default kernel backend for linear attention (GDN/KDA). Can be overridden per-mode by --linear-attn-decode-backend and --linear-attn-prefill-backend. The Helion backend is KDA-only.",
             choices=LINEAR_ATTN_KERNEL_BACKEND_CHOICES,
+            resolvable=True,
         ),
     ] = "triton"
     linear_attn_decode_backend: A[
@@ -450,6 +453,7 @@ class ExecMamba(msgspec.Struct):
         Arg(
             help="Override the kernel backend for linear attention decode. If not set, uses --linear-attn-backend.",
             choices=LINEAR_ATTN_KERNEL_BACKEND_CHOICES,
+            resolvable=True,
         ),
     ] = None
     linear_attn_prefill_backend: A[
@@ -457,6 +461,7 @@ class ExecMamba(msgspec.Struct):
         Arg(
             help="Override the kernel backend for linear attention prefill/extend. If not set, uses --linear-attn-backend; compatible SM100 GDN models may automatically select FlashInfer.",
             choices=LINEAR_ATTN_KERNEL_BACKEND_CHOICES,
+            resolvable=True,
         ),
     ] = None
     linear_attn_verify_backend: A[
@@ -464,6 +469,7 @@ class ExecMamba(msgspec.Struct):
         Arg(
             help="Override the kernel backend for linear attention speculative target-verify. If not set, follows the decode backend (flashinfer decode -> flashinfer verify, otherwise triton). KDA supports triton, nv_cutedsl, and flashinfer verify backends.",
             choices=LINEAR_ATTN_KERNEL_BACKEND_CHOICES + ["nv_cutedsl"],
+            resolvable=True,
         ),
     ] = None
     # ReplaySSM buffered output-only linear-attn decode (GDN + KDA): per-slot

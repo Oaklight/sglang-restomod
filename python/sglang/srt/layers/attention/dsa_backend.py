@@ -335,6 +335,7 @@ def _cat(tensors: list[torch.Tensor], dim: int = -1) -> torch.Tensor:
 
 
 _DSA_IMPL_T: TypeAlias = Literal[
+    "v100_plus",
     "flashmla_sparse",
     "flashmla_sparse_q8",
     "flashmla_kv",
@@ -2206,6 +2207,10 @@ class DeepseekSparseAttnBackend(
                 sm_scale=layer.scaling,
                 v_head_dim=layer.v_head_dim,
             )
+        elif dsa_impl == "v100_plus":
+            return self._forward_v100_sparse(
+                q_nope, q_rope, kv_cache, page_table_1, layer.scaling, layer.v_head_dim
+            )
         elif dsa_impl == "triton":
             from sglang.kernels.ops.attention.dsa.triton_sparse_mla import (
                 triton_sparse_mla_fwd,
@@ -2535,6 +2540,10 @@ class DeepseekSparseAttnBackend(
                 page_table_1=page_table_1,
                 sm_scale=layer.scaling,
                 v_head_dim=layer.v_head_dim,
+            )
+        elif dsa_impl == "v100_plus":
+            return self._forward_v100_sparse(
+                q_nope, q_rope, kv_cache, page_table_1, layer.scaling, layer.v_head_dim
             )
         elif dsa_impl == "triton":
             return self._forward_triton_decode(
