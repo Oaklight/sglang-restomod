@@ -265,8 +265,13 @@ NCCL uses host shared memory. Collective durations include rank arrival waits.
 Decode counters identify underfilled native Volta FP16 GEMMs, not a newer-GPU
 fallback: KDA's fused projection reaches 4.1% occupancy/47% DRAM throughput;
 shared gate/up reaches 6.2%/26% and launches 64 blocks across 80 SMs. Both use FP32
-Tensor Core accumulation. A bounded FP32-partial split-K experiment is the next
-candidate; no dense-kernel change or predicted model gain is included above.
+Tensor Core accumulation. FP32 split-K trials are rejected: shared gate/up's
+finishing pass erases its GEMM saving; KDA's local saving does not improve model
+throughput. TP8 before/KDA-only means are 2,289/78.1→2,286/77.9 prefill/generation;
+the combined trial gives 2,289/75.6. Generation span per verification cycle is
+39.90→40.08 ms for KDA alone. Wider TP4 banks also lose. TP8 FP64/cuBLAS, graph
+refresh, canary, image/reuse and memcheck checks pass at unchanged numerical
+bounds. Existing cuBLAS and the retained results above remain unchanged.
 
 TP8 qualification: both stage-derived real weight banks, gate/up and down,
 changing routes/counts/router/inputs under graph replay, masked/empty experts,
