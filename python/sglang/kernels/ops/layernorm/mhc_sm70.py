@@ -250,3 +250,80 @@ def mhc_pre_sm70(
             enable_fp_fusion=False,
         )
     return post.unsqueeze(-1), comb, layer_input
+
+
+def mhc_pre_shard_sm70(
+    residual,
+    fn,
+    hc_scale,
+    hc_base,
+    rms_eps,
+    hc_pre_eps,
+    hc_sinkhorn_eps,
+    hc_post_mult_value,
+    sinkhorn_repeat,
+    *,
+    rank,
+    size=4,
+):
+    """One token shard of bulk FP16 mHC PRE, padded for equal local gathers.
+
+    Keep the FP32 cuBLAS projection's full matrix shape: a quarter-row GEMM
+    changes its reduction order and can move final Half outputs by two ULPs.
+    Partition the streaming squared-norm, gates, Sinkhorn and residual mixing.
+    The private cast is squared only after projection, never the input residual.
+    Padding has defined zero outputs and is removed by the integration adapter.
+    """
+    assert residual.ndim == 3 and residual.shape[1:] == (4, 4096)
+    assert residual.dtype == torch.float16 and residual.is_contiguous()
+    assert all(
+        t.dtype == torch.float32 and t.is_contiguous() for t in (fn, hc_scale, hc_base)
+    )
+    assert fn.shape == (24, 16384)
+    assert hc_scale.numel() == 3 and hc_base.numel() == 24
+    assert sinkhorn_repeat >= 1 and size == 4 and 0 <= rank < size
+    rows = residual.shape[0]
+    assert rows == 0 or rows >= 1024, "SM70 mHC shards are for bulk prefill only"
+    local_rows = triton.cdiv(rows, size)
+    start, stop = min(rank * local_rows, rows), min((rank + 1) * local_rows, rows)
+    valid_rows = stop - start
+    alloc = torch.zeros if valid_rows < local_rows else torch.empty
+    pre = torch.empty((local_rows, 4), dtype=torch.float32, device=residual.device)
+    post = alloc((local_rows, 4, 1), dtype=torch.float32, device=residual.device)
+    comb = alloc((local_rows, 4, 4), dtype=torch.float32, device=residual.device)
+    layer_input = alloc((local_rows, 4096), dtype=torch.float16, device=residual.device)
+    if valid_rows:
+        x = residual.view(rows, 16384).float()
+        mixes = F.linear(x, fn)[start:stop]
+        rms = torch.rsqrt(x[start:stop].square_().mean(-1) + rms_eps)
+        _finalize_kernel[(valid_rows,)](
+            mixes,
+            rms,
+            hc_scale,
+            hc_base,
+            pre,
+            post,
+            comb,
+            HC=4,
+            PRE_EPS=hc_pre_eps,
+            SINK_EPS=hc_sinkhorn_eps,
+            POST_MULT=hc_post_mult_value,
+            ITERS=sinkhorn_repeat,
+            num_warps=4,
+            enable_fp_fusion=False,
+        )
+        _hc_combine_kernel[(valid_rows, 16)](
+            residual[start:stop],
+            pre,
+            layer_input,
+            4096,
+            16384,
+            4,
+            1,
+            4096,
+            HC=4,
+            BLOCK_H=256,
+            num_warps=4,
+            enable_fp_fusion=False,
+        )
+    return post, comb, layer_input

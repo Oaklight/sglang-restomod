@@ -77,7 +77,7 @@ def install():
         sm70_dsa_cache_default,
         sm70_glm_kv_cache_dtype,
     )
-    from .glm_mhc import mhc_post, mhc_pre
+    from .glm_mhc import mhc_post, mhc_pre, mhc_pre_dispatch
     from .hc_state import SM70GatedResidualState
     from .mqa import qsa_mqa_prefill
     from .ple import (
@@ -222,6 +222,11 @@ def install():
             HookType.AROUND,
         ),
         ("sglang.kernels.ops.layernorm.mhc._mhc_pre_torch", mhc_pre, HookType.AROUND),
+        (
+            "sglang.kernels.ops.layernorm.mhc._mhc_pre_dispatch",
+            mhc_pre_dispatch,
+            HookType.AROUND,
+        ),
         ("sglang.kernels.ops.layernorm.mhc._mhc_post_torch", mhc_post, HookType.AROUND),
         (
             "sglang.srt.layers.quantization.marlin_utils_fp4.prepare_nvfp4_layer_for_marlin",

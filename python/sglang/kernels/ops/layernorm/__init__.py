@@ -16,10 +16,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Optional
 
 from sglang.kernels.fused_op import BaseFusedOp, register_fused_op
+from sglang.kernels.registry import register_kernel
 from sglang.kernels.spec import (
     CapabilityRequirement,
     FormatSignature,
     KernelBackend,
+    KernelSpec,
 )
 
 if TYPE_CHECKING:
@@ -505,9 +507,6 @@ __all__ = [
 ]
 
 
-from sglang.kernels.registry import register_kernel
-from sglang.kernels.spec import KernelSpec
-
 # Triton / TileLang kernels migrated from srt/layers top-level strays
 # (RFC #29630, Phase 2.5); registered for inventory.
 _PHASE25_KERNELS = [
@@ -586,6 +585,14 @@ register_kernel(
         op="layernorm.mhc_pre_sm70",
         backend=KernelBackend.TRITON,
         target="sglang.kernels.ops.layernorm.mhc_sm70:mhc_pre_sm70",
+        capabilities={CapabilityRequirement.cuda(min_sm=(7, 0), max_sm=(7, 0))},
+    )
+)
+register_kernel(
+    KernelSpec(
+        op="layernorm.mhc_pre_shard_sm70",
+        backend=KernelBackend.TRITON,
+        target="sglang.kernels.ops.layernorm.mhc_sm70:mhc_pre_shard_sm70",
         capabilities={CapabilityRequirement.cuda(min_sm=(7, 0), max_sm=(7, 0))},
     )
 )

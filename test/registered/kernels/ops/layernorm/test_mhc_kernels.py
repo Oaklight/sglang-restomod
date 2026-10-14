@@ -12,6 +12,56 @@ from sglang.test.test_utils import CustomTestCase
 register_cuda_ci(est_time=10, stage="base-b", runner_config="1-gpu-large")
 
 
+@pytest.mark.parametrize("tokens", [0, 1024, 1025, 1754, 2048, 2049])
+def test_fp16_mhc_shards_preserve_projection_and_post_layout(tokens):
+    """Changing GEMM row count or swapping channel orientation alters FP16 output.
+
+    Shards must keep full-row projection arithmetic, own each valid row once,
+    define padding, and concatenate to the original PRE/POST operation exactly.
+    """
+    if not torch.cuda.is_available() or torch.version.hip is not None:
+        pytest.skip("CUDA FP16 mHC coverage")
+    from sglang.kernels.ops.layernorm.mhc_post_split_h import mhc_post_split_h
+    from sglang.kernels.ops.layernorm.mhc_sm70 import (
+        mhc_pre_shard_sm70,
+        mhc_pre_sm70,
+    )
+
+    torch.manual_seed(536)
+    storage = torch.full(
+        (tokens + 2, 4, 4096), 13.0, device="cuda", dtype=torch.float16
+    )
+    residual = storage[1 : tokens + 1]
+    residual.copy_(torch.randn_like(residual))
+    saved = storage.clone()
+    fn = torch.randn(24, 16384, device="cuda") * 0.015
+    scale = torch.tensor([0.5, 0.7, 0.9], device="cuda")
+    base = torch.randn(24, device="cuda") * 0.3
+    args = (residual, fn, scale, base, 1e-6, 1e-5, 1e-7, 1.7, 20)
+    expected = mhc_pre_sm70(*args)
+    shards = [mhc_pre_shard_sm70(*args, rank=rank) for rank in range(4)]
+    actual = tuple(
+        torch.cat([part[field] for part in shards])[:tokens] for field in range(3)
+    )
+    for got, want in zip(actual, expected):
+        torch.testing.assert_close(got, want, rtol=0, atol=0)
+    for rank, part in enumerate(shards):
+        local_rows = (tokens + 3) // 4
+        valid = max(0, min(local_rows, tokens - rank * local_rows))
+        for tensor in part:
+            assert tensor.is_contiguous()
+            assert torch.count_nonzero(tensor[valid:]) == 0
+    torch.testing.assert_close(storage, saved, rtol=0, atol=0)
+    if tokens:
+        update = torch.randn_like(actual[2])
+        torch.testing.assert_close(
+            mhc_post_split_h(update, residual, *actual[:2]),
+            mhc_post_split_h(update, residual, *expected[:2]),
+            rtol=0,
+            atol=0,
+        )
+
+
 @pytest.mark.parametrize(
     "tokens,iterations,fuse_projection",
     [

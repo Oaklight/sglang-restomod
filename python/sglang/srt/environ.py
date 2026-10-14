@@ -928,7 +928,7 @@ class Envs:
     SGLANG_OPT_SM70_MHC_POINTWISE = EnvBool(False)
     # GLM gated experts: FP32 accumulation and ordinary Half boundaries.
     SGLANG_OPT_SM70_NVFP4_MOE_GEMV = EnvBool(False)
-    # Partition Qwen FP8 eager-prefill HC tokens within a TP4 NVLink quad.
+    # Partition eager-prefill HC/mHC rows within each four-rank NVLink quad.
     SGLANG_OPT_SM70_HC_PREFILL_SP = EnvBool(False)
     # Capture unpenalized linear rejection sampling for one serialized request.
     SGLANG_OPT_SM70_SPEC_SAMPLE_GRAPH = EnvBool(False)

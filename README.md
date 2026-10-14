@@ -68,7 +68,7 @@ in software; it does not imply native arithmetic in those formats.
 | FP16 routed experts | [Volta MMA GEMM](python/sglang/kernels/ops/moe/sm70_fp16.py), used by NVIDIA GLM's unquantized MTP experts. FP16 inputs/weights/output, FP32 accumulation and router multiply; upstream routing, activation and expert sum retained. Automatically selected by the SM70 plugin; unsupported epilogues fail under strict dispatch. |
 | Qwen QSA/GDN/HC | Direct FP16-cache sparse prefill/decode/verification, masked Tensor Core prefill, SM70 GDN and gated-residual kernels; HC eager prefill partitions within each quad, including TP8. |
 | GLM attention | [Canonical V100 CUDA backend](python/sglang/kernels/ops/attention/v100.py) from the [FA fork](https://github.com/heislera763/flash-attention-v100): selected-key FP16 sparse prefill/decode/MTP, FP32 reductions and FP16 probabilities/partials. Empty tiles skip identity work. The model-native FP8 indexer retains [live-history MMA scoring](python/sglang/kernels/ops/attention/dsa/sm70_indexer_decode.py) and bounded prefill scoring. |
-| GLM KDA / mHC | Native CUDA full-K FP32 recurrence, FP16 state and per-step verification carry. Prefill prepares normalized Q/K and gates once in runner-owned FP32 working vectors. KDA remains scalar FP32 CUDA; Tensor Core chunk formulation is future work. mHC retains its existing SM70 projection/RMS/Sinkhorn paths. |
+| GLM KDA / mHC | Native CUDA full-K FP32 recurrence, FP16 state and per-step verification carry. KDA prefill prepares normalized Q/K and gates once; a Tensor Core chunk formulation is future work. Bulk mHC shares statistics/mixing within each quad, gathering FP16 input and FP32 coefficients. Its learned FP32 projection stays replicated to preserve reduction order. |
 | Storage | Unquantized FP16 attention KV for both models; Qwen FP16 QSA index, GLM's separate model-native FP8 indexer. KV-cache quantization is excluded from the project recipes. FP16 recurrent state is retained. |
 | Cold module loading | Return idle Torch allocator blocks to CUDA when first-use Triton loads have little headroom; leave live tensors unchanged. Skip capture/custom arenas; steady kernel replay has no callback. |
 | Vision / DFlash2 | GLM uses the FA port’s native FP16 D64 varlen attention; Qwen retains SDPA vision. [DFlash2](https://huggingface.co/incoai/GLM-5.3-Flash-DFlash2/tree/bf582e4eacc1810f76656d1811693ff6c6737d2a) FP16/local W8A16 have prior experimental coverage; NVIDIA-target qualification is pending. |
@@ -160,8 +160,8 @@ uv run --no-project .venv/bin/python -m sglang_v100_plus "${common[@]}" \
 | Variation | Change from reference |
 | --- | --- |
 | Qwen TP8 | TP8/EP8; omit PP and unset `SGLANG_PP_LAYER_PARTITION`/metadata flag. Keep HC/chunk4352. |
-| GLM TP8 MTP | TP8/EP1, same262144context/262656pool/.95fraction/chunk2048 and compact draft flags as PP2 below. Export the small-allreduce tuner below. |
-| GLM PP2 MTP | TP4/PP2/EP1; `SGLANG_PP_LAYER_PARTITION=24,21`; context **262144**, total tokens **262656**, fraction **.95**, chunk2048. Add MTP flags below and `--speculative-draft-model-path "$HOME/models/sglang/local-GLM-5.3-Flash-MTP-FP8" --speculative-draft-model-quantization fp8` for the measured compact draft. Images are enabled; vision weights reside on the first PP stage. |
+| GLM TP8 MTP | TP8/EP1, same262144context/262656pool/.95fraction/chunk2048 and compact draft flags as PP2 below. Export the small-allreduce tuner below and `SGLANG_OPT_SM70_HC_PREFILL_SP=1`. |
+| GLM PP2 MTP | TP4/PP2/EP1; `SGLANG_PP_LAYER_PARTITION=24,21`, `SGLANG_OPT_SM70_HC_PREFILL_SP=1`; context **262144**, total tokens **262656**, fraction **.95**, chunk2048. Add MTP flags below and `--speculative-draft-model-path "$HOME/models/sglang/local-GLM-5.3-Flash-MTP-FP8" --speculative-draft-model-quantization fp8`. Images are enabled; vision weights reside on the first PP stage. The table below leaves metadata graphs and the small-allreduce tuner off for PP2. |
 | MTP, either model | Add `--speculative-algorithm EAGLE --speculative-num-steps 3 --speculative-num-draft-tokens 4 --speculative-eagle-topk 1 --speculative-use-rejection-sampling`. PP2 also exports `SGLANG_ENABLE_PP_SPEC=1`. |
 
 Three draft steps plus one target/bonus position; built-in MTP head, one linear branch,
@@ -185,7 +185,7 @@ classical sampled rejection. Lab sampling sources: [Qwen](https://huggingface.co
 
 | Optional flag | Recommendation |
 | --- | --- |
-| `SGLANG_OPT_SM70_HC_PREFILL_SP=1` | Qwen serialized text-only eager prefill, quad-local TP4/TP8/PP2. |
+| `SGLANG_OPT_SM70_HC_PREFILL_SP=1` | Serialized eager prefill within TP4/TP8/PP2 quads. Qwen partitions HC residuals; GLM partitions bulk mHC statistics/mixing at≥1024rows, restoring full input/coefficients before attention and experts. Small rows and decode keep their existing native paths. |
 | `SGLANG_ENABLE_METADATA_GLUE_GRAPH=1` | Qwen PP2 fixed EAGLE1–3 commit copies; GLM fixed chains/full KDA snapshots supported; NVIDIA speed benefit unmeasured, leave off. |
 | `SGLANG_OPT_SM70_SPEC_SAMPLE_GRAPH=1` | Qwen TP8 MTP3; leave off on PP2. Unsupported sampling features use their declared original path. |
 | `SGLANG_OPT_SM70_NVFP4_MOE_GEMV=1` | GLM opt-in supports1–4 rows; prior publisher screen found no aggregate win, NVIDIA benefit unmeasured. Leave off. |
@@ -212,27 +212,39 @@ Current GLM on `dev` (2026-10-13): NVIDIA NVFP4 target, compact FP8 MTP3, vision
 FP16 KV/state, 262,144-token context, 262,656 cache slots, max1, chunk2048, eager
 prefill/full decode graphs and strict dispatch. PP2 uses TP4/EP1 with24/21 layers;
 TP8 uses EP1 and the small-allreduce tuner. **Temperature 0**, 32-token warmups
-and 256 outputs per coherent near8K request. PP2 reuses the matching unchanged-code
-dev control; TP8 includes the latest adapter/graph qualification. Each topology
-candidate gets one fresh process. Profiles are outside timed requests.
+and 256 outputs per coherent near8K request. One matching candidate process per
+topology is compared with recorded controls. Profiles are outside timed requests.
+PP2 metadata graphs/tuner are off; TP8 retains the small tuner.
 
 | Category | PP2 prefill | PP2 generation | TP8 prefill | TP8 generation |
 | --- | ---: | ---: | ---: | ---: |
-| Coding |3,417|69.9|2,229|85.0|
-| Writing |3,365|52.4|2,227|70.3|
-| Document analysis |3,359|61.7|2,224|76.2|
+| Coding |3,487|63.6|2,289|81.9|
+| Writing |3,449|56.5|2,289|73.5|
+| Document analysis |3,438|59.9|2,289|79.0|
+
+| Tokens/s, category means | Before | After quad-local mHC |
+| --- | ---: | ---: |
+| PP2 prefill |3,380|3,458|
+| PP2 generation |61.3|60.0|
+| TP8 prefill |2,227|2,289|
+| TP8 generation |77.2|78.1|
+
+The retained mHC change improves prefill **2.3% for PP2 and 2.8% for TP8**. Whole
+PRE/gather/POST on two stage banks improves about 19% at 2048 rows and remains bit-exact to
+the preceding FP32/FP16 implementation. Quarter-row projection was rejected
+because it changed cuBLAS reduction order; the projection and full residual
+remain replicated. Images, near8K image-bearing input, request reuse and the
+262106-input/32-output PP2 capacity check pass. No decode gain is attributed:
+cycle means 50.60→50.31 ms PP2 and 39.91→39.90 ms TP8; throughput varies with acceptance.
 
 Values are tokens/s. TP8 starts at 2,034 prefill / 67.8 generation (category means).
 Extending the existing M16 routed NVFP4 path to TP8 shortens verification
 cycles 10.5%; matching prefill route groups to the 64-row cached gather raises
 prefill 9.4%. The size-limited tuner adds about 2% shorter cycles. Together the
 screen gives **2,034→2,226 prefill** and **67.8→78.8 generation** (+16.2%).
-The latest adapter/graph fixes leave execution unchanged: category means
-2,227 prefill /77.2 generation, verification cycles39.91 versus39.88ms. The
-generation variation follows acceptance, averaging69.7% versus71.8%; no further
-speed gain is claimed. Temperature0 does not make floating-point execution or
-MTP acceptance identical across processes. PP2 remains faster at prefill; TP8
-uses both quads concurrently during decode.
+Temperature0 does not make floating-point execution or MTP acceptance identical
+across processes. PP2 remains faster at prefill; TP8 uses both quads concurrently
+during decode.
 
 Quad-local attention was tested inside TP8 with attention DP2/TP4 and distributed
 experts. EP2×expert-TP4 produced2,002 prefill /56.9 generation; EP8×expert-TP1
@@ -249,6 +261,12 @@ native KDA and D64 vision. Paired sparse prefill reduces complete operator time
 currently have a small decode budget; routed/dense GEMMs and communication
 account for more time. NVLink carries quad-local communication; cross-quad
 NCCL uses host shared memory. Collective durations include rank arrival waits.
+
+Decode counters identify underfilled native Volta FP16 GEMMs, not a newer-GPU
+fallback: KDA's fused projection reaches 4.1% occupancy/47% DRAM throughput;
+shared gate/up reaches 6.2%/26% and launches 64 blocks across 80 SMs. Both use FP32
+Tensor Core accumulation. A bounded FP32-partial split-K experiment is the next
+candidate; no dense-kernel change or predicted model gain is included above.
 
 TP8 qualification: both stage-derived real weight banks, gate/up and down,
 changing routes/counts/router/inputs under graph replay, masked/empty experts,

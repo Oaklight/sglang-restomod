@@ -1,11 +1,12 @@
-"""Partition replicated Qwen HC work by token within each four-rank group.
+"""Partition replicated HC work by token within each four-rank group.
 
-Attention and experts still receive the complete token matrix. Residual streams
-stay partitioned between HC calls; only the mixed input is gathered per branch.
-PLE's causal convolution and the PP/last-HC outputs retain their full layout.
+Attention and experts still receive the complete token matrix. Qwen residual
+streams stay partitioned between HC calls; PLE and PP/last-HC retain their full
+layout. GLM reuses the partition/gather helpers only for each mHC pre-read;
+its full residual stays replicated between calls.
 """
 
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass
 
@@ -48,6 +49,15 @@ class Partition:
             raise ValueError("HC rows do not match the prefill token partition")
         return x
 
+    def gather(self, x):
+        if x.shape[0] != self.local_rows:
+            raise ValueError("HC gather requires one rank's token partition")
+        group = self.group if self.group is not None else get_parallel().attn_tp_group
+        comm = getattr(group, "pynccl_comm", None)
+        with comm.change_state(enable=True) if comm is not None else nullcontext():
+            gathered = group.all_gather(x.contiguous(), dim=0)
+        return gathered if gathered.shape[0] == self.rows else gathered[: self.rows]
+
 
 def _slot():
     return get_buffer(
@@ -75,15 +85,7 @@ def gather_input(x):
     partition = _slot().get()
     if partition is None:
         return x
-    if x.shape[0] != partition.local_rows:
-        raise ValueError("HC gather requires one rank's token partition")
-    group = partition.group
-    if group is None:
-        group = get_parallel().attn_tp_group
-    gathered = group.all_gather(x.contiguous(), dim=0)
-    return (
-        gathered if gathered.shape[0] == partition.rows else gathered[: partition.rows]
-    )
+    return partition.gather(x)
 
 
 def _quad_group():
@@ -107,7 +109,7 @@ def _quad_group():
             [parent.ranks[:4], parent.ranks[4:]],
             local_rank=world.local_rank,
             backend=dist.get_backend(parent.device_group),
-            use_pynccl=False,
+            use_pynccl=True,
             use_custom_allreduce=False,
             use_mscclpp=False,
             use_torch_symm_mem_allreduce=False,
@@ -117,8 +119,18 @@ def _quad_group():
     return groups[key][2]
 
 
-def _partition(self, input_ids, forward_batch):
+def quad_partition(rows):
+    """Partition replicated rows without changing attention or expert groups."""
     parallel = get_parallel()
+    if parallel.tp_size == parallel.attn_tp_size == 4 and parallel.pp_size in (1, 2):
+        return Partition(rows, parallel.attn_tp_rank)
+    if parallel.tp_size == parallel.attn_tp_size == 8 and parallel.pp_size == 1:
+        group = _quad_group()
+        return Partition(rows, group.rank_in_group, group=group)
+    return None
+
+
+def _partition(self, input_ids, forward_batch):
     if (
         envs.SGLANG_OPT_SM70_HC_PREFILL_SP.get()
         and in_prefill()
@@ -135,14 +147,7 @@ def _partition(self, input_ids, forward_batch):
         and get_exec().features.return_hidden_states_mode is None
     ):
         # HC's FP16 token-row operations are independent of weight format.
-        if parallel.tp_size == parallel.attn_tp_size == 4 and parallel.pp_size in (
-            1,
-            2,
-        ):
-            return Partition(input_ids.shape[0], parallel.attn_tp_rank)
-        if parallel.tp_size == parallel.attn_tp_size == 8 and parallel.pp_size == 1:
-            group = _quad_group()
-            return Partition(input_ids.shape[0], group.rank_in_group, group=group)
+        return quad_partition(input_ids.shape[0])
     return None
 
 

@@ -22,10 +22,170 @@ with patch.object(
     from sglang_v100_plus import prefill
     from sglang_v100_plus.dflash import SM70DFlashResidualNorm, forward_draft
     from sglang_v100_plus.dispatch import prefill_scope
+    from sglang_v100_plus.glm_mhc import mhc_pre_dispatch
     from sglang_v100_plus.hc_state import SM70GatedResidualState
 
 
 class TestV100Prefill(CustomTestCase):
+    def test_glm_mhc_restores_fp32_coefficients_and_trims_padded_tokens(self):
+        """POST needs dense coefficient strides and matching original token IDs.
+
+        Leaving views of the packed 20-float rows, gathering in channel-major
+        order or exposing padded tail tokens silently corrupts the write-back.
+        Normalization must happen once, before restoring the complete input.
+        """
+        rows = 1025
+        local_rows = (rows + 3) // 4
+        residual = (
+            torch.arange(rows, dtype=torch.float16)[:, None, None]
+            .expand(rows, 4, 4096)
+            .contiguous()
+        )
+        saved = residual.clone()
+        channel = torch.arange(4, dtype=torch.float32)
+
+        def operator(value, *_args):
+            token = value[:, 0, 0].float()
+            post = (token[:, None] + channel).unsqueeze(-1)
+            comb = token[:, None, None] + channel[:, None] * 4 + channel[None, :]
+            layer = value[:, 0].clone()
+            return post, comb, layer
+
+        def normalizer(value, _weight, _eps):
+            return value + 0.5
+
+        def shard_operator(value, *_args, rank, size):
+            self.assertIs(value, residual)
+            return operator(prefill.Partition(rows, rank, size).local(value))
+
+        expected_post, expected_comb, expected_layer = operator(residual)
+        expected_layer = normalizer(expected_layer, None, None)
+        expected_coefficients = torch.cat(
+            (expected_post.reshape(rows, 4), expected_comb.reshape(rows, 16)), dim=1
+        )
+
+        class Group:
+            def __init__(self, rank):
+                self.rank = rank
+
+            def all_gather(group, value, dim):
+                self.assertEqual(dim, 0)
+                plan = prefill.Partition(rows, group.rank)
+                local_post, local_comb, local_layer = operator(plan.local(residual))
+                if value.shape[1] == 20:
+                    expected_local = torch.cat(
+                        (
+                            local_post.reshape(local_rows, 4),
+                            local_comb.reshape(local_rows, 16),
+                        ),
+                        dim=1,
+                    )
+                    full = expected_coefficients
+                else:
+                    expected_local = normalizer(local_layer, None, None)
+                    full = expected_layer
+                torch.testing.assert_close(value, expected_local, rtol=0, atol=0)
+                # Poison the gathered padding so a missing trim is detectable.
+                return torch.nn.functional.pad(full, (0, 0, 0, 3), value=123)
+
+        fields = dict(
+            model_path="dummy",
+            tp_size=4,
+            pp_size=2,
+            max_running_requests=1,
+            disable_overlap_schedule=True,
+            disable_prefill_cuda_graph=True,
+        )
+        with (
+            get_context().override_server_args(**fields),
+            envs.SGLANG_OPT_SM70_HC_PREFILL_SP.override(True),
+            prefill_scope(True),
+            patch(
+                "sglang.kernels.ops.layernorm.mhc_sm70.mhc_pre_shard_sm70",
+                shard_operator,
+            ),
+            patch("sgl_kernel.rmsnorm", side_effect=normalizer) as norm,
+        ):
+            for rank in range(4):
+                with get_parallel().override(
+                    attn_tp_size=4, attn_tp_rank=rank, attn_tp_group=Group(rank)
+                ):
+                    post, comb, layer, norm_fused = mhc_pre_dispatch(
+                        lambda *_args: self.fail("quad prefill was bypassed"),
+                        residual,
+                        None,
+                        None,
+                        None,
+                        1e-5,
+                        1e-6,
+                        1e-6,
+                        2.0,
+                        20,
+                        torch.ones(4096, dtype=torch.float16),
+                        1e-5,
+                    )
+                    self.assertTrue(norm_fused)
+                    for got, want in zip(
+                        (post, comb, layer),
+                        (expected_post, expected_comb, expected_layer),
+                    ):
+                        self.assertTrue(got.is_contiguous())
+                        torch.testing.assert_close(got, want, rtol=0, atol=0)
+                    self.assertEqual(post.dtype, torch.float32)
+                    self.assertEqual(comb.dtype, torch.float32)
+                    self.assertEqual(layer.dtype, torch.float16)
+                    self.assertEqual(norm.call_args.args[0].shape, (local_rows, 4096))
+            self.assertEqual(norm.call_count, 4)
+        torch.testing.assert_close(residual, saved, rtol=0, atol=0)
+
+    def test_glm_mhc_verification_and_graphs_do_not_partition(self):
+        """Short prompts, disabled partitions, verification and graphs stay full."""
+        fields = dict(
+            model_path="dummy",
+            tp_size=4,
+            pp_size=2,
+            max_running_requests=1,
+            disable_overlap_schedule=True,
+            disable_prefill_cuda_graph=True,
+        )
+        for changes, prefill_active, rows, enabled in (
+            ({}, False, 1024, True),
+            ({"disable_prefill_cuda_graph": False}, True, 1024, True),
+            ({"max_running_requests": 2}, True, 1024, True),
+            ({"disable_overlap_schedule": False}, True, 1024, True),
+            ({}, True, 1023, True),
+            ({}, True, 1024, False),
+        ):
+            value = torch.empty(rows, 4, 4096, dtype=torch.float16)
+            with envs.SGLANG_OPT_SM70_HC_PREFILL_SP.override(enabled):
+                with (
+                    self.subTest(changes=changes, prefill=prefill_active),
+                    get_context().override_server_args(**(fields | changes)),
+                    prefill_scope(prefill_active),
+                    patch("sglang_v100_plus.prefill.quad_partition") as partition,
+                ):
+                    marker = object()
+                    original = unittest.mock.Mock(return_value=marker)
+                    self.assertIs(
+                        mhc_pre_dispatch(
+                            original,
+                            value,
+                            None,
+                            None,
+                            None,
+                            1e-5,
+                            1e-6,
+                            1e-6,
+                            2.0,
+                            20,
+                            None,
+                            None,
+                        ),
+                        marker,
+                    )
+                    partition.assert_not_called()
+                    original.assert_called_once()
+
     def test_fp8_route_alignment_matches_packing_and_native_tile(self):
         """The native row tile applies to either local expert bank/layout."""
         from sglang_v100_plus.fp8 import fp8_route_block_size
@@ -358,7 +518,7 @@ class TestV100Prefill(CustomTestCase):
                         [list(range(4)), list(range(4, 8))],
                         local_rank=rank,
                         backend="nccl",
-                        use_pynccl=False,
+                        use_pynccl=True,
                         use_custom_allreduce=False,
                         use_mscclpp=False,
                         use_torch_symm_mem_allreduce=False,
