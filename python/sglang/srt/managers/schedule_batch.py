@@ -2991,6 +2991,8 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
     def _mamba_radix_cache_v2_req_prepare_for_extend(
         self,
         req: Req,
+        *,
+        checkpoint_grid: Optional[int] = None,
     ) -> _MambaRadixCacheV2TrackEntry:
         cache_chunk_size = mamba_cache_chunk_size()
         state_chunk_size = getattr(
@@ -2998,7 +3000,13 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
         )
         # Donated depth must land on the actual DCP-widened radix page, while
         # kernel snapshots stay on the cache chunk grid.
-        checkpoint_grid = mamba_checkpoint_grid(self.tree_cache.page_size)
+        native_grid = mamba_checkpoint_grid(self.tree_cache.page_size)
+        if checkpoint_grid is None:
+            checkpoint_grid = native_grid
+        elif checkpoint_grid <= 0 or checkpoint_grid % native_grid:
+            raise ValueError(
+                "Prefill checkpoint grid must be a positive multiple of the cache grid"
+            )
 
         def _force_track_h(i: int) -> int:
             # h is indexed relative to the extend start, so check that offset.

@@ -71,7 +71,7 @@ class TestV100Profile(CustomTestCase):
             {"attn_cp_size": 2},
             {"max_running_requests": 2},
             {"mamba_ssm_dtype": "float32"},
-            {"mamba_radix_cache_strategy": "extra_buffer"},
+            {"mamba_radix_cache_strategy": "extra_buffer_lazy"},
         ):
             with (
                 self.subTest(overrides=overrides),
@@ -82,6 +82,29 @@ class TestV100Profile(CustomTestCase):
             ):
                 with self.assertRaises(ValueError):
                     resolve_profile(Mock(), self._view(**overrides))
+
+    def test_paged_prefix_cache_keeps_every_native_mode(self):
+        """The SM70 profile used to reject the state snapshots radix needs."""
+        from sglang_v100_plus.attention import resolve_profile, supports_cache_snapshots
+
+        model = SimpleNamespace(
+            hf_config=SimpleNamespace(
+                architectures=["Glm5NextForConditionalGeneration"]
+            )
+        )
+        view = self._view(mamba_radix_cache_strategy="extra_buffer")
+        with patch(
+            "sglang.srt.arg_groups.overrides.model_config_of", return_value=model
+        ):
+            self.assertEqual(set(resolve_profile(Mock(), view).values()), {"v100_plus"})
+        view.linear_attn_backend = "v100_plus"
+        self.assertTrue(
+            supports_cache_snapshots(Mock(return_value=False), view, model.hf_config)
+        )
+        model.hf_config.architectures = ["Qwen3NextForCausalLM"]
+        self.assertFalse(
+            supports_cache_snapshots(Mock(return_value=True), view, model.hf_config)
+        )
 
     def test_other_profiles_keep_their_resolution(self):
         from sglang_v100_plus.attention import resolve_profile

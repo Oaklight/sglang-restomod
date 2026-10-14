@@ -87,7 +87,7 @@ Marlin/cuBLAS/Torch CUDA backends remain valid.
 
 The `dev` attention profile uses one selector, `--attention-backend v100_plus`,
 for sparse, KDA and vision. It requires FP16 compute/state, compute-dtype `auto`
-KV, `no_buffer` recurrent caching and one running request. Conflicting backend
+KV, `no_buffer` or `extra_buffer` recurrent caching and one running request. Conflicting backend
 choices fail before loading. Legacy GLM sparse hooks and separate kernel modules
 have been removed; Qwen keeps its existing operators.
 
@@ -152,7 +152,7 @@ uv run --no-project .venv/bin/python -m sglang_v100_plus "${common[@]}" \
   --context-length 12288 --max-total-tokens 12288 \
   --mem-fraction-static 0.92 --chunked-prefill-size 2048 --attention-backend v100_plus \
   --page-size 256 --kv-cache-dtype auto --mamba-radix-cache-strategy no_buffer \
-  --default-chat-template-kwargs '{"clear_thinking":true}' \
+  --default-chat-template-kwargs '{"clear_thinking":false}' \
   --preferred-sampling-params '{"temperature":1.0,"top_p":0.95,"top_k":-1,"min_p":0.0,"presence_penalty":0.0,"frequency_penalty":0.0,"repetition_penalty":1.0}'
 ```
 
@@ -167,6 +167,24 @@ Three draft steps plus one target/bonus position; built-in MTP head, one linear 
 classical sampled rejection. Lab sampling sources: [Qwen](https://huggingface.co/Qwen/Qwen3.8-Flash-Next#api-usage),
 [ZAI](https://huggingface.co/zai-org/GLM-5.3-Flash#footnotes). Use lab sampling for model use; comparative tuning screens use temperature0.
 
+The commands above disable prefix reuse for uncached comparisons. The qualified
+GLM PP2 conversation profile uses these changes:
+
+| Setting | Value / reason |
+| --- | --- |
+| Prefix caching | Remove `--disable-radix-cache`; use `--mamba-radix-cache-strategy extra_buffer`. KV and recurrent checkpoints remain FP16. |
+| State capacity | `--max-mamba-cache-size 4`: bound one active session, tracking and retained-state headroom; keep the524800-token pool. |
+| Checkpoint placement | `--mamba-track-interval 2048`: apply to prefill and decode, matching the prefill chunk. Avoid introducing an interior FP16 rounding boundary when resuming the FP32 prefill recurrence. |
+| Agent history | `clear_thinking=false`; return complete original reasoning blocks for prefix continuity. |
+| Pi client | `maxTokens:131072`, `samplingParams:{"temperature":1.0,"top_p":0.95}`. Output and input share the524288-token window. |
+
+A repeated7898-token/128-output screen reused6144 input tokens: effective
+prefill3142→8584tokens/s and generation63.6→62.2tokens/s. Effective prefill
+counts the reused prefix; it is not an attention-kernel throughput gain.
+Text/tool/image reuse checks pass, including bit-exact fixed first-token
+top32 logprobs. Full greedy MTP sequences can vary; independent uncached
+controls also show numerical variation, so sequence identity is not guaranteed.
+
 ## Settings rationale
 
 | Setting | Reason / established limit |
@@ -174,10 +192,10 @@ classical sampled rejection. Lab sampling sources: [Qwen](https://huggingface.co
 | Explicit backends/dtypes/strict | Supported SM70 implementations and precision policy; strict is required during development, not a speed switch. |
 | TP/PP/EP and device order | Quad-local NVLink/P2P; cross-quad peer access is unavailable here. PP improves prefill but serializes single-request stages; TP8 MTP decodes faster on Qwen. |
 | NCCL PHB/NVLS0, OMP4 | Retained host policy; removing PHB did not help the fresh Qwen screen. NVLS is unavailable on SM70. No universal-optimum claim. |
-| Max1/serialized/radix off | Qualified graph/scratch/state ownership and uncached timing. Overlap/concurrency is separate work. |
+| Max1/serialized/cache policy | Qualified graph/scratch/state ownership. References use radix off for uncached timing; GLM PP2 conversations enable the bounded FP16 prefix cache above. Overlap/concurrency is separate work. |
 | Eager prefill/full decode graphs | Qualified native paths; earlier Qwen prefill-graph screens lost. Chunk4352/2048 are measured per-model choices. |
-| Context and pool capacity | Qwen targets native262144 plus128page/workspace slots. FP16 PP2/MTP3 allocation,262106-input/32-output generation and request reuse pass. GLM PP2/MTP3 reserves524800 slots for524288 context;524250-input/32-output, images and reuse pass. Explicit uncached max1 reservations fail instead of shrinking. |
-| Static fraction/state pool | Qwen uses the automatic fraction estimate. GLM uses.95 for262K TP8 and524K PP2 MTP profiles; .92 is the earlier short reference. The fraction is a profiled allowance, not a physical VRAM allocation or speed setting. With radix off/max1, state slots derive from the request count; a state-memory ratio is redundant. Host PLE saves device memory. |
+| Context and pool capacity | Qwen targets native262144 plus128page/workspace slots. FP16 PP2/MTP3 allocation,262106-input/32-output generation and request reuse pass. GLM PP2/MTP3 reserves524800 slots for524288 context;524250-input/32-output, images and reuse pass. Explicit max1 reservations fail instead of shrinking, including with prefix reuse enabled. |
+| Static fraction/state pool | Qwen uses the automatic fraction estimate. GLM uses.95 for262K TP8 and524K PP2 MTP profiles; .92 is the earlier short reference. The fraction is a profiled allowance, not a physical VRAM allocation or speed setting. With radix off/max1, state slots derive from the request count; cached GLM conversations pin4 slots. A state-memory ratio is redundant in both cases. Host PLE saves device memory. |
 | GLM attention | `--attention-backend v100_plus` selects the shared native sparse engine, KDA and vision; rows1–4 use bounded split work. Conflicting mode overrides fail. |
 | GLM mHC flags0 | Select supported mHC paths; fused DSA top-k retains its default1. |
 | CPU-only tests | `CUDA_VISIBLE_DEVICES=""`; numeric/disabled/UUID port allocation is supported. No999 workaround. |
@@ -286,7 +304,7 @@ attention DP/CP configurations fail at profile resolution. Kernel tests:
 [NVFP4 GEMM](test/registered/kernels/ops/gemm/test_sm70_nvfp4_gemv.py),
 [expert/gather](test/registered/kernels/ops/moe/test_sm70_nvfp4.py),
 [adapter contracts](test/registered/kernels/ops/attention/test_v100_backend.py),
-[canonical attention](https://github.com/heislera763/flash-attention-v100/blob/bcf95352fcb602cd4c43f82fd22f1b1368bed359/csrc/sparse_mla/tests/test_attention.py).
+[canonical attention](https://github.com/heislera763/flash-attention-v100/blob/2345e3da21c6501a26f691b9325ded12ab34e52b/csrc/sparse_mla/tests/test_attention.py).
 Narrower tiles and six unpacking/scheduling prototypes lost their operator
 screens and were rejected without redundant model runs. Large-collective
 protocol overrides also failed the screen.

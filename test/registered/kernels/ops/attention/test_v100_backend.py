@@ -165,6 +165,118 @@ def test_kda_adapter_ignores_unused_snapshot_index_capacity(heads):
         assert torch.all(snapshots[unused_slot] == 123.0)
 
 
+@pytest.mark.parametrize("heads", [8, 16])
+def test_kda_prefill_prefix_checkpoint_preserves_live_recurrence(heads):
+    """A prefix checkpoint must observe FP32 carry without rounding live state.
+
+    Reusing verification snapshots here would round at every prefill token.
+    Changed boundaries and inputs on graph replay must overwrite the checkpoint,
+    while untracked rows and unrelated pool slots remain untouched.
+    """
+    from sglang_v100_plus.attention import V100KDAKernel
+
+    from sglang.kernels.ops.attention.v100 import recurrent_attention_v100
+
+    torch.manual_seed(531)
+    lengths = [257, 17]
+    total = sum(lengths)
+    q, k, v = [
+        torch.randn(total, heads, 128, device="cuda", dtype=torch.float16) * 0.1
+        for _ in range(3)
+    ]
+    gate = torch.full_like(q, -0.1, dtype=torch.float32)
+    beta = torch.full((total, heads), 0.3, device="cuda", dtype=torch.float16)
+    initial = (
+        torch.randn(4, heads, 128, 128, device="cuda", dtype=torch.float16) * 0.025
+    )
+    slots = torch.tensor([2, 0], device="cuda", dtype=torch.int32)
+    offsets = torch.tensor([0, lengths[0], total], device="cuda", dtype=torch.int32)
+    chunks = torch.tensor([1, -1], device="cuda", dtype=torch.int32)
+    state = initial.clone()
+    track = torch.full((2, heads, 128, 128), 123.0, device="cuda", dtype=torch.float32)
+    kernel = V100KDAKernel()
+
+    def run():
+        return kernel.extend(
+            q,
+            k,
+            v,
+            gate,
+            beta,
+            ssm_states=state,
+            cache_indices=slots,
+            query_start_loc=offsets,
+            return_intermediate_states=True,
+            track_state=track,
+            track_chunk_idx=chunks,
+        )
+
+    run()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        out, history = run()
+    assert history is None
+    for replay in range(2):
+        if replay:
+            q.mul_(0.75)
+            k.mul_(0.625)
+            v.add_(0.015)
+            chunks[0] = 3
+        state.copy_(initial)
+        track.fill_(123.0)
+        graph.replay()
+        actual_out, actual_state, actual_track = (
+            out.clone(),
+            state.clone(),
+            track.clone(),
+        )
+        expected_state = initial.clone()
+        expected_out = kernel.extend(
+            q,
+            k,
+            v,
+            gate,
+            beta,
+            ssm_states=expected_state,
+            cache_indices=slots,
+            query_start_loc=offsets,
+        )
+        torch.testing.assert_close(actual_out, expected_out, rtol=0, atol=0)
+        torch.testing.assert_close(actual_state, expected_state, rtol=0, atol=0)
+        steps = int(chunks[0]) * 64
+        prefix_state = initial.clone()
+        recurrent_attention_v100(
+            q[:steps],
+            k[:steps],
+            v[:steps],
+            gate[:steps],
+            beta[:steps],
+            prefix_state,
+            slots[:1],
+            offsets.new_tensor([0, steps]),
+        )
+        torch.testing.assert_close(
+            actual_track[0].half(), prefix_state[2], rtol=0, atol=0
+        )
+        # Independent FP64 recurrence at the selected boundary.
+        carry = initial[2].double()
+        for t in range(steps):
+            qt, kt = q[t].double(), k[t].double()
+            qt *= torch.rsqrt(qt.square().sum(-1, keepdim=True) + 1e-6)
+            kt *= torch.rsqrt(kt.square().sum(-1, keepdim=True) + 1e-6)
+            carry *= gate[t].double().exp().unsqueeze(-2)
+            residual = (v[t].double() - (carry * kt.unsqueeze(-2)).sum(-1)) * beta[
+                t
+            ].double().unsqueeze(-1)
+            carry += residual.unsqueeze(-1) * kt.unsqueeze(-2)
+        torch.testing.assert_close(
+            actual_track[0].double(), carry, rtol=0.001, atol=0.0002
+        )
+        assert torch.all(actual_track[1] == 123.0)
+        torch.testing.assert_close(actual_state[1], initial[1], rtol=0, atol=0)
+        torch.testing.assert_close(actual_state[3], initial[3], rtol=0, atol=0)
+
+
 if __name__ == "__main__":
     import sys
 

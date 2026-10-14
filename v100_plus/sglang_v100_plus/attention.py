@@ -1,5 +1,7 @@
 """Explicit GLM attention profile; CUDA implementations live in the FA fork."""
 
+import math
+
 import torch
 
 from sglang.kernels.ops.attention.v100 import (
@@ -37,13 +39,15 @@ def resolve_profile(original, view):
         raise ValueError(
             "v100_plus attention currently requires max-running-requests=1"
         )
-    if (
-        view.mamba_ssm_dtype != "float16"
-        or view.mamba_radix_cache_strategy != "no_buffer"
+    if view.mamba_ssm_dtype != "float16" or view.mamba_radix_cache_strategy not in (
+        "no_buffer",
+        "extra_buffer",
     ):
         raise ValueError(
-            "v100_plus attention requires FP16 recurrent state and no_buffer radix strategy"
+            "v100_plus attention requires FP16 recurrent state and no_buffer/extra_buffer radix strategy"
         )
+    if getattr(getattr(model, "text_config", model), "mamba_chunk_size", 64) != 64:
+        raise ValueError("v100_plus GLM prefix snapshots require 64-token state chunks")
     fields = {
         "dsa_prefill_backend": "v100_plus",
         "dsa_decode_backend": "v100_plus",
@@ -59,6 +63,29 @@ def resolve_profile(original, view):
         if value not in (default, target):
             raise ValueError(f"v100_plus attention conflicts with {name}={value!r}")
     return fields
+
+
+def supports_cache_snapshots(original, view, hf_config):
+    if view.linear_attn_backend == "v100_plus":
+        return hf_config.architectures[0] == "Glm5NextForConditionalGeneration"
+    return original(view, hf_config)
+
+
+def prepare_cache_checkpoint(original, batch, req):
+    """Keep reuse boundaries on the configured persistence grid in both modes.
+
+    FP16 stores inside a long FP32 prefill recurrence change its continuation.
+    A track interval matching prefill chunks reuses existing store boundaries.
+    """
+    from sglang.srt.runtime_context import get_exec, mamba_checkpoint_grid
+
+    if get_exec().mamba.linear_attn_backend != "v100_plus":
+        return original(batch, req)
+    grid = math.lcm(
+        mamba_checkpoint_grid(batch.tree_cache.page_size),
+        get_exec().mamba.mamba_track_interval,
+    )
+    return original(batch, req, checkpoint_grid=grid)
 
 
 def kda_dispatcher_init(
@@ -79,6 +106,7 @@ def kda_dispatcher_init(
 
 
 class V100KDAKernel(LinearAttnKernelBase):
+    supports_track_state_snapshot = True
     supports_packed_decode = False
     supports_strided_target_verify_qkv = True
     supports_safe_gate_decode = True
@@ -124,14 +152,23 @@ class V100KDAKernel(LinearAttnKernelBase):
         return_intermediate_states=False,
         **kwargs,
     ):
-        if (
-            return_intermediate_states
-            or kwargs.get("track_state") is not None
-            or kwargs.get("is_spec_decode")
-        ):
+        if kwargs.get("is_spec_decode"):
             raise NotImplementedError(
-                "v100_plus KDA prefill requires no_buffer state and ordinary extend"
+                "v100_plus KDA prefill requires ordinary state-committing extend"
             )
+        track_state = kwargs.get("track_state")
+        track_steps = None
+        if track_state is not None:
+            if not return_intermediate_states or kwargs.get("track_chunk_idx") is None:
+                raise ValueError("KDA prefix snapshot requires tracked chunk metadata")
+            chunks = kwargs["track_chunk_idx"]
+            track_steps = torch.where(chunks >= 0, chunks * 64, -1).int()
+        elif return_intermediate_states:
+            sources = kwargs.get("track_ssm_h_src")
+            if sources is not None and sources.numel():
+                raise ValueError(
+                    "Interior KDA prefix snapshot requires its FP32 buffer"
+                )
         q, k, v, g, beta = self._views(q, k, v, g, beta)
         if A_log is not None:
             if lower_bound != -5.0:
@@ -143,7 +180,7 @@ class V100KDAKernel(LinearAttnKernelBase):
         if beta_is_raw:
             # Preserve the baseline prefill's FP16 beta boundary.
             beta = beta.sigmoid()
-        return recurrent_attention_v100(
+        output = recurrent_attention_v100(
             q,
             k,
             v,
@@ -153,7 +190,12 @@ class V100KDAKernel(LinearAttnKernelBase):
             cache_indices.int(),
             query_start_loc,
             prepared=self._prefill_workspace(q),
+            track_state=track_state,
+            track_steps=track_steps,
         ).unsqueeze(0)
+        # Boundary-aligned snapshots use the final FP16 pool state; interior
+        # snapshots use the bounded FP32 buffer, never a full per-token history.
+        return (output, None) if return_intermediate_states else output
 
     def decode(
         self,

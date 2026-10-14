@@ -1,5 +1,6 @@
 {
   "upstream_paths": {
+    "python/sglang/srt/managers/schedule_batch.py": "Permit a backend to coarsen prefill checkpoint placement while preserving default grid validation and tracking logic; SM70 aligns FP16 reuse with prefill persistence boundaries.",
     "python/sglang/kernels/ops/kvcache/cache_ops.py": "Bound sparse top-k backscan loads for non-block-aligned selected widths.",
     "python/sglang/kernels/ops/attention/__init__.py": "Register SM70 sparse indexer and fused K-pool decode operators.",
     "python/sglang/kernels/ops/attention/dsa/sm70_indexer.py": "Volta sparse-attention indexer with FP16 cache support.",
@@ -31,7 +32,7 @@
     "python/sglang/test/test_utils.py": "Handle CPU-only and UUID CUDA visibility without breaking numeric CI test-port lanes.",
     "python/sglang/kernels/ops/attention/dsa/sm70_indexer_decode.py": "Volta MMA decode/verification index scoring: live causal tile bounds and fused FP32 head reduction, without dense per-head score scratch.",
     "python/sglang/kernels/ops/gemm/sm70_nvfp4_routed.py": "Volta MMA small-row routed NVFP4 GEMM with encoded Marlin scales, K-major decoded weights and unchanged precision boundaries.",
-    "python/sglang/kernels/ops/attention/v100.py": "Lazy canonical V100 sparse, dense vision and recurrent CUDA adapters; backend-owned bounded scratch.",
+    "python/sglang/kernels/ops/attention/v100.py": "Lazy canonical V100 sparse, dense vision and recurrent CUDA adapters; backend-owned bounded scratch and nonintrusive prefill prefix checkpoints.",
     "python/sglang/srt/arg_groups/fields/exec_.py": "Expose canonical V100 DSA profile and resolvable linear-attention backend fields.",
     "python/sglang/srt/arg_groups/fields/mm.py": "Expose resolvable V100 vision attention for the unified GLM profile.",
     "python/sglang/srt/layers/attention/linear/kda_backend.py": "Check safe-gate backend capability independently of Triton implementation identity.",

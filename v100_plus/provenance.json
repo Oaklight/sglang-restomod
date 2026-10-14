@@ -118,10 +118,10 @@
   },
   "attention_backend": {
     "repository": "https://github.com/heislera763/flash-attention-v100",
-    "revision": "bcf95352fcb602cd4c43f82fd22f1b1368bed359",
+    "revision": "2345e3da21c6501a26f691b9325ded12ab34e52b",
     "cutlass_revision": "62750a2b75c802660e4894434dc55e839f322277",
-    "package": "sglang-fa-sm70 0.2.1",
+    "package": "sglang-fa-sm70 0.2.2",
     "source": "csrc/sparse_mla",
-    "contracts": "FP16 KV/state, FP32 working accumulation; FP16 snapshot carry during verification; exact paired-query selected-key multiset, capacity-bounded device support preparation, up to 4096 selected columns"
+    "contracts": "FP16 KV/state, FP32 working accumulation; FP16 snapshot carry during verification; nonintrusive bounded FP32 prefill checkpoint copied into FP16 radix state; exact paired-query selected-key multiset, capacity-bounded device support preparation, up to 4096 selected columns"
   }
 }

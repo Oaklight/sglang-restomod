@@ -36,10 +36,17 @@ def _track_seqlen(
     prefix_len: int,
     extend_len: int,
     dcp_enabled: bool = False,
+    checkpoint_grid: int | None = None,
+    v100_policy: bool = False,
 ) -> int | None:
     """Run one extend through the tracker and report the donated depth, or
     None when the extend donates no checkpoint."""
-    server_args = ServerArgs(model_path="dummy", page_size=CHUNK)
+    server_args = ServerArgs(
+        model_path="dummy",
+        page_size=CHUNK,
+        linear_attn_backend="v100_plus" if v100_policy else "triton",
+        mamba_track_interval=2048,
+    )
     # The property would otherwise load the HF config for the dummy model.
     server_args._mamba_cache_chunk_size = CHUNK
     set_global_server_args_for_scheduler(server_args)
@@ -71,7 +78,16 @@ def _track_seqlen(
         "sglang.srt.managers.schedule_batch.get_parallel",
         return_value=SimpleNamespace(dcp_enabled=dcp_enabled),
     ):
-        entry = batch._mamba_radix_cache_v2_req_prepare_for_extend(req)
+        if v100_policy:
+            from sglang_v100_plus.attention import prepare_cache_checkpoint
+
+            entry = prepare_cache_checkpoint(
+                ScheduleBatch._mamba_radix_cache_v2_req_prepare_for_extend, batch, req
+            )
+        else:
+            entry = batch._mamba_radix_cache_v2_req_prepare_for_extend(
+                req, checkpoint_grid=checkpoint_grid
+            )
     if not entry.track_mask:
         assert req.kv.mamba_last_track_seqlen is None
         return None
@@ -79,6 +95,39 @@ def _track_seqlen(
 
 
 class TestMambaCheckpointDepth(unittest.TestCase):
+    def test_coarse_persistence_grid_does_not_donate_an_interior_tail(self):
+        # In a 2048-token FP32 recurrence, storing an interior 1536-token
+        # checkpoint in FP16 adds a rounding point on reuse. Keep the previous
+        # completed chunk's state instead of inventing that boundary.
+        self.assertIsNone(
+            _track_seqlen(
+                tree_page=256, prefix_len=6144, extend_len=1754, checkpoint_grid=2048
+            )
+        )
+        self.assertEqual(
+            _track_seqlen(
+                tree_page=256, prefix_len=4096, extend_len=2048, checkpoint_grid=2048
+            ),
+            6144,
+        )
+        with self.assertRaises(ValueError):
+            _track_seqlen(
+                tree_page=256, prefix_len=0, extend_len=2048, checkpoint_grid=384
+            )
+
+    def test_v100_policy_uses_the_same_grid_for_prefill_and_decode(self):
+        self.assertIsNone(
+            _track_seqlen(
+                tree_page=256, prefix_len=6144, extend_len=1754, v100_policy=True
+            )
+        )
+        self.assertEqual(
+            _track_seqlen(
+                tree_page=256, prefix_len=4096, extend_len=2048, v100_policy=True
+            ),
+            6144,
+        )
+
     def test_widened_tree_page_moves_the_donated_depth_onto_it(self):
         # 4066 tokens past a 16384 prefix: the chunk grid would stop at 20416,
         # which a 256-token page cannot name.

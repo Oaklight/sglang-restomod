@@ -114,6 +114,8 @@ def recurrent_attention_v100(
     write_state=True,
     out=None,
     prepared=None,
+    track_state=None,
+    track_steps=None,
 ):
     """KDA FP32 recurrence; FP16 pool writes and per-step verification carry."""
     if out is None:
@@ -138,5 +140,7 @@ def recurrent_attention_v100(
         raw_beta,
         write_state,
         prepared,
+        track_state,
+        track_steps,
     )
     return out

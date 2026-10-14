@@ -2,11 +2,11 @@
 
 import torch
 
-from sglang.srt.runtime_context import get_exec, get_memory, get_schedule
+from sglang.srt.runtime_context import get_exec, get_schedule
 
 
 def require_single_session_capacity(original, configurator, token_capacity):
-    """An explicit uncached one-session reservation must not silently shrink.
+    """An explicit one-session reservation must not silently shrink.
 
     Run the upstream constraint/PP synchronization first so every stage checks
     the same final capacity. Other serving policies retain upstream semantics.
@@ -14,11 +14,7 @@ def require_single_session_capacity(original, configurator, token_capacity):
     capacity = original(configurator, token_capacity)
     schedule = get_schedule()
     requested = schedule.max_total_tokens
-    if (
-        schedule.max_running_requests == 1
-        and get_memory().disable_radix_cache
-        and requested is not None
-    ):
+    if schedule.max_running_requests == 1 and requested is not None:
         aligned_capacity = capacity // schedule.page_size * schedule.page_size
         if aligned_capacity < requested:
             raise RuntimeError(

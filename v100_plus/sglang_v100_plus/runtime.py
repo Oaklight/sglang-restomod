@@ -68,7 +68,13 @@ def install():
     norms._flashinfer_rmsnorm_quant_available = False
     QSATokenToKVPool.index_state_dtype = torch.float16
     add_linear_attn_kernel_backend_choices(["tilelang_v100"])
-    from .attention import kda_dispatcher_init, register_profile, resolve_profile
+    from .attention import (
+        kda_dispatcher_init,
+        prepare_cache_checkpoint,
+        register_profile,
+        resolve_profile,
+        supports_cache_snapshots,
+    )
 
     register_profile()
     from .glm_dsa import (
@@ -91,6 +97,16 @@ def install():
             raise ValueError("The enabled SM70 profile requires float16 model weights")
 
     hooks = [
+        (
+            "sglang.srt.managers.schedule_batch.ScheduleBatch._mamba_radix_cache_v2_req_prepare_for_extend",
+            prepare_cache_checkpoint,
+            HookType.AROUND,
+        ),
+        (
+            "sglang.srt.arg_groups.overrides.supports_mamba_cache_extra_buffer",
+            supports_cache_snapshots,
+            HookType.AROUND,
+        ),
         (
             "sglang.srt.arg_groups.overrides._dsa_split_backend_resolution",
             resolve_profile,

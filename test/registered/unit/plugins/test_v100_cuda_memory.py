@@ -117,22 +117,26 @@ class TestSingleSessionReservation(CustomTestCase):
         def remote_stage_minimum(tensor, **_):
             tensor.fill_(8192)
 
-        with (
-            get_context().override_server_args(
-                model_path="dummy",
-                max_running_requests=1,
-                disable_radix_cache=True,
-                max_total_tokens=12288,
-                page_size=64,
-                pp_size=2,
-            ),
-            get_parallel().override(world_group=SimpleNamespace(cpu_group=object())),
-            patch("torch.distributed.all_reduce", remote_stage_minimum),
-            self.assertRaisesRegex(RuntimeError, "requires 12288.*only 8192"),
-        ):
-            cuda_memory.require_single_session_capacity(
-                KVCacheConfigurator._apply_token_constraints, None, 65536
-            )
+        for cached in (False, True):
+            with (
+                self.subTest(cached=cached),
+                get_context().override_server_args(
+                    model_path="dummy",
+                    max_running_requests=1,
+                    disable_radix_cache=not cached,
+                    max_total_tokens=12288,
+                    page_size=64,
+                    pp_size=2,
+                ),
+                get_parallel().override(
+                    world_group=SimpleNamespace(cpu_group=object())
+                ),
+                patch("torch.distributed.all_reduce", remote_stage_minimum),
+                self.assertRaisesRegex(RuntimeError, "requires 12288.*only 8192"),
+            ):
+                cuda_memory.require_single_session_capacity(
+                    KVCacheConfigurator._apply_token_constraints, None, 65536
+                )
 
     def test_page_rounding_cannot_hide_a_shortfall(self):
         with (
@@ -154,7 +158,7 @@ class TestSingleSessionReservation(CustomTestCase):
         for requests, cached, requested, budget, expected in (
             (1, False, 262208, 1048576, 262208),
             (2, False, 12288, 8192, 8192),
-            (1, True, 12288, 8192, 8192),
+            (1, True, 262208, 1048576, 262208),
             (1, False, None, 8192, 8192),
         ):
             with (
