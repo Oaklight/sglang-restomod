@@ -48,13 +48,12 @@ execution scratch and required page/sentinel/speculative overhead:
 
 Qwen MTP adds about0.27GiB on its owning stage. Native FP16 PP2/MTP3
 capacity262106input+32output and request reuse pass. GLM's FP16 latent KV is replicated
-across TP ranks. The current GLM PP2/MTP3 session limit is **262,144** with a
-262,656-slot pool (~1.55GiB/GPU including target/draft KV and index storage).
-A 262,106-input/32-output sampled capacity probe and subsequent request reuse passed;
-this is functional capacity coverage, not a long-context quality claim. Larger
-MTP windows and native1M remain unqualified. The launch variations below give the current262K/MTP3 configurations. TP8
-allocates about3.10GiB/GPU for target/draft KV and index storage at this limit;
-full262K request/reuse coverage remains on PP2.
+across TP ranks. The current GLM PP2/MTP3 session limit is **524,288** with a
+524,800-slot pool (~3.10GiB/GPU including target/draft KV and index storage).
+A 524,250-input/32-output capacity probe, subsequent request reuse and an image-bearing
+near8K request pass with FP16 KV/state and compact FP8 MTP. This establishes functional
+capacity, not long-context quality. Native1M remains unqualified. TP8 retains its
+262,144-context/262,656-slot profile (~3.10GiB/GPU); larger TP8 windows are unqualified.
 
 ## SM70 execution
 
@@ -160,8 +159,8 @@ uv run --no-project .venv/bin/python -m sglang_v100_plus "${common[@]}" \
 | Variation | Change from reference |
 | --- | --- |
 | Qwen TP8 | TP8/EP8; omit PP and unset `SGLANG_PP_LAYER_PARTITION`/metadata flag. Keep HC/chunk4352. |
-| GLM TP8 MTP | TP8/EP1, same262144context/262656pool/.95fraction/chunk2048 and compact draft flags as PP2 below. Export the small-allreduce tuner below and `SGLANG_OPT_SM70_HC_PREFILL_SP=1`. |
-| GLM PP2 MTP | TP4/PP2/EP1; `SGLANG_PP_LAYER_PARTITION=24,21`, `SGLANG_OPT_SM70_HC_PREFILL_SP=1`; context **262144**, total tokens **262656**, fraction **.95**, chunk2048. Add MTP flags below and `--speculative-draft-model-path "$HOME/models/sglang/local-GLM-5.3-Flash-MTP-FP8" --speculative-draft-model-quantization fp8`. Images are enabled; vision weights reside on the first PP stage. The table below leaves metadata graphs and the small-allreduce tuner off for PP2. |
+| GLM TP8 MTP | TP8/EP1,262144context/262656pool/.95fraction/chunk2048 and the compact draft flags below. Export the small-allreduce tuner below and `SGLANG_OPT_SM70_HC_PREFILL_SP=1`. |
+| GLM PP2 MTP | TP4/PP2/EP1; `SGLANG_PP_LAYER_PARTITION=24,21`, `SGLANG_OPT_SM70_HC_PREFILL_SP=1`; context **524288**, total tokens **524800**, fraction **.95**, chunk2048. Add MTP flags below and `--speculative-draft-model-path "$HOME/models/sglang/local-GLM-5.3-Flash-MTP-FP8" --speculative-draft-model-quantization fp8`. Images are enabled; vision weights reside on the first PP stage. The table below leaves metadata graphs and the small-allreduce tuner off for PP2. |
 | MTP, either model | Add `--speculative-algorithm EAGLE --speculative-num-steps 3 --speculative-num-draft-tokens 4 --speculative-eagle-topk 1 --speculative-use-rejection-sampling`. PP2 also exports `SGLANG_ENABLE_PP_SPEC=1`. |
 
 Three draft steps plus one target/bonus position; built-in MTP head, one linear branch,
@@ -177,8 +176,8 @@ classical sampled rejection. Lab sampling sources: [Qwen](https://huggingface.co
 | NCCL PHB/NVLS0, OMP4 | Retained host policy; removing PHB did not help the fresh Qwen screen. NVLS is unavailable on SM70. No universal-optimum claim. |
 | Max1/serialized/radix off | Qualified graph/scratch/state ownership and uncached timing. Overlap/concurrency is separate work. |
 | Eager prefill/full decode graphs | Qualified native paths; earlier Qwen prefill-graph screens lost. Chunk4352/2048 are measured per-model choices. |
-| Context and pool capacity | Qwen targets native262144 plus128page/workspace slots. FP16 PP2/MTP3 allocation,262106-input/32-output generation and request reuse pass. Explicit uncached max1 reservations fail instead of shrinking. |
-| Static fraction/state pool | Qwen uses the automatic fraction estimate. GLM uses.95 for the262K TP8/PP2 MTP profiles; .92 is the earlier short reference. The fraction is a profiled allowance, not a physical VRAM allocation or speed setting. With radix off/max1, state slots derive from the request count; a state-memory ratio is redundant. Host PLE saves device memory. |
+| Context and pool capacity | Qwen targets native262144 plus128page/workspace slots. FP16 PP2/MTP3 allocation,262106-input/32-output generation and request reuse pass. GLM PP2/MTP3 reserves524800 slots for524288 context;524250-input/32-output, images and reuse pass. Explicit uncached max1 reservations fail instead of shrinking. |
+| Static fraction/state pool | Qwen uses the automatic fraction estimate. GLM uses.95 for262K TP8 and524K PP2 MTP profiles; .92 is the earlier short reference. The fraction is a profiled allowance, not a physical VRAM allocation or speed setting. With radix off/max1, state slots derive from the request count; a state-memory ratio is redundant. Host PLE saves device memory. |
 | GLM attention | `--attention-backend v100_plus` selects the shared native sparse engine, KDA and vision; rows1–4 use bounded split work. Conflicting mode overrides fail. |
 | GLM mHC flags0 | Select supported mHC paths; fused DSA top-k retains its default1. |
 | CPU-only tests | `CUDA_VISIBLE_DEVICES=""`; numeric/disabled/UUID port allocation is supported. No999 workaround. |
@@ -321,7 +320,7 @@ rechecked Qwen request-level video configuration. These are functional, not broa
 | --- | --- |
 | Qwen1M YaRN | Ordinary PP2, HC/metadata off, `--max-mamba-cache-size 1`, `SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1`; [official RoPE](https://huggingface.co/Qwen/Qwen3.8-Flash-Next-FP8#best-practices): factor4/original262144/theta10000000/partial.25/interleaved MRoPE[11,11,10]. Native977,312-input/512-output functional run; three separated planted codes retrieved. |
 | Qwen images/video | `language_model_only:false`, HC/metadata off; SDPA vision. Historical image/H264 and request-level4/8/4-frame checks pass; current unquantized-KV qualification is pending. Request `video_config` overrides startup values without shared mutation. |
-| NVIDIA GLM images | PP2/MTP3,262K context allocation,FP16 KV,native D64 FA vision on `dev`. Two swapped images, repeated-image reuse and subsequent8K/512-token text inference pass. Vision weights load only on the first PP stage; image embeddings reach last-stage MTP. Full-context image requests and NVIDIA video remain unqualified. |
+| NVIDIA GLM images | PP2/MTP3,524K context allocation,FP16 KV,native D64 FA vision on `dev`. Historical swapped-image/repeated-image checks pass; current524250-input/32-output capacity run is followed successfully by text reuse and an image-bearing near8K request. Vision weights load only on the first PP stage; image embeddings reach last-stage MTP. Full-context image requests and NVIDIA video remain unqualified. |
 | Qwen long video | Startup `--mm-process-config`:2fps/max64frames; optional size budget `{longest_edge:469762048,shortest_edge:4096}`. One-hour fixture sampled full duration; bounded functional coverage, not general video quality. |
 
 Keep original RoPE for short-context benchmarks. Frame/pixel/encoder/KV budgets are
