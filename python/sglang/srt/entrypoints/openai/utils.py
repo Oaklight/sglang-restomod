@@ -1,4 +1,5 @@
 import logging
+import math
 from typing import Any, Literal
 
 import torch
@@ -387,3 +388,34 @@ def convert_embeds_to_tensors(
         )
         for per_input in embeds
     ]
+
+
+def build_timing_metrics(meta_info: dict[str, Any]) -> dict[str, float]:
+    """Expose scheduler prefill time and native decode rate, excluding queue time."""
+    metrics = {}
+    for source, target in (
+        ("prompt_tokens", "prompt_tokens"),
+        ("cached_tokens", "cached_tokens"),
+        ("completion_tokens", "completion_tokens"),
+        ("first_token_latency", "server_ttft"),
+        ("decode_throughput", "stream_decode_throughput"),
+    ):
+        value = meta_info.get(source)
+        if isinstance(value, (int, float)) and math.isfinite(value) and value >= 0:
+            metrics[target] = value
+    start = meta_info.get("forward_entry_time")
+    end = meta_info.get("prefill_finished_time")
+    if (
+        isinstance(start, (int, float))
+        and isinstance(end, (int, float))
+        and math.isfinite(start)
+        and math.isfinite(end)
+        and start > 0
+        and end > start
+    ):
+        duration = end - start
+        metrics["server_prefill_duration"] = duration
+        processed = metrics.get("prompt_tokens", 0) - metrics.get("cached_tokens", 0)
+        if processed > 0:
+            metrics["prefill_throughput"] = processed / duration
+    return metrics

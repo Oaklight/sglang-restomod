@@ -3150,6 +3150,49 @@ class ServingChatTestCase(CustomTestCase):
             "usage chunk dropped after error abort",
         )
 
+    def test_streaming_timing_metrics_exclude_queue_and_preserve_native_decode(self):
+        """The footer used TTFT for prefill and never received its opt-in metrics."""
+
+        async def generate():
+            yield {
+                "text": "answer",
+                "index": 0,
+                "meta_info": {
+                    "id": "chatcmpl-timing",
+                    "prompt_tokens": 120,
+                    "cached_tokens": 20,
+                    "completion_tokens": 10,
+                    "finish_reason": {"type": "stop"},
+                    "forward_entry_time": 100.0,
+                    "prefill_finished_time": 102.0,
+                    "first_token_latency": 12.0,
+                    "decode_throughput": 37.5,
+                },
+            }
+
+        for enabled in (False, True):
+            self.tm.generate_request.return_value = generate()
+            req = ChatCompletionRequest(
+                model="x",
+                messages=[{"role": "user", "content": "Hi"}],
+                stream=True,
+                return_timing_metrics=enabled,
+            )
+            chunks = self._parse_chunks(
+                self._run_chat_stream(GenerateReqInput(text="Hi"), req)
+            )
+            metrics = [
+                c["sglext"]["timing_metrics"]
+                for c in chunks
+                if c.get("sglext", {}).get("timing_metrics")
+            ]
+            if enabled:
+                self.assertEqual(len(metrics), 1)
+                self.assertEqual(metrics[0]["prefill_throughput"], 50.0)
+                self.assertEqual(metrics[0]["stream_decode_throughput"], 37.5)
+            else:
+                self.assertEqual(metrics, [])
+
     def _run_chat_stream(self, adapted_request, req):
         async def run_stream():
             chunks = []

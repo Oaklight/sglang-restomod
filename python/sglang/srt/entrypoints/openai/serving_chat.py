@@ -79,6 +79,7 @@ from sglang.srt.entrypoints.openai.serving_base import OpenAIServingBase
 from sglang.srt.entrypoints.openai.sse_utils import build_sse_content
 from sglang.srt.entrypoints.openai.usage_processor import UsageProcessor
 from sglang.srt.entrypoints.openai.utils import (
+    build_timing_metrics,
     cached_tokens_details_from_dict,
     process_cached_tokens_details_from_ret,
     process_hidden_states_for_response,
@@ -1976,6 +1977,7 @@ class OpenAIServingChat(OpenAIServingBase):
         routed_experts = {}
         cached_tokens_details = {}
         spec_tokens_details = {}
+        timing_metrics = {}
         image_tokens = {}
         audio_tokens = {}
         video_tokens = {}
@@ -2028,6 +2030,11 @@ class OpenAIServingChat(OpenAIServingBase):
 
                 finish_reason = content["meta_info"].get("finish_reason", None)
                 finish_reason_type = finish_reason["type"] if finish_reason else None
+                if request.return_timing_metrics and finish_reason_type not in (
+                    None,
+                    "abort",
+                ):
+                    timing_metrics[index] = build_timing_metrics(content["meta_info"])
 
                 if return_input_ids and input_ids is None:
                     # The prompt is the full, shared prompt (same across choices
@@ -2207,6 +2214,15 @@ class OpenAIServingChat(OpenAIServingBase):
                 ]
 
             sglext_full = SglExt(
+                timing_metrics=(
+                    (
+                        timing_metrics.get(0)
+                        if request.n == 1
+                        else [timing_metrics[i] for i in sorted(timing_metrics)]
+                    )
+                    if timing_metrics
+                    else None
+                ),
                 routed_experts=sglext_routed,
                 cached_tokens_details=sglext_cached_tokens_details,
                 spec_tokens_details=sglext_spec_tokens_details,
@@ -2363,15 +2379,21 @@ class OpenAIServingChat(OpenAIServingBase):
         output_ids = None
         if self._should_return_output_ids(request):
             output_ids = [list(ret_item["output_ids"]) for ret_item in ret]
+        timing_metrics = None
+        if request.return_timing_metrics:
+            values = [build_timing_metrics(item["meta_info"]) for item in ret]
+            timing_metrics = values if request.n > 1 else values[0]
         response_sglext = None
         if (
-            routed_experts
+            timing_metrics
+            or routed_experts
             or cached_tokens_details
             or spec_tokens_details
             or input_ids is not None
             or output_ids is not None
         ):
             response_sglext = SglExt(
+                timing_metrics=timing_metrics,
                 routed_experts=routed_experts,
                 cached_tokens_details=cached_tokens_details,
                 spec_tokens_details=spec_tokens_details,
