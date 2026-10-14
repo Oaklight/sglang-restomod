@@ -81,11 +81,13 @@ from sglang.srt.entrypoints.openai.usage_processor import UsageProcessor
 from sglang.srt.entrypoints.openai.utils import (
     build_timing_metrics,
     cached_tokens_details_from_dict,
+    encode_glm_literal_prompt,
     process_cached_tokens_details_from_ret,
     process_hidden_states_for_response,
     process_hidden_states_from_ret,
     process_routed_experts_from_ret,
     process_spec_tokens_details_from_ret,
+    protect_glm_media_literals,
     should_include_usage,
     spec_tokens_details_from_meta_info,
     token_id_to_bytes,
@@ -1147,6 +1149,13 @@ class OpenAIServingChat(OpenAIServingBase):
         pre-rendered input_ids with single placeholder ids and leave the text
         empty; pass those through rather than re-tokenizing an empty prompt.
         """
+        processor = getattr(self.tokenizer_manager, "mm_processor", None)
+        if (
+            getattr(processor, "prefer_tokenized_input", False) is True
+            and not processed_messages.video_data
+            and not processed_messages.audio_data
+        ):
+            return "input_ids", processed_messages.prompt_ids
         # A lossy text round-trip makes the rendered prompt unusable, so send the
         # ids instead. Only when nothing needs placeholder expansion: with media
         # attached the MM processor still has to tokenize the text itself.
@@ -1821,6 +1830,17 @@ class OpenAIServingChat(OpenAIServingBase):
                 prompt_ids, decoded_prompt = cached
                 return list(prompt_ids), decoded_prompt
 
+        literals = {}
+        if (
+            "Glm5NextForConditionalGeneration"
+            in self.tokenizer_manager.model_config.hf_config.architectures
+        ):
+            messages, tools, literals = protect_glm_media_literals(messages, tools)
+        if literals and self._prompt_text_round_trip_is_lossy:
+            raise ValueError(
+                "GLM literal media tokens require a lossless text renderer"
+            )
+
         if self._prompt_text_round_trip_is_lossy:
             # Re-encoding rendered text would drop the template's control tokens.
             prompt_ids = self.tokenizer_manager.tokenizer.apply_chat_template(
@@ -1840,9 +1860,17 @@ class OpenAIServingChat(OpenAIServingBase):
                 return_dict=False,
                 **template_kwargs,
             )
-            prompt_ids = parallel_prompt_encode(
-                self.tokenizer_manager.tokenizer, rendered_prompt, encode_kwargs
-            )
+            if literals:
+                prompt_ids = encode_glm_literal_prompt(
+                    self.tokenizer_manager.tokenizer,
+                    rendered_prompt,
+                    literals,
+                    encode_kwargs,
+                )
+            else:
+                prompt_ids = parallel_prompt_encode(
+                    self.tokenizer_manager.tokenizer, rendered_prompt, encode_kwargs
+                )
         decoded_prompt = (
             self.tokenizer_manager.tokenizer.decode(prompt_ids)
             if cache_key is not None

@@ -451,6 +451,7 @@ class Glm4vImageProcessor(SGLangBaseProcessor):
     def __init__(self, hf_config, server_args, _processor, *args, **kwargs):
         super().__init__(hf_config, server_args, _processor, *args, **kwargs)
 
+        self.prefer_tokenized_input = hf_config.model_type == "glm5_next"
         # GLM-V specific tokens
         self.IMAGE_TOKEN = "<|image|>"
         self.VIDEO_TOKEN = "<|video|>"
@@ -550,12 +551,30 @@ class Glm4vImageProcessor(SGLangBaseProcessor):
         default_video_config.update(self.video_config)
         video_configs = _merge_glm_video_configs(default_video_config, video_configs)
 
+        original_ids = input_text if isinstance(input_text, list) else None
+        exact_image_prompt = (
+            self.prefer_tokenized_input and original_ids is not None and not video_urls
+        )
+        loader_prompt = input_text
+        if exact_image_prompt and not self._all_mm_data_is_preprocessed(
+            image_data, None, None
+        ):
+            count = original_ids.count(self.IM_TOKEN_ID)
+            if count != len(image_data or []):
+                raise ValueError("GLM image token/data count mismatch")
+            # Only declared image IDs feed the HF media processor. Quoted text is
+            # already encoded as ordinary tokens and must never be reparsed.
+            loader_prompt = (
+                self.IMAGE_START_TOKEN + self.IMAGE_TOKEN + self.IMAGE_END_TOKEN
+            ) * count
         base_output = await self.load_mm_data(
-            prompt=input_text,
+            prompt=loader_prompt,
             image_data=image_data,
             video_data=video_urls,
             multimodal_tokens=self.mm_tokens,
         )
+        if exact_image_prompt:
+            base_output.input_ids = original_ids
 
         video_metadata = None
         videos_kwargs = None
@@ -614,7 +633,7 @@ class Glm4vImageProcessor(SGLangBaseProcessor):
             if metadata and all(item is not None for item in metadata):
                 video_metadata = metadata
 
-        combine_kwargs = {}
+        combine_kwargs = {"require_original_input_ids": exact_image_prompt}
         if video_metadata is not None:
             # Skip HF resampling because these frames already carry their original indices.
             combine_kwargs["video_metadata"] = video_metadata
@@ -638,7 +657,11 @@ class Glm4vImageProcessor(SGLangBaseProcessor):
             hf_config=self.hf_config,
             image_grid_thw=getattr(ret, "image_grid_thw", None),
             video_grid_thw=getattr(ret, "video_grid_thw", None),
-            attention_mask=getattr(ret, "attention_mask", None),
+            attention_mask=(
+                torch.ones_like(input_ids).unsqueeze(0)
+                if exact_image_prompt
+                else getattr(ret, "attention_mask", None)
+            ),
         )
         mrope_positions = mrope_positions.squeeze(1)
 

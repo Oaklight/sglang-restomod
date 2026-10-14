@@ -1,5 +1,7 @@
 import logging
 import math
+import re
+import uuid
 from typing import Any, Literal
 
 import torch
@@ -419,3 +421,44 @@ def build_timing_metrics(meta_info: dict[str, Any]) -> dict[str, float]:
         if processed > 0:
             metrics["prefill_throughput"] = processed / duration
     return metrics
+
+
+def protect_glm_media_literals(messages, tools):
+    """Keep quoted media delimiters distinct from template-generated attachments."""
+    pattern = re.compile(
+        r"<\|(?:image|video|audio|begin_of_image|end_of_image|begin_of_video|end_of_video|begin_of_audio|end_of_audio)\|>"
+    )
+    prefix = "SGLANG_LITERAL_" + uuid.uuid4().hex + "_"
+    literals = {}
+
+    def replace(match):
+        placeholder = prefix + str(len(literals)) + "_END"
+        literals[placeholder] = match.group()
+        return placeholder
+
+    def protect(value):
+        if isinstance(value, str):
+            return pattern.sub(replace, value)
+        if isinstance(value, list):
+            return [protect(item) for item in value]
+        if isinstance(value, dict):
+            return {key: protect(item) for key, item in value.items()}
+        return value
+
+    return protect(messages), protect(tools), literals
+
+
+def encode_glm_literal_prompt(tokenizer, rendered, literals, encode_kwargs):
+    """Preserve literal spelling without producing reserved media token IDs."""
+    parts = re.split("(" + "|".join(map(re.escape, literals)) + ")", rendered)
+    ids = []
+    for part in parts:
+        if part in literals:
+            literal = literals[part]
+            # TokenizersBackend ignores split_special_tokens. Encoding the first
+            # character separately prevents recognition of the complete delimiter.
+            ids.extend(tokenizer.encode(literal[0], **encode_kwargs))
+            ids.extend(tokenizer.encode(literal[1:], **encode_kwargs))
+        elif part:
+            ids.extend(tokenizer.encode(part, **encode_kwargs))
+    return ids

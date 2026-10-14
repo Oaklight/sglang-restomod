@@ -42,7 +42,9 @@
     "python/sglang/srt/model_executor/runner/base_cuda_graph_runner.py": "Keep the smallest legal row-aligned graph bucket when an explicit small batch would otherwise be filtered out; bound it independently of request-pool capacity.",
     "python/sglang/srt/speculative/eagle_draft_extend_cuda_graph_runner.py": "Select graph request buckets using the resolved draft-extension token width, avoiding artificial request padding.",
     "python/sglang/srt/entrypoints/openai/protocol.py": "Opt-in scheduler timing metrics in the final OpenAI chat SSE extension.",
-    "python/sglang/srt/entrypoints/openai/serving_chat.py": "Emit requested per-choice native prefill/decode timing metrics without changing default streams.",
-    "python/sglang/srt/entrypoints/openai/utils.py": "Build finite scheduler prefill and native decode rates without conflating TTFT or queue latency."
+    "python/sglang/srt/entrypoints/openai/serving_chat.py": "Emit requested per-choice native prefill/decode timing metrics without changing default streams. Preserve GLM literal media spelling as ordinary tokens and carry image prompt IDs.",
+    "python/sglang/srt/entrypoints/openai/utils.py": "Build finite scheduler prefill and native decode rates without conflating TTFT or queue latency. Encode quoted GLM media delimiters without attachment IDs.",
+    "python/sglang/srt/multimodal/processors/glm4v.py": "Preserve GLM5 tokenized image prompts and expand only actual attachment IDs, with full-prompt MRoPE.",
+    "python/sglang/srt/multimodal/processors/base_processor.py": "Allow model-required exact image prompt expansion to fail closed instead of retokenizing literals."
   }
 }

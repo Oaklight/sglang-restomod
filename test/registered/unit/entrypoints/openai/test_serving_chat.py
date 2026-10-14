@@ -3150,6 +3150,55 @@ class ServingChatTestCase(CustomTestCase):
             "usage chunk dropped after error abort",
         )
 
+    def test_glm_quoted_media_markers_keep_text_and_only_one_attachment_id(self):
+        """Tool text before/after a real image must not create phantom images."""
+        from tokenizers import Tokenizer, decoders, models, pre_tokenizers
+        from transformers import TokenizersBackend
+
+        backend = Tokenizer(
+            models.BPE(
+                {char: i for i, char in enumerate(pre_tokenizers.ByteLevel.alphabet())},
+                [],
+            )
+        )
+        backend.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
+        backend.decoder = decoders.ByteLevel()
+        markers = ["<|image|>", "<|begin_of_image|>", "<|end_of_image|>"]
+        backend.add_special_tokens(markers)
+        tokenizer = TokenizersBackend(tokenizer_object=backend)
+        tokenizer.chat_template = """{% for m in messages %}{% for c in m.content %}{% if c.type == 'text' %}{{ c.text }}{% else %}<|begin_of_image|><|image|><|end_of_image|>{% endif %}{% endfor %}{% endfor %}"""
+        self.tm.tokenizer = tokenizer
+        self.tm.model_config.hf_config.architectures = [
+            "Glm5NextForConditionalGeneration"
+        ]
+        self.chat._prompt_text_round_trip_is_lossy = False
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Quoted <|begin_of_image|><|image|><|end_of_image|> before.",
+                    },
+                    {"type": "image_url", "image_url": {"url": "unused-test-image"}},
+                    {"type": "text", "text": "Another literal <|image|> afterwards."},
+                ],
+            }
+        ]
+        ids, _ = self.chat._render_and_encode_chat_template(
+            messages,
+            tools=None,
+            template_kwargs={},
+            encode_kwargs={"add_special_tokens": False},
+            use_cache=False,
+        )
+        rendered = tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+        self.assertEqual(tokenizer.decode(ids, skip_special_tokens=False), rendered)
+        for marker in markers:
+            self.assertEqual(ids.count(tokenizer.convert_tokens_to_ids(marker)), 1)
+
     def test_streaming_timing_metrics_exclude_queue_and_preserve_native_decode(self):
         """The footer used TTFT for prefill and never received its opt-in metrics."""
 

@@ -1797,6 +1797,7 @@ class BaseMultimodalProcessor(ABC):
         base_output: BaseMultiModalProcessorOutput,
         mm_tokens: MultimodalSpecialTokens,
         processor=None,
+        require_original_input_ids: bool = False,
         **kwargs,
     ) -> Tuple[List[MultimodalDataItem], torch.Tensor, dict]:
         """
@@ -1851,7 +1852,7 @@ class BaseMultimodalProcessor(ABC):
             # When SGLANG_MM_AVOID_RETOKENIZE is on, keep the user's exact tokens to avoid retokenize drift.
             # Drift happens when Retokenization is not identity: Decode(X) => String => Re-tokenize => Y, X != Y.
             if (
-                envs.SGLANG_MM_AVOID_RETOKENIZE.get()
+                (require_original_input_ids or envs.SGLANG_MM_AVOID_RETOKENIZE.get())
                 and not self.preserve_processor_input_ids
                 and base_output.input_ids is not None
                 and input_ids is not None
@@ -1887,6 +1888,10 @@ class BaseMultimodalProcessor(ABC):
                         dtype=input_ids.dtype,
                     )
                 except Exception as e:
+                    if require_original_input_ids:
+                        raise ValueError(
+                            "Cannot preserve GLM tokenized image prompt"
+                        ) from e
                     logger.warning(
                         f"Due to {e}, falling back to decode+retokenize, which may change prompt length (token drift)."
                     )
