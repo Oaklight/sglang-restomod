@@ -152,7 +152,7 @@ uv run --no-project .venv/bin/python -m sglang_v100_plus "${common[@]}" \
   --context-length 12288 --max-total-tokens 12288 \
   --mem-fraction-static 0.92 --chunked-prefill-size 2048 --attention-backend v100_plus \
   --page-size 256 --kv-cache-dtype auto --mamba-radix-cache-strategy no_buffer \
-  --default-chat-template-kwargs '{"reasoning_effort":"max","clear_thinking":true}' \
+  --default-chat-template-kwargs '{"clear_thinking":true}' \
   --preferred-sampling-params '{"temperature":1.0,"top_p":0.95,"top_k":-1,"min_p":0.0,"presence_penalty":0.0,"frequency_penalty":0.0,"repetition_penalty":1.0}'
 ```
 
