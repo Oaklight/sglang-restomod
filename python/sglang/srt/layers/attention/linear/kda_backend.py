@@ -110,7 +110,11 @@ class KDAKernelDispatcher:
         triton_kernel = TritonKDAKernel()
         self.triton_kernel = triton_kernel
         helion_kernel = None
-        if decode_backend.is_helion() or prefill_backend.is_helion():
+        if (
+            decode_backend.is_helion()
+            or prefill_backend.is_helion()
+            or verify_backend.is_helion()
+        ):
             if not is_cuda():
                 raise ValueError("KDA Helion backend requires CUDA")
             from sglang.srt.layers.attention.linear.kernels.kda_helion import (
@@ -157,9 +161,13 @@ class KDAKernelDispatcher:
         #     the KDA correctness tests assert against.
         #   flashinfer: recurrent_kda (SM100, chain only); reuses the decode kernel
         #     when decode is also flashinfer.
+        #   helion: recurrent chain + tree verify with per-candidate snapshots.
         #   nv_cutedsl: fused Kimi-K3/DSpARK dense verify.
         if verify_backend.is_triton():
             self.verify_kernel = triton_kernel
+        elif verify_backend.is_helion():
+            assert helion_kernel is not None
+            self.verify_kernel = helion_kernel
         elif verify_backend.is_flashinfer():
             if decode_backend.is_flashinfer():
                 self.verify_kernel = self.decode_kernel
@@ -182,7 +190,7 @@ class KDAKernelDispatcher:
         else:
             raise ValueError(
                 f"Unsupported KDA verify backend: {verify_backend}. "
-                "KDA verify supports 'triton', 'nv_cutedsl', or 'flashinfer'."
+                "KDA verify supports 'triton', 'helion', 'nv_cutedsl', or 'flashinfer'."
             )
 
         if prefill_backend.is_triton():
@@ -261,6 +269,9 @@ class KDAKernelDispatcher:
 
         self.supports_packed_decode = getattr(
             self.decode_kernel, "supports_packed_decode", False
+        )
+        self.supports_packed_decode_safe_gate = getattr(
+            self.decode_kernel, "supports_packed_decode_safe_gate", False
         )
 
         rank0_log(
@@ -359,9 +370,7 @@ class KDAKernelDispatcher:
         lower_bound: Optional[float] = None,
         **kwargs,
     ) -> torch.Tensor:
-        """MTP / speculative-decode verify, routed to ``self.verify_kernel``
-        (FlashInfer decode -> recurrent_kda; Triton / CuTe DSL decode -> the Triton
-        fused KDA verify)."""
+        """MTP verification routed to the explicitly selected verify backend."""
         if lower_bound is not None and not self.verify_kernel.supports_safe_gate_verify:
             raise NotImplementedError(
                 "lower_bound (safe gate) target verify is unsupported by "
@@ -387,10 +396,16 @@ class KDAKernelDispatcher:
             **kwargs,
         )
 
-    def effective_extend_kernel(self, lower_bound: Optional[float], num_tokens: int):
-        """The packed FlashInfer prefill kernel requires more than one token."""
+    def effective_extend_kernel(
+        self, lower_bound: Optional[float], num_tokens: int, num_seqs: int = 1
+    ):
+        """The packed FlashInfer prefill kernel requires more than one token per
+        sequence. A batch where every sequence extends exactly one token (e.g.
+        retracted requests re-entering with a fully cached prefix) would fall to
+        FlashInfer's grouped recurrent kernel, which only accepts a bf16 state
+        pool; the KDA pool is fp32, so route those batches to Triton."""
         kernel = self.extend_kernel
-        if self.prefill_backend.is_flashinfer() and num_tokens <= 1:
+        if self.prefill_backend.is_flashinfer() and num_tokens <= max(num_seqs, 1):
             return self.triton_kernel
         if lower_bound is not None and not getattr(kernel, "supports_safe_gate", True):
             kernel = self.triton_kernel
@@ -409,7 +424,9 @@ class KDAKernelDispatcher:
         query_start_loc: torch.Tensor,
         **kwargs,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        kernel = self.effective_extend_kernel(kwargs.get("lower_bound"), q.shape[1])
+        kernel = self.effective_extend_kernel(
+            kwargs.get("lower_bound"), q.shape[1], query_start_loc.numel() - 1
+        )
         return kernel.extend(
             q,
             k,
@@ -927,9 +944,9 @@ class KDAAttnBackend(MambaAttnBackendBase):
         )
 
         # The packed kernel assumes one token per request.
-        if (
-            self.kernel_dispatcher.supports_packed_decode
-            and getattr(layer, "lower_bound", None) is None
+        if self.kernel_dispatcher.supports_packed_decode and (
+            getattr(layer, "lower_bound", None) is None
+            or self.kernel_dispatcher.supports_packed_decode_safe_gate
         ):
             assert qkv.shape[0] == cache_indices.shape[0], (
                 "KDA packed decode requires one token per sequence (T=1): "
@@ -1095,7 +1112,7 @@ class KDAAttnBackend(MambaAttnBackendBase):
             # Check the kernel the dispatcher will actually run (safe-gate
             # reroute included), not just the configured one.
             extend_kernel = self.kernel_dispatcher.effective_extend_kernel(
-                layer.lower_bound, q.shape[1]
+                layer.lower_bound, q.shape[1], query_start_loc.numel() - 1
             )
             assert extend_kernel.supports_track_state_snapshot, (
                 f"{type(extend_kernel).__name__} cannot write the fp32 track "

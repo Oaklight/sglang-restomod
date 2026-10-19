@@ -13,7 +13,7 @@ metadata and cache/state lifetimes. Advance `main` after correctness and model
 throughput checks. Qwen retains its existing backend during this work.
 Clone remotes: `origin` is this fork; `upstream` is `sgl-project/sglang`.
 
-Integrated upstream: [3831e7e0](https://github.com/sgl-project/sglang/commit/3831e7e0918052be50ef38b3ff62154573e213d7), pinned 2026-10-10.
+Integrated upstream: [28448a86](https://github.com/sgl-project/sglang/commit/28448a86d47eb49a3c8e47dca52fe25cc95425d8), integrated 2026-10-19.
 Hardware adapters live in [v100_plus/sglang_v100_plus](v100_plus/sglang_v100_plus),
 reusable operators in [python/sglang/kernels/ops](python/sglang/kernels/ops), and
 build/Marlin changes in [v100_plus/aot](v100_plus/aot) and [v100_plus/patches](v100_plus/patches).
