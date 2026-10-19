@@ -6,8 +6,8 @@ in two NVLink quads**. We rebuilt useful SM70 support from
 effectively rebasing it into an independent fork. Qwen3.8-Flash-Next FP8 and
 GLM-5.3-Flash NVFP4 work is consolidated on `main`.
 
-`main` contains validated changes and stays frozen during the unified GLM
-attention rewrite on `dev`. The [FA fork](https://github.com/heislera763/flash-attention-v100)
+`main` contains validated changes; `dev` is the integration branch. Both include
+the qualified unified GLM attention work. The [FA fork](https://github.com/heislera763/flash-attention-v100)
 owns native CUDA sparse, vision and KDA attention; SGLang owns thin adapters,
 metadata and cache/state lifetimes. Advance `main` after correctness and model
 throughput checks. Qwen retains its existing backend during this work.
@@ -85,7 +85,7 @@ Qwen's current FP32-state path fails an existing operator bound; GLM's passes bu
 showed no speed gain. Strict dispatch rejects unsupported guarded paths; declared
 Marlin/cuBLAS/Torch CUDA backends remain valid.
 
-The `dev` attention profile uses one selector, `--attention-backend v100_plus`,
+The GLM attention profile uses one selector, `--attention-backend v100_plus`,
 for sparse, KDA and vision. It requires FP16 compute/state, compute-dtype `auto`
 KV, `no_buffer` or `extra_buffer` recurrent caching and one running request. Conflicting backend
 choices fail before loading. Legacy GLM sparse hooks and separate kernel modules
