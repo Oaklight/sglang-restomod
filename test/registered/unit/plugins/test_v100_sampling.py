@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import torch
-
+from sglang.srt.environ import envs
 from sglang.srt.runtime_context import get_context
 from sglang.srt.sampling.penaltylib.frequency_penalty import BatchedFrequencyPenalizer
 from sglang.srt.sampling.penaltylib.min_new_tokens import BatchedMinNewTokensPenalizer
@@ -212,6 +212,74 @@ class TestV100Sampling(CustomTestCase):
         self.assertEqual(
             exact_eagle_sample(lambda *_args, **_kwargs: "warmup", None, batch, None),
             "warmup",
+        )
+
+    def test_watermark_options_reach_native_sampling(self):
+        batch = Batch([Request([1])])
+        output = SimpleNamespace(next_token_logits=torch.ones(1, 8))
+        state = object()
+
+        def native(plan, actual_batch, actual_output, mask, **kwargs):
+            return (
+                kwargs["watermark_state"],
+                kwargs["watermark_full_mask"],
+                actual_output,
+            )
+
+        with envs.SGLANG_OPT_SM70_SPEC_SAMPLE_GRAPH.override(False):
+            for idle in (False, True):
+                batch.forward_mode = SimpleNamespace(is_idle=lambda idle=idle: idle)
+                for watermark in (None, state):
+                    with self.subTest(idle=idle, watermark=watermark is not None):
+                        actual = exact_eagle_sample(
+                            native,
+                            None,
+                            batch,
+                            output,
+                            watermark_state=watermark,
+                            watermark_full_mask=False,
+                        )
+                        self.assertIs(actual[0], watermark)
+                        self.assertFalse(actual[1])
+                        self.assertIs(actual[2], output)
+
+    def test_watermark_context_bypasses_sampling_graph_and_preserves_penalties(self):
+        batch, plan, expected = self.check_prefixes(
+            [Request([3, 1], presence_penalty=1.5)],
+            torch.tensor([[1, 4, 4]]),
+            torch.tensor([[100, 101, 102]]),
+        )
+        output = SimpleNamespace(
+            next_token_logits=torch.linspace(-4.0, 4.0, 24).reshape(3, 8)
+        )
+        state = object()
+
+        def native(plan, batch, output, mask, **kwargs):
+            return kwargs["watermark_state"], output.next_token_logits.clone()
+
+        with envs.SGLANG_OPT_SM70_SPEC_SAMPLE_GRAPH.override(True):
+            actual_state, actual_logits = exact_eagle_sample(
+                native,
+                plan,
+                batch,
+                output,
+                watermark_state=state,
+            )
+        self.assertIs(actual_state, state)
+        torch.testing.assert_close(actual_logits, expected, rtol=0, atol=0)
+        # No penalties also must delegate instead of capturing watermark state.
+        batch = Batch([Request([1])])
+        with envs.SGLANG_OPT_SM70_SPEC_SAMPLE_GRAPH.override(True):
+            actual_state, actual_logits = exact_eagle_sample(
+                native,
+                None,
+                batch,
+                output,
+                watermark_state=state,
+            )
+        self.assertIs(actual_state, state)
+        torch.testing.assert_close(
+            actual_logits, output.next_token_logits, rtol=0, atol=0
         )
 
     def test_forward_copy_keeps_exact_penalties_without_the_orchestrator(self):

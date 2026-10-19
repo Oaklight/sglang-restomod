@@ -4,7 +4,6 @@ from weakref import WeakKeyDictionary
 
 import numpy as np
 import torch
-
 from sglang.srt.environ import envs
 from sglang.srt.runtime_context import get_buffer
 
@@ -147,6 +146,9 @@ def exact_eagle_sample(
     logits_output,
     grammar_mask=None,
     uno_target_max_top_k=None,
+    *,
+    watermark_state=None,
+    watermark_full_mask=True,
 ):
     if batch.forward_mode.is_idle():
         return original(
@@ -155,10 +157,13 @@ def exact_eagle_sample(
             logits_output,
             grammar_mask,
             uno_target_max_top_k=uno_target_max_top_k,
+            watermark_state=watermark_state,
+            watermark_full_mask=watermark_full_mask,
         )
     info = batch.sampling_info
     if not prepared_penalties(info):
-        if envs.SGLANG_OPT_SM70_SPEC_SAMPLE_GRAPH.get():
+        # The graph does not capture request-owned watermark state.
+        if watermark_state is None and envs.SGLANG_OPT_SM70_SPEC_SAMPLE_GRAPH.get():
             from .sample_graph import sample_graph
 
             return sample_graph(
@@ -175,6 +180,8 @@ def exact_eagle_sample(
             logits_output,
             grammar_mask,
             uno_target_max_top_k=uno_target_max_top_k,
+            watermark_state=watermark_state,
+            watermark_full_mask=watermark_full_mask,
         )
     apply_linear_penalties(verify_input, batch, logits_output.next_token_logits)
     additive, scaling = info.acc_additive_penalties, info.acc_scaling_penalties
@@ -186,6 +193,8 @@ def exact_eagle_sample(
             logits_output,
             grammar_mask,
             uno_target_max_top_k=uno_target_max_top_k,
+            watermark_state=watermark_state,
+            watermark_full_mask=watermark_full_mask,
         )
     finally:
         info.acc_additive_penalties, info.acc_scaling_penalties = additive, scaling
