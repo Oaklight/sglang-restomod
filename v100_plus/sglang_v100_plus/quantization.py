@@ -195,14 +195,16 @@ def pad_nvfp4_expert_width(layer):
         )
 
 
-def prepare_nvfp4_moe(original, layer):
+def prepare_nvfp4_moe(original, layer, group_size=None):
     from sglang.srt.layers.utils import copy_or_rebind_param
 
     if layer.params_dtype != torch.float16:
         raise ValueError("The V100 NVFP4 profile requires FP16 activations")
     if hasattr(layer, "moe_runner_config") and not layer.moe_runner_config.is_gated:
         raise ValueError("The V100 NVFP4 profile requires gated MoE experts")
-    if hasattr(layer, "quant_config") and layer.quant_config.group_size != 16:
+    if group_size is None:
+        group_size = getattr(getattr(layer, "quant_config", None), "group_size", 16)
+    if group_size != 16:
         raise ValueError("The V100 NVFP4 profile requires group_size=16")
     if any(getattr(layer, name, None) is not None for name in ("w13_bias", "w2_bias")):
         raise ValueError("The V100 NVFP4 profile does not support expert bias")

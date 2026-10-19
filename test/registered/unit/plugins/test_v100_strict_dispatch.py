@@ -144,8 +144,16 @@ class TestV100StrictDispatch(CustomTestCase):
             ),
             (
                 "qsa.indexer_decode",
-                lambda: qsa.mqa_decode(lambda a, *args: a.sum(-1), q, k, None, None, 3),
-                q.sum(-1),
+                lambda: qsa.mqa_decode(
+                    lambda a, *args, min_scored_len=0: a.sum(-1) + min_scored_len,
+                    q,
+                    k,
+                    None,
+                    None,
+                    3,
+                    min_scored_len=2,
+                ),
+                q.sum(-1) + 2,
             ),
             (
                 "qsa.indexer_prefill",

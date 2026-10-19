@@ -264,8 +264,18 @@ def project_qk(original, self, hidden_states, positions, **kwargs):
 
 
 def mqa_decode(
-    original, q, k_cache, page_table, context_lens, max_model_len, score_scale=None
+    original,
+    q,
+    k_cache,
+    page_table,
+    context_lens,
+    max_model_len,
+    score_scale=None,
+    *,
+    min_scored_len=0,
 ):
+    # This is an upstream work-skipping hint. The SM70 kernel computes every
+    # valid score, including rows whose consumer can select every block.
     if (
         q.dtype == torch.float16
         and q.shape[1:] == (4, 128)
@@ -290,4 +300,12 @@ def mqa_decode(
         query=q,
         key_cache=k_cache,
     )
-    return original(q, k_cache, page_table, context_lens, max_model_len, score_scale)
+    return original(
+        q,
+        k_cache,
+        page_table,
+        context_lens,
+        max_model_len,
+        score_scale,
+        min_scored_len=min_scored_len,
+    )

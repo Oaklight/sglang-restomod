@@ -80,7 +80,7 @@ class TestV100NVFP4Padding(CustomTestCase):
                 lambda weight: weight.view(torch.int32).clone(),
             ),
         ):
-            prepare_nvfp4_moe(None, layer)
+            prepare_nvfp4_moe(None, layer, group_size=16)
         for prefix, old in zip(("w13", "w2"), dead):
             self.assertIsNone(old(), "Unused backend Parameter must be released")
             self.assertTrue(
@@ -93,6 +93,15 @@ class TestV100NVFP4Padding(CustomTestCase):
                 getattr(layer, prefix + "_blockscale_swizzled"),
                 getattr(layer, prefix + "_weight_scale"),
             )
+
+    def test_explicit_scale_group_is_validated_before_repacking(self):
+        """Upstream callers can supply the per-layer group outside ModelOpt config."""
+        layer = SimpleNamespace(params_dtype=torch.float16)
+        for explicit, configured in ((32, 16), (None, 32)):
+            layer.quant_config = SimpleNamespace(group_size=configured)
+            with self.subTest(explicit=explicit, configured=configured):
+                with self.assertRaisesRegex(ValueError, "requires group_size=16"):
+                    prepare_nvfp4_moe(None, layer, group_size=explicit)
 
     def test_each_half_and_fc2_scale_group_preserves_checkpoint_bytes(self):
         layer = checkpoint(80)
