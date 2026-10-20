@@ -1,7 +1,8 @@
-"""Block-FP8 weights with FP16 activations on Volta Marlin.
+"""Block/MX FP8 weights with FP16 activations on Volta.
 
 Retain mainline's checkpoint loading and expert mapping. Only finalization
-and execution change; weights stay E4M3 and are unpacked inside the GEMM.
+and execution change. Weights stay packed E4M3; dense prefill unpacks only
+one transient projection, while small-row kernels reconstruct values in flight.
 """
 
 import torch
@@ -10,7 +11,7 @@ from sglang.srt.layers.quantization.base_config import LinearMethodBase
 
 
 class SM70MXFP8LinearMethod(LinearMethodBase):
-    """Serialized E4M3/UE8M0 groups32, reconstructed by the SM70 Marlin iterator.
+    """Serialized E4M3/UE8M0 groups32 in SM70 Marlin's packed layout.
 
     Reuse upstream parameter loading and TP slicing. Keep weights packed FP8;
     convert only the exact power-of-two scales to Marlin's FP16 bias convention.
@@ -192,6 +193,40 @@ def apply_fp8_dense(original, method, layer, x, bias=None):
             "SM70 dense FP8 activation width does not match the checkpoint"
         )
     pn, pk = getattr(layer, "_sm70_fp8_physical_shape", (n, k))
+    # Decode/verification reuse the unpacked values across their small batch.
+    if 1 <= a.shape[0] <= 4:
+        from sglang.kernels.ops.gemm.sm70_fp8_gemv import sm70_fp8_gemv
+        from sglang.srt.runtime_context import get_buffer
+
+        rows = a.shape[0]
+        stream = torch.cuda.current_stream(a.device).cuda_stream
+        partials = get_buffer(
+            f"v100_fp8_dense_gemv:{a.device}:{stream}:{rows}:{n}:{pk}",
+            lambda: torch.empty(
+                (rows, pk // 128, n), device=a.device, dtype=torch.float32
+            ),
+        )
+        output = torch.empty((rows, n), device=a.device, dtype=torch.float16)
+        sm70_fp8_gemv(a, layer.weight, layer.weight_scale_inv, output, partials)
+        if bias is not None:
+            if bias.dtype != torch.float16 or bias.shape != (n,):
+                raise ValueError("SM70 FP8 bias must match the logical FP16 output")
+            output.add_(bias)
+        return output.reshape(*x.shape[:-1], n)
+    if a.shape[0] >= 128:
+        from sglang.kernels.ops.gemm.sm70_fp8_gemm import sm70_fp8_gemm
+
+        # Only one projection is expanded transiently. Keeping this allocation
+        # local lets the allocator reuse it across layers and shapes; there is
+        # no model-sized FP16 weight cache or per-shape persistent scratch.
+        scratch = torch.empty((pk, pn), device=a.device, dtype=torch.float16)
+        output = torch.empty((a.shape[0], n), device=a.device, dtype=torch.float16)
+        sm70_fp8_gemm(a, layer.weight, layer.weight_scale_inv, output, scratch)
+        if bias is not None:
+            if bias.dtype != torch.float16 or bias.shape != (n,):
+                raise ValueError("SM70 FP8 bias must match the logical FP16 output")
+            output.add_(bias)
+        return output.reshape(*x.shape[:-1], n)
     if pk != k:
         a = torch.nn.functional.pad(a, (0, pk - k))
     output = dense_marlin_gemm(

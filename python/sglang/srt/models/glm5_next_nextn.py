@@ -22,6 +22,12 @@ logger = logging.getLogger(__name__)
 
 
 class Glm5NextForConditionalGenerationNextN(DeepseekV3ForCausalLMNextN):
+    # The NextN initializer bypasses DeepseekV2ForCausalLM.__init__, so its
+    # inherited empty mapping cannot resolve quantized fused source modules.
+    packed_modules_mapping = dict(
+        Glm5NextForConditionalGeneration.packed_modules_mapping
+    )
+
     def set_lm_head_from_target(self, target_lm_head):
         # Quantized heads also own scales, layout and execution metadata.
         # Eagle's weight-only sharing cannot preserve that contract.

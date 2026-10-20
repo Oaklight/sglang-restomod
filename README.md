@@ -32,30 +32,32 @@ Pinned benchmark sources; sizes are weight-file totals, **not runtime VRAM**.
 | --- | --- | --- | ---: |
 | [Qwen/Qwen3.8-Flash-Next-FP8](https://huggingface.co/Qwen/Qwen3.8-Flash-Next-FP8/tree/236dfdf285828023ca3bcd3f37366c58a3469b13) | `236dfdf28582` | Official 128×128 block FP8, BF16 exclusions; FP8 PLE/MTP experts | 172.78 GiB |
 | [nvidia/GLM-5.3-Flash-NVFP4](https://huggingface.co/nvidia/GLM-5.3-Flash-NVFP4/tree/da920bb0b9f4a06727223a349e55468e38352348) | `da920bb0b9f4` | ModelOpt abs-max NVFP4; main shared experts remain BF16; FP8 KV metadata | 190.40 GiB |
-| [nvidia/GLM-5.3-Flash-FP4-Local](https://huggingface.co/nvidia/GLM-5.3-Flash-FP4-Local/tree/76348ddb2be2e35e39ecfc00e75dc07703f4f3d5) | `76348ddb2be2` | Experimental QAD mixed precision: CSF32-compressed NVFP4 expert scales, MXFP8 projections, block-FP8 shared experts and quantized vision/MTP | 165.33 GiB |
-| Local GLM MTP FP8 | NVIDIA source above | Routed MTP experts converted to128×128 E4M3 block FP8/W8A16; other tensors unchanged. Used by current GLM measurements; local `PROVENANCE.json` records conversion. | 7.10 GiB |
+| [nvidia/GLM-5.3-Flash-FP4-Local](https://huggingface.co/nvidia/GLM-5.3-Flash-FP4-Local/tree/76348ddb2be2e35e39ecfc00e75dc07703f4f3d5) | `76348ddb2be2` | QAD mixed precision: CSF32-compressed NVFP4 expert scales, MXFP8 projections, block-FP8 shared experts and quantized vision/MTP | 165.33 GiB |
+| Original-checkpoint GLM MTP FP8 | `GLM-5.3-Flash-NVFP4`, `da920bb0b9f4` | Routed MTP experts converted to128×128 E4M3 block FP8/W8A16; other tensors unchanged. Used with the original target only; local `PROVENANCE.json` records conversion. | 7.10 GiB |
 
-The original NVIDIA NVFP4 checkpoint remains the qualified GLM deployment model.
+The original NVIDIA NVFP4 checkpoint remains the saved deployment reference.
 It uses an abs-max recipe, with BF16 shared experts and MTP exclusions; publisher alone does not prove better quality.
 TP8 ordinary/MTP and PP2 ordinary/MTP are the reference layouts. The PP2 MTP
 module-load OOM is handled by cold-load allocator reclamation, without changing
 checkpoint, arithmetic or workload limits. NVIDIA Qwen NVFP4 remains deferred;
 full GLM FP8 routed weights alone need roughly 283.5 GiB.
 
-FP4-Local development is isolated on `dev`. The format reference is
-[Local Inference Lab vLLM's `dev/karmic-kraken`](https://github.com/local-inference-lab/vllm/tree/8244d1c44348ae8a5bbfc9f1b607021652283ed4)
-with [FlashInfer's CSF32 specification](https://github.com/local-inference-lab/flashinfer/blob/35c0f234c4b82f4b3b30258132c8bf718e222309/docs/csf-scale-blocks.md).
-The loader includes indexed nested shards, normalizes ModelOpt block-scale shapes
-and reconstructs exact E4M3 scale bytes once at startup; expert FP4 weights stay
-packed. MXFP8 uses E4M3 weights and exact power-of-two group32 scales with native
-SM70 W8A16 Marlin. The small absorbed MTP MLA and indexer
-weighting projections are reconstructed once to FP16 and FP32 respectively.
-Rebuild Marlin through setup when changing versions.
-QAD changes the underlying model: use this checkpoint's own MTP, not the compact
-MTP derived from the original NVIDIA model. TP8/DCP4 at 786,432 context allocates
-FP16 KV/state and passes near8K text, images and prefix reuse. **MTP remains unqualified: acceptance was zero in the initial
-screen**, despite coherent target output and passing projection tests. Do not
-use this experimental recipe as the deployment profile.
+FP4-Local support is developed on `dev`. Format references are
+[Local Inference Lab vLLM](https://github.com/local-inference-lab/vllm/tree/8244d1c44348ae8a5bbfc9f1b607021652283ed4)
+and [FlashInfer's CSF32 specification](https://github.com/local-inference-lab/flashinfer/blob/35c0f234c4b82f4b3b30258132c8bf718e222309/docs/csf-scale-blocks.md).
+The loader includes indexed nested shards, normalizes block-scale shapes and
+reconstructs exact E4M3 expert-scale bytes once at startup; expert weights stay
+FP4. MXFP8 projections retain packed E4M3/group32 weights. The absorbed MTP MLA
+and indexer weighting projections are reconstructed once to FP16/FP32.
+Rebuild Marlin through setup for group32 support.
+
+QAD changes the weights: **use FP4-Local's own MTP**, never the draft derived
+from the original target. Missing fused-module quantization mappings initially
+loaded two draft projections without their scales, causing zero acceptance;
+this is fixed and covered by loaded-source and FP64 projection checks.
+TP8/DCP4 now allocates native1M context with MTP3, vision and FP16 KV/state;
+near8K text, completed image responses and prefix reuse pass. Full-window
+requests and long-context quality remain unqualified.
 
 At checkpoint-native context, cache estimates below exclude weights, state,
 execution scratch and required page/sentinel/speculative overhead:
@@ -71,24 +73,34 @@ replicated across TP ranks. The current GLM PP2/MTP3 session limit is **524,288*
 524,800-slot pool (~3.10GiB/GPU including target/draft KV and index storage).
 A 524,250-input/32-output capacity probe, subsequent request reuse and an image-bearing
 near8K request pass with FP16 KV/state and compact FP8 MTP. This establishes functional
-capacity, not long-context quality. Native1M remains unqualified. TP8/DCP2 stripes
+capacity, not long-context quality. Full-window1M requests remain unqualified. TP8/DCP2 stripes
 target latent KV across NVLink pairs while retaining replicated native index and
 draft storage: **3.45 GiB/GPU** at 524K versus 6.20 GiB without DCP. The allocator cap is
 262,656 physical rows/rank, exposing 525,312 logical slots. A 524,250-token full
 prefill, near8K generation, prefix reuse and images pass. Generation at the 524K
 boundary remains unverified; ordinary TP8 retains its 262,144-context profile.
 
-Initial FP4-Local screen (2026-10-20): TP8/DCP4, 786,432 configured context,
-FP16 KV/state, chunk2048, MTP3; three coherent near8K prompts,32-token warmups,
-256 measured outputs, temperature 0. The recorded original-model baseline uses
-compact FP8 MTP; Local uses its own NVFP4 MTP. This compares checkpoints, not an
-isolated kernel change. Local MTP acceptance is0%, versus useful speculation in
-the baseline; its generation rate is not a qualified performance result.
+FP4-Local parity screen (2026-10-20): TP8/DCP4, **1,048,576 configured context**,
+FP16 KV/state, chunk2048, MTP3 and vision. Three coherent near8K categories
+(coding, writing, document analysis),32-token warmups,256 measured outputs,
+temperature0; uncached requests. Baseline is the previous serving source
+`4fdaa41d` plus original NVIDIA weights/compact FP8 MTP; candidate uses this
+branch and FP4-Local's own NVFP4 MTP. This compares the complete port, not an
+isolated quantization change or a full-window benchmark.
 
-| Tokens/s, category means | Before: original NVIDIA | After: FP4-Local (experimental) |
+| Tokens/s, category means | Before: original NVIDIA | After: FP4-Local |
 | --- | ---: | ---: |
-| Prefill | 2,120.1 | 1,961.1 |
-| Generation | 78.8 | 18.3 |
+| Prefill | 2,122.4 | 2,109.0 |
+| Generation, MTP3 | 73.7 | 83.7 |
+
+Prefill is within0.6%; generation improves13.6%. Mean draft acceptance is
+71.1%→72.6%. The initial Local port was1,961/18.3TPS with zero acceptance.
+The retained fixes restore fused draft quantization, replace underfilled dense
+FP8 decode launches, unpack each prefill projection once and stop clearing
+reserved index-history scratch on every speculative cycle. Numerical bounds
+remain unchanged; FP64, graph-replay, canary and sanitizer checks pass.
+An ordinary-decoding control also matches the recorded1M coding baseline:
+prefill−0.6%, generation+3.8%.
 
 ## SM70 execution
 
@@ -98,10 +110,10 @@ in software; it does not imply native arithmetic in those formats.
 | Operation | Implementation / contract |
 | --- | --- |
 | NVFP4 GEMMs | [marlin-v100](https://github.com/heislera763/marlin-v100) at `95b1e62e` plus local patches: W4A16, FP16 WMMA with FP32 accumulation; block/global scales remain distinct. TP4/TP8 routed prefill uses64×256×32 cached-row Marlin tiles. Small routed groups at both TP sizes use [Volta MMA](python/sglang/kernels/ops/gemm/sm70_nvfp4_routed.py) with M16 tiles and K-major decoded weights; FP16 dequantization/output and FP32 accumulation/scaling remain. Unused alternate-backend MoE scale buffers alias active scales, saving17.72GiB across GLM's8GPUs. |
-| FP8 GEMMs | Patched Marlin W8A16: 128×128 block scales or MXFP8 E4M3/UE8M0 group32 scales, reconstructed to FP16 for SM70 Tensor Cores. Qwen block-FP8 experts also use small-row vector kernels; EP4/EP8 preserves whole experts. |
+| FP8 GEMMs | W8A16 with block128 or MXFP8 group32 scales. [Small-row GEMV](python/sglang/kernels/ops/gemm/sm70_fp8_gemv.py) reuses reconstructed FP16 weights across1–4 rows and reduces K in FP32. [Prefill](python/sglang/kernels/ops/gemm/sm70_fp8_gemm.py) transiently unpacks one projection for native FP16 Tensor Cores/FP32 accumulation; no persistent FP16 weight bank. Intermediate row counts retain SM70 Marlin. Qwen block-FP8 experts retain their separate small-row kernels; EP4/EP8 preserves whole experts. |
 | FP16 routed experts | [Volta MMA GEMM](python/sglang/kernels/ops/moe/sm70_fp16.py), used by NVIDIA GLM's unquantized MTP experts. FP16 inputs/weights/output, FP32 accumulation and router multiply; upstream routing, activation and expert sum retained. Automatically selected by the SM70 plugin; unsupported epilogues fail under strict dispatch. |
 | Qwen QSA/GDN/HC | Direct FP16-cache sparse prefill/decode/verification, masked Tensor Core prefill, SM70 GDN and gated-residual kernels; HC eager prefill partitions within each quad, including TP8. |
-| GLM attention | [Canonical V100 CUDA backend](python/sglang/kernels/ops/attention/v100.py) from the [FA fork](https://github.com/heislera763/flash-attention-v100): selected-key FP16 sparse prefill/decode/MTP, FP32 reductions and FP16 probabilities/partials. Empty tiles skip identity work. The model-native FP8 indexer retains [live-history MMA scoring](python/sglang/kernels/ops/attention/dsa/sm70_indexer_decode.py) and bounded prefill scoring. |
+| GLM attention | [Canonical V100 CUDA backend](python/sglang/kernels/ops/attention/v100.py) from the [FA fork](https://github.com/heislera763/flash-attention-v100): selected-key FP16 sparse prefill/decode/MTP, FP32 reductions and FP16 probabilities/partials. Empty tiles skip identity work. The model-native FP8 indexer retains [live-history MMA scoring](python/sglang/kernels/ops/attention/dsa/sm70_indexer_decode.py) and bounded prefill scoring. Decode/verification gathers initialize only live counted prefixes; future scratch is masked by the scorer. |
 | GLM KDA / mHC | Native CUDA full-K FP32 recurrence, FP16 state and per-step verification carry. KDA prefill prepares normalized Q/K and gates once; a Tensor Core chunk formulation is future work. Bulk mHC shares statistics/mixing within each quad, gathering FP16 input and FP32 coefficients. Its learned FP32 projection stays replicated to preserve reduction order. |
 | Storage | Unquantized FP16 attention KV for both models; Qwen FP16 QSA index, GLM's separate model-native FP8 indexer. KV-cache quantization is excluded from the project recipes. FP16 recurrent state is retained. |
 | Cold module loading | Return idle Torch allocator blocks to CUDA when first-use Triton loads have little headroom; leave live tensors unchanged. Skip capture/custom arenas; steady kernel replay has no callback. |
@@ -197,11 +209,12 @@ uv run --no-project .venv/bin/python -m sglang_v100_plus "${common[@]}" \
 | GLM TP8 MTP | TP8/EP1,262144context/262656pool/.95fraction/chunk2048 and the compact draft flags below. Export the small-allreduce tuner below and `SGLANG_OPT_SM70_HC_PREFILL_SP=1`. |
 | GLM TP8/DCP2 MTP | Same TP8 MTP recipe, context524288, `--max-total-tokens 262656 --dcp-size 2 --dcp-comm-backend ag_rs --no-dcp-replicate-q-proj`. Physical row capacity is doubled logically by DCP. Use device order1,2,0,3,4,7,5,6 on the reference machine: every adjacent DCP pair has direct NV2. Requires FA0.2.3; target FP16 latent KV is striped, native index and draft storage remain replicated. Full-window qualification pending. |
 | GLM TP8/DCP4 MTP | Optional memory profile: DCP2 recipe with `--dcp-size 4 --max-total-tokens 131584`, exposing526336 logical slots. Same context/chunk/MTP settings and device order, with each four-rank group inside one NVLink quad. Requires FA0.2.4/native H32 or newer. For context786432, use `--max-total-tokens 197120` (788480 logical slots,3.11GiB/GPU KV/index storage). Startup, near8K generation, images and prefix reuse pass at both sizes; full-window generation is unqualified. DCP2 remains a comparison profile; the selected hosting profile is DCP4/786432. |
+| GLM FP4-Local TP8/DCP4 MTP | Select FP4-Local for both target/draft paths and `modelopt_mixed` for both quantization options. Use MTP3 flags below, context1048576 and physical `--max-total-tokens 262656` (1050624 logical slots). Same DCP4 topology, FP16 KV/state, images and prefix settings. Full-window qualification remains pending. |
 | GLM TP8/DCP8 MTP | Capacity profile: DCP2 recipe with `--dcp-size 8 --max-total-tokens 66048`, exposing528384 logical slots at524K context. Requires FA0.2.5/native H64. Its attention group spans both quads; only target FP16 latent KV is striped, while draft/index storage stays replicated. Full-window capacity is unqualified. |
 | GLM PP2 MTP | TP4/PP2/EP1; `SGLANG_PP_LAYER_PARTITION=24,21`, `SGLANG_OPT_SM70_HC_PREFILL_SP=1`; context **524288**, total tokens **524800**, fraction **.95**, chunk2048. Add MTP flags below. Images are enabled; vision weights reside on the first PP stage. The table below leaves metadata graphs and the small-allreduce tuner off for PP2. |
 | MTP, either model | Add `--speculative-algorithm EAGLE --speculative-num-steps 3 --speculative-num-draft-tokens 4 --speculative-eagle-topk 1 --speculative-use-rejection-sampling`. PP2 also exports `SGLANG_ENABLE_PP_SPEC=1`. |
 
-All GLM MTP profiles additionally set
+Original-checkpoint GLM MTP profiles additionally set
 `--speculative-draft-model-path "$HOME/models/sglang/local-GLM-5.3-Flash-MTP-FP8" --speculative-draft-model-quantization fp8`.
 Three draft steps plus one target/bonus position; built-in MTP head, one linear branch,
 classical sampled rejection. Lab sampling sources: [Qwen](https://huggingface.co/Qwen/Qwen3.8-Flash-Next#api-usage),

@@ -151,32 +151,39 @@ def _pool4_decode_gather(
     pools = tl.where(req >= 0, length // 4, 0)
     if tl.program_id(1) == 0:
         tl.store(POOLS + b, pools)
-    ids = tl.program_id(1) * BLOCK + tl.arange(0, BLOCK)
-    valid = (ids < pools) & (ids < MAX_POOLS)
-    cols = tl.arange(0, 128)
-    physical = tl.load(
-        TABLE + req * TABLE_STRIDE + ids // INDEX_PAGE_SIZE * (INDEX_PAGE_SIZE * 4),
-        mask=valid,
-        other=0,
-    ).to(tl.int64)
-    pages = physical // TOKEN_PAGE_SIZE
-    offsets = ids % INDEX_PAGE_SIZE
-    encoded = tl.load(
-        CACHE + pages[:, None] * CACHE_STRIDE + offsets[:, None] * 128 + cols[None, :],
-        mask=valid[:, None],
-        other=0,
-    )
-    keys = _decode_e4m3fn(encoded)
-    scale_ptr = (CACHE + pages * CACHE_STRIDE + INDEX_PAGE_SIZE * 128 + offsets * 4).to(
-        tl.pointer_type(tl.float32)
-    )
-    scales = tl.load(scale_ptr, mask=valid, other=0)
-    tl.store(
-        K_OUT + (b * MAX_POOLS + ids[:, None]) * 128 + cols[None, :],
-        keys,
-        mask=(ids < MAX_POOLS)[:, None],
-    )
-    tl.store(S_OUT + b * MAX_POOLS + ids, scales, mask=ids < MAX_POOLS)
+    # Coarse CTAs skip unused history before touching keys/scales or scratch.
+    # The scorer masks every read using POOLS; future rows stay untouched.
+    start = tl.program_id(1) * BLOCK
+    if start < tl.minimum(pools, MAX_POOLS):
+        ids = start + tl.arange(0, BLOCK)
+        valid = (ids < pools) & (ids < MAX_POOLS)
+        cols = tl.arange(0, 128)
+        physical = tl.load(
+            TABLE + req * TABLE_STRIDE + ids // INDEX_PAGE_SIZE * (INDEX_PAGE_SIZE * 4),
+            mask=valid,
+            other=0,
+        ).to(tl.int64)
+        pages = physical // TOKEN_PAGE_SIZE
+        offsets = ids % INDEX_PAGE_SIZE
+        encoded = tl.load(
+            CACHE
+            + pages[:, None] * CACHE_STRIDE
+            + offsets[:, None] * 128
+            + cols[None, :],
+            mask=valid[:, None],
+            other=0,
+        )
+        keys = _decode_e4m3fn(encoded)
+        scale_ptr = (
+            CACHE + pages * CACHE_STRIDE + INDEX_PAGE_SIZE * 128 + offsets * 4
+        ).to(tl.pointer_type(tl.float32))
+        scales = tl.load(scale_ptr, mask=valid, other=0)
+        tl.store(
+            K_OUT + (b * MAX_POOLS + ids[:, None]) * 128 + cols[None, :],
+            keys,
+            mask=valid[:, None],
+        )
+        tl.store(S_OUT + b * MAX_POOLS + ids, scales, mask=valid)
 
 
 def pool4_decode_sm70(
@@ -197,7 +204,8 @@ def pool4_decode_sm70(
     """Append one key per request, close pools on-device, and gather FP16 keys.
 
     The gathered capacity depends only on token-table width, never host length.
-    Invalid entries are zeroed and accompanied by a device-side pool count.
+    Only the live prefix is initialized, accompanied by a device-side pool count.
+    Consumers must mask future entries with this count before reading scratch.
     Cache and tail storage are request-owned; all addresses survive graph replay.
     """
     batch = keys.shape[0]
@@ -251,7 +259,7 @@ def pool4_decode_sm70(
         num_warps=4,
         enable_fp_fusion=False,
     )
-    _pool4_decode_gather[(batch, triton.cdiv(capacity, 16))](
+    _pool4_decode_gather[(batch, triton.cdiv(capacity, 64))](
         cache,
         token_table,
         request_ids,
@@ -264,7 +272,7 @@ def pool4_decode_sm70(
         token_page_size,
         index_page_size,
         capacity,
-        16,
+        64,
         num_warps=4,
     )
     return gathered, scales, pools
@@ -371,7 +379,8 @@ def pool4_spec_sm70(
     Stage every candidate in the extra-width tail ring, but close only pools
     within effective_num_tokens when supplied by draft-extend. Rejected future
     pools remain outside the next round's causal lengths and are overwritten
-    before becoming visible. The caller owns plans, token pages and rollback.
+    before becoming visible. Gather scratch is initialized only inside each
+    query's live pool count. The caller owns plans, token pages and rollback.
     """
     batch = request_ids.numel()
     if batch == 0 or keys.shape[0] % batch:
@@ -455,7 +464,7 @@ def pool4_spec_sm70(
         num_warps=4,
         enable_fp_fusion=False,
     )
-    _pool4_decode_gather[(keys.shape[0], triton.cdiv(capacity, 16))](
+    _pool4_decode_gather[(keys.shape[0], triton.cdiv(capacity, 64))](
         cache,
         token_table,
         query_request_ids,
@@ -468,7 +477,7 @@ def pool4_spec_sm70(
         token_page_size,
         index_page_size,
         capacity,
-        16,
+        64,
         num_warps=4,
     )
     return gathered, scales, pools

@@ -285,6 +285,50 @@ class TestV100CSF32Checkpoint(CustomTestCase):
         draft.set_lm_head_from_target(target)
         self.assertIs(draft.lm_head, target)
 
+    def test_glm_mtp_fused_projections_keep_source_quantization(self):
+        """Missing draft mappings loaded raw MXFP8 into FP16 without its scales."""
+        from sglang_v100_plus.fp8 import SM70MXFP8LinearMethod, mixed_quant_method
+
+        from sglang.srt.layers.linear import LinearBase
+        from sglang.srt.layers.quantization.modelopt_quant import (
+            ModelOptMixedPrecisionConfig,
+        )
+        from sglang.srt.models.glm5_next_nextn import (
+            Glm5NextForConditionalGenerationNextN,
+        )
+
+        cls = Glm5NextForConditionalGenerationNextN
+        config = ModelOptMixedPrecisionConfig.from_config(
+            {
+                "quant_algo": "MIXED_PRECISION",
+                "packed_modules_mapping": cls.packed_modules_mapping,
+                "quantized_layers": {
+                    "model.language_model.layers.45." + name: {"quant_algo": "MXFP8"}
+                    for name in (
+                        "self_attn.q_a_proj",
+                        "self_attn.kv_a_proj_with_mqa",
+                        "mlp.shared_experts.gate_proj",
+                        "mlp.shared_experts.up_proj",
+                    )
+                },
+            }
+        )
+        config.apply_weight_name_mapper(
+            cls.get_hf_to_sglang_mapper(SimpleNamespace(num_hidden_layers=45))
+        )
+        for prefix in (
+            "model.decoder.self_attn.fused_qkv_a_proj_with_mqa",
+            "model.decoder.mlp.shared_experts.gate_up_proj",
+        ):
+            with self.subTest(prefix=prefix):
+                method = mixed_quant_method(
+                    ModelOptMixedPrecisionConfig.get_quant_method,
+                    config,
+                    LinearBase(128, 128),
+                    prefix,
+                )
+                self.assertIsInstance(method, SM70MXFP8LinearMethod)
+
     def test_mxfp8_absorbed_mla_preserves_fp16_operands(self):
         prefix = "model.language_model.layers.45.self_attn.kv_b_proj"
         weight = torch.linspace(-2, 2, 128).reshape(2, 64).to(torch.float8_e4m3fn)

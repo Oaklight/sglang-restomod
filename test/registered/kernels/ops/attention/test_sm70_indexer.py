@@ -321,8 +321,6 @@ def test_device_pool4_replays_lengths_requests_and_page_boundaries(
         for row, (req, length) in enumerate(zip(order, seqs)):
             if req < 0:
                 assert actual_pools[row] == 0
-                assert torch.count_nonzero(actual_keys[row]) == 0
-                assert torch.count_nonzero(actual_scales[row]) == 0
                 continue
             prefix = length - 1
             old_tail = prefix % 4
@@ -378,8 +376,6 @@ def test_device_pool4_replays_lengths_requests_and_page_boundaries(
             torch.testing.assert_close(
                 actual_scales[row, :count], expected_scales, rtol=0, atol=0
             )
-            assert torch.count_nonzero(actual_keys[row, count:]) == 0
-            assert torch.count_nonzero(actual_scales[row, count:]) == 0
         assert torch.equal(cache, reference_cache)
         assert torch.equal(tail_k, reference_k)
         assert torch.equal(tail_g, reference_g)
@@ -554,8 +550,6 @@ def test_pool4_spec_chain_rejection_and_page_boundary(
                 ]
                 assert torch.equal(actual_keys[qrow, :count], expected_k)
                 assert torch.equal(actual_scales[qrow, :count], expected_s)
-                assert torch.count_nonzero(actual_keys[qrow, count:]) == 0
-                assert torch.count_nonzero(actual_scales[qrow, count:]) == 0
             if req >= 0:
                 # Target verification staged the full window; rejecting all
                 # proposed drafts keeps only the bonus-token prefix.
@@ -668,6 +662,91 @@ def test_decode_scoring_live_bounds_graph_refresh_and_fp64_reference(rows, capac
         for value, snapshot in zip(inputs, saved):
             dtype = torch.uint8 if value.dtype == torch.float8_e4m3fn else value.dtype
             assert torch.equal(value.view(dtype), snapshot.view(dtype))
+
+
+@pytest.mark.parametrize("capacity", [67, 262400])
+def test_pool4_live_gather_poisoned_future_and_shrinking_graph(capacity):
+    """Reserved-context scratch is not initialized outside live pool counts."""
+    from sglang.kernels.ops.attention.dsa.sm70_indexer_decode import (
+        mqa_logits_decode_sm70,
+    )
+    from sglang.kernels.ops.attention.dsa.sm70_pool4_decode import pool4_decode_sm70
+
+    if torch.cuda.get_device_capability() != (7, 0):
+        pytest.skip("Volta Tensor Core index scoring")
+    torch.manual_seed(752)
+    rows, page = 3, 64
+    pages = (capacity + page - 1) // page
+    cache = torch.zeros(3 * pages, page * 132, device="cuda", dtype=torch.uint8)
+    cache[:, : page * 128] = torch.arange(page * 128, device="cuda").byte() % 125
+    cache[:, page * 128 :].view(torch.float32).fill_(0.125)
+    table = torch.empty(3, capacity * 4, device="cuda", dtype=torch.int32)
+    for req in range(3):
+        table[req] = req * pages * 256 + torch.arange(capacity * 4, device="cuda")
+    reqs = torch.tensor([2, 0, -1], device="cuda", dtype=torch.int64)
+    lengths = torch.full((rows,), 7, device="cuda", dtype=torch.int32)
+    keys = torch.randn(rows, 128, device="cuda", dtype=torch.float16)
+    gates = torch.randn_like(keys)
+    ape = torch.randn(4, 128, device="cuda")
+    tails = torch.zeros(3, 4, 128, device="cuda", dtype=torch.bfloat16)
+    tail_gates = torch.zeros_like(tails)
+    query = torch.randn(rows, 32, 128, device="cuda", dtype=torch.float16) * 0.1
+    weights = torch.randn(rows, 32, device="cuda") * 0.01
+
+    def run():
+        gathered, scales, counts = pool4_decode_sm70(
+            keys,
+            gates,
+            ape,
+            tails,
+            tail_gates,
+            cache,
+            table,
+            reqs,
+            lengths,
+            token_page_size=256,
+        )
+        logits = mqa_logits_decode_sm70(query, gathered, scales, weights, counts)
+        return gathered, scales, counts, logits
+
+    run()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        gathered, scales, counts, logits = run()
+    for live in ([capacity, capacity - 1, 0], [1, 17, 0], [0, 0, 0], [65, capacity, 0]):
+        live = [min(capacity, v) for v in live]
+        lengths.copy_(torch.tensor([4 * v + 1 for v in live], device="cuda"))
+        gathered.fill_(float("nan"))
+        scales.fill_(float("nan"))
+        graph.replay()
+        assert counts.tolist() == live
+        for row, count in enumerate(live):
+            assert torch.isneginf(logits[row, count:]).all()
+            assert torch.isfinite(logits[row, :count]).all()
+            # Poison remains outside live history: neither gather nor score
+            # needs to touch those reserved rows, even after a shrinking replay.
+            assert torch.isnan(gathered[row, count:]).all()
+            assert torch.isnan(scales[row, count:]).all()
+            if count:
+                sample = torch.tensor(sorted({0, count // 2, count - 1}), device="cuda")
+                physical = table[reqs[row], sample * 4].long()
+                encoded = cache[physical // 256, : page * 128].view(-1, page, 128)
+                expected_k = (
+                    encoded[torch.arange(sample.numel(), device="cuda"), sample % page]
+                    .contiguous()
+                    .view(torch.float8_e4m3fn)
+                    .half()
+                )
+                torch.testing.assert_close(
+                    gathered[row, sample], expected_k, rtol=0, atol=0
+                )
+                expected = (
+                    (query[row].double() @ expected_k.double().T).relu()
+                    * weights[row, :, None].double()
+                ).sum(0) * 0.125
+                torch.testing.assert_close(
+                    logits[row, sample].double(), expected, rtol=2e-5, atol=2e-6
+                )
 
 
 @pytest.mark.parametrize(
