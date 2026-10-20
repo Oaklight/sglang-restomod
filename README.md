@@ -83,24 +83,29 @@ boundary remains unverified; ordinary TP8 retains its 262,144-context profile.
 FP4-Local parity screen (2026-10-20): TP8/DCP4, **1,048,576 configured context**,
 FP16 KV/state, chunk2048, MTP3 and vision. Three coherent near8K categories
 (coding, writing, document analysis),32-token warmups,256 measured outputs,
-temperature0; uncached requests. Baseline is the previous serving source
-`4fdaa41d` plus original NVIDIA weights/compact FP8 MTP; candidate uses this
-branch and FP4-Local's own NVFP4 MTP. This compares the complete port, not an
-isolated quantization change or a full-window benchmark.
+temperature0; uncached requests. A software control runs the original NVIDIA
+weights/compact FP8 MTP on both the frozen serving source `4fdaa41d` and current
+code `55be3330`. FP4-Local uses the same current code and its own NVFP4 MTP.
+These are short-context throughput screens with a1M pool, not full-window benchmarks.
 
-| Tokens/s, category means | Before: original NVIDIA | After: FP4-Local |
-| --- | ---: | ---: |
-| Prefill | 2,122.4 | 2,109.0 |
-| Generation, MTP3 | 73.7 | 83.7 |
+| Tokens/s, category means | Original: frozen code | Original: current code | FP4-Local: current code |
+| --- | ---: | ---: | ---: |
+| Prefill | 2,122.4 | 2,127.4 | 2,109.0 |
+| Generation, MTP3 | 73.7 | 83.2 | 83.7 |
 
-Prefill is within0.6%; generation improves13.6%. Mean draft acceptance is
-71.1%→72.6%. The initial Local port was1,961/18.3TPS with zero acceptance.
+The original checkpoint gains12.9% generation throughput from the software changes.
+On common code, Local is0.9% slower in prefill and0.6% faster in generation:
+effectively decode parity in this screen, with no established intrinsic speed
+advantage. Mean draft acceptance is71.2% for original versus72.6% for Local.
+Local uses240.48GiB total GPU memory versus246.12GiB for original at these settings.
+The initial Local port was1,961/18.3TPS with zero acceptance.
 The retained fixes restore fused draft quantization, replace underfilled dense
 FP8 decode launches, unpack each prefill projection once and stop clearing
 reserved index-history scratch on every speculative cycle. Numerical bounds
 remain unchanged; FP64, graph-replay, canary and sanitizer checks pass.
-An ordinary-decoding control also matches the recorded1M coding baseline:
-prefill−0.6%, generation+3.8%.
+An ordinary-decoding control also matches the recorded frozen-code1M coding
+baseline: prefill−0.6%, generation+3.8%; it has not been repeated for original
+on current code.
 
 ## SM70 execution
 
