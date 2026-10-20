@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import torch
+
 from sglang.srt.environ import envs
 from sglang.srt.runtime_context import get_context
 from sglang.srt.sampling.penaltylib.frequency_penalty import BatchedFrequencyPenalizer

@@ -14,6 +14,8 @@ throughput checks. Qwen retains its existing backend during this work.
 Clone remotes: `origin` is this fork; `upstream` is `sgl-project/sglang`.
 
 Integrated upstream: [28448a86](https://github.com/sgl-project/sglang/commit/28448a86d47eb49a3c8e47dca52fe25cc95425d8), integrated 2026-10-19.
+The merge includes DSA index-cache relocation, speculative recurrent-checkpoint
+alignment and pipeline residual-handoff correctness fixes.
 Hardware adapters live in [v100_plus/sglang_v100_plus](v100_plus/sglang_v100_plus),
 reusable operators in [python/sglang/kernels/ops](python/sglang/kernels/ops), and
 build/Marlin changes in [v100_plus/aot](v100_plus/aot) and [v100_plus/patches](v100_plus/patches).
@@ -220,33 +222,45 @@ It selects Tree/LL for small eight-rank transfers, leaving large prefill collect
 alone. On GLM it shortens verification cycles about 2%; large-transfer protocol
 controls found no prefill gain. Qwen sampling graphs use the separate optional
 flag listed above. PP adaptive/DFlash remain guarded;
-CP/DCP needs SM70 compression/KV ownership support, and overlap needs buffer leases.
+Upstream DSA/MTP DCP and logical-page KV sharding are available as integration
+work: the V100 backend still needs compatible partial-attention/LSE and KV
+ownership support. At524K the sharding default reserves about8GiB of assembly
+scratch per GPU (two slots, eight contexts each); single-user sizing needs
+attention before enabling it. Overlap needs buffer leases.
 These are implementation gaps, not unused free speed flags.
 
 ## Performance and checks
 
-Current GLM on `dev` (2026-10-13): NVIDIA NVFP4 target, compact FP8 MTP3, vision on,
-FP16 KV/state, 262,144-token context, 262,656 cache slots, max1, chunk2048, eager
-prefill/full decode graphs and strict dispatch. PP2 uses TP4/EP1 with24/21 layers;
-TP8 uses EP1 and the small-allreduce tuner. **Temperature 0**, 32-token warmups
-and 256 outputs per coherent near8K request. One matching candidate process per
-topology is compared with recorded controls. Profiles are outside timed requests.
-PP2 metadata graphs/tuner are off; TP8 retains the small tuner.
+GLM upstream-integration screen (2026-10-19): NVIDIA NVFP4 target, compact FP8
+MTP3, images, FP16 KV/state, max1, chunk2048, eager prefill/full decode graphs,
+strict dispatch and FP16 prefix reuse (4 recurrent slots, track2048,
+`clear_thinking=false`). PP2×TP4/EP1 uses24/21 layers and524288 context/524800
+slots; TP8/EP1 uses262144/262656 and the small-allreduce tuner. **Temperature0**,
+32-token warmups and256 outputs per coherent near8K case; caches flushed before
+each request. Recorded controls match each layout's capacity and settings;
+PP2's524K control was collected immediately before integration. One candidate
+process per layout; compilation/warmup and profiling are outside timed requests.
 
-| Category | PP2 prefill | PP2 generation | TP8 prefill | TP8 generation |
+| Category, tokens/s | PP2 prefill | PP2 generation | TP8 prefill | TP8 generation |
 | --- | ---: | ---: | ---: | ---: |
-| Coding |3,487|63.6|2,289|81.9|
-| Writing |3,449|56.5|2,289|73.5|
-| Document analysis |3,438|59.9|2,289|79.0|
+| Coding |3,124|61.5|2,212|82.1|
+| Writing |3,097|53.5|2,203|72.8|
+| Document analysis |3,091|59.5|2,200|76.3|
 
-| Tokens/s, category means | Before | After quad-local mHC |
+| Tokens/s, category means | Before upstream merge | After |
 | --- | ---: | ---: |
-| PP2 prefill |3,380|3,458|
-| PP2 generation |61.3|60.0|
-| TP8 prefill |2,227|2,289|
-| TP8 generation |77.2|78.1|
+| PP2 prefill |3,080|3,104|
+| PP2 generation |57.4|58.2|
+| TP8 prefill |2,178|2,205|
+| TP8 generation |79.7|77.0|
 
-The retained mHC change improves prefill **2.3% for PP2 and 2.8% for TP8**. Whole
+This short screen establishes no large throughput gain. TP8 acceptance changes
+from73.1% to69.2%, consistent with its lower generation rate; verification-cycle
+wall time stays effectively unchanged. This does not isolate the acceptance change
+to a particular upstream commit. PP2 changes are also small. Historical
+optimization screens below use earlier cache/template policies.
+
+Earlier mHC screens improved prefill **2.3% for PP2 and2.8% for TP8**. Whole
 PRE/gather/POST on two stage banks improves about 19% at 2048 rows and remains bit-exact to
 the preceding FP32/FP16 implementation. Quarter-row projection was rejected
 because it changed cuBLAS reduction order; the projection and full residual
