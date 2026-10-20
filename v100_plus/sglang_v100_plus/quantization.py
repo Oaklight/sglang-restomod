@@ -49,8 +49,9 @@ def prepare_nvfp4_dense(original, layer):
         device=weight.device,
         dtype=torch.int32,
     )
-    if getattr(layer, "bias", None) is not None:
-        raise ValueError("V100 dense NVFP4 bias has not been validated")
+    bias = getattr(layer, "bias", None)
+    if bias is not None and (bias.dtype != torch.float16 or bias.shape != (n,)):
+        raise ValueError("V100 dense NVFP4 bias must match the logical FP16 output")
 
 
 def dense_marlin_gemm(

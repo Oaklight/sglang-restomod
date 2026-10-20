@@ -48,6 +48,8 @@
     "python/sglang/srt/multimodal/processors/glm4v.py": "Preserve GLM5 tokenized image prompts and expand only actual attachment IDs, with full-prompt MRoPE.",
     "python/sglang/srt/multimodal/processors/base_processor.py": "Allow model-required exact image prompt expansion to fail closed instead of retokenizing literals.",
     "python/sglang/srt/arg_groups/model_overrides/deepseek_v2.py": "Permit native V100 DCP with replicated pool4 indexers and explicit V100 sparse backends; other backends retain the pooled-index restriction.",
-    "python/sglang/kernels/ops/kvcache/mla_buffer.py": "Zero-RoPE MLA writes must honor DCP owner selection, local row collapse and reserved padding slots, matching the existing RoPE writer."
+    "python/sglang/kernels/ops/kvcache/mla_buffer.py": "Zero-RoPE MLA writes must honor DCP owner selection, local row collapse and reserved padding slots, matching the existing RoPE writer.",
+    "python/sglang/srt/layers/quantization/marlin_utils_fp4.py": "Apply logical output bias after cropping padded NVFP4 Marlin rows, enabling biased quantized vision projections without shape mismatch.",
+    "python/sglang/srt/models/glm5_next_nextn.py": "GLM MTP integration. Share the complete target LM head, preserving quantization scales and execution metadata."
   }
 }

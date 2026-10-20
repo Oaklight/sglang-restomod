@@ -28,6 +28,7 @@ def install():
     from sglang.srt.mem_cache.qsa_kv_pool import QSATokenToKVPool
     from sglang.srt.plugins.hook_registry import HookRegistry, HookType
 
+    from .checkpoint import include_nested_shards, load_glm_csf_weights
     from .commit_graph import commit_relayed_states
     from .dflash import (
         SM70DFlashGroupedConv,
@@ -42,6 +43,7 @@ def install():
         fp8_marlin_scalar_type,
         fp8_minimum_capability,
         fp8_route_block_size,
+        mixed_quant_method,
         prepare_fp8_dense,
         prepare_fp8_moe,
     )
@@ -195,6 +197,21 @@ def install():
         (
             "sglang.srt.layers.moe.fused_moe_triton.fused_marlin_moe.select_marlin_moe_block_size",
             fp8_route_block_size,
+            HookType.AROUND,
+        ),
+        (
+            "sglang.srt.models.glm5_next.Glm5NextForConditionalGeneration.load_weights",
+            load_glm_csf_weights,
+            HookType.AROUND,
+        ),
+        (
+            "sglang.srt.model_loader.loader.DefaultModelLoader._prepare_weights",
+            include_nested_shards,
+            HookType.AROUND,
+        ),
+        (
+            "sglang.srt.layers.quantization.modelopt_quant.ModelOptMixedPrecisionConfig.get_quant_method",
+            mixed_quant_method,
             HookType.AROUND,
         ),
         (

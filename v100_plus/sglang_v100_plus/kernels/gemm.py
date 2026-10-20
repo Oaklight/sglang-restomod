@@ -129,6 +129,8 @@ _SMALL_CONFIGS[(3, 1, 2560)] = (64, 32)
 # These use Volta cuBLAS for both decode and verification; they have no
 # custom small-GEMM implementation to fall back from.
 _GLM_BLAS_SHAPES = {
+    (264, 4096),
+    (272, 4096),  # FP4-Local KDA B/FG gates, separate from MXFP8 QKV (TP8/TP4)
     (3336, 4096),
     (6416, 4096),  # fused KDA QKV/beta/forget/norm gates
     (2048, 4096),

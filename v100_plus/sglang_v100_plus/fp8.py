@@ -6,6 +6,120 @@ and execution change; weights stay E4M3 and are unpacked inside the GEMM.
 
 import torch
 
+from sglang.srt.layers.quantization.base_config import LinearMethodBase
+
+
+class SM70MXFP8LinearMethod(LinearMethodBase):
+    """Serialized E4M3/UE8M0 groups32, reconstructed by the SM70 Marlin iterator.
+
+    Reuse upstream parameter loading and TP slicing. Keep weights packed FP8;
+    convert only the exact power-of-two scales to Marlin's FP16 bias convention.
+    """
+
+    def __init__(self, quant_config):
+        self.quant_config = quant_config
+        self.use_mxfp8 = True
+
+    def create_weights(
+        self,
+        layer,
+        input_size_per_partition,
+        output_partition_sizes,
+        input_size,
+        output_size,
+        params_dtype,
+        **extra_weight_attrs,
+    ):
+        from sglang.srt.layers.quantization.fp8 import Fp8LinearMethod
+
+        if params_dtype != torch.float16:
+            raise ValueError("SM70 MXFP8 requires FP16 activations")
+        Fp8LinearMethod.create_fp8_weight_(
+            layer=layer,
+            block_quant=True,
+            quant_config=self.quant_config,
+            use_mxfp8=True,
+            output_size_per_partition=sum(output_partition_sizes),
+            input_size_per_partition=input_size_per_partition,
+            output_partition_sizes=output_partition_sizes,
+            input_size=input_size,
+            output_size=output_size,
+            params_dtype=params_dtype,
+            weight_loader=extra_weight_attrs.pop("weight_loader", None),
+            is_checkpoint_fp8_serialized=True,
+            **extra_weight_attrs,
+        )
+
+    def process_weights_after_loading(self, layer):
+        prepare_mxfp8_dense(self, layer)
+
+    def apply(self, layer, x, bias=None):
+        return apply_fp8_dense(None, self, layer, x, bias)
+
+
+def mixed_quant_method(original, config, layer, prefix):
+    from sglang.srt.layers.linear import LinearBase
+    from sglang.srt.layers.quantization.unquant import UnquantizedLinearMethod
+    from sglang.srt.layers.quantization.utils import is_layer_skipped
+    from sglang.srt.layers.vocab_parallel_embedding import ParallelLMHead
+
+    if (
+        isinstance(layer, (LinearBase, ParallelLMHead))
+        and config._resolve_quant_algo(prefix) == "MXFP8"
+        and not config.is_layer_excluded(prefix)
+        and not is_layer_skipped(
+            prefix, config.exclude_modules, config.packed_modules_mapping
+        )
+    ):
+        if prefix.endswith(".kv_b_proj"):
+            # checkpoint.py reconstructs the small absorbed MLA projection for
+            # upstream's FP16 w_kc/w_vc BMM preparation, before post_load_weights.
+            return UnquantizedLinearMethod()
+        return SM70MXFP8LinearMethod(config.mxfp8_config)
+    return original(config, layer, prefix)
+
+
+def prepare_mxfp8_dense(method, layer):
+    from sglang.srt.layers.utils import copy_or_rebind_param
+
+    from .quantization import _dense_repack
+
+    n, k = layer.output_size_per_partition, layer.input_size_per_partition
+    weight, scales = layer.weight, layer.weight_scale_inv
+    if (
+        layer.orig_dtype != torch.float16
+        or not method.use_mxfp8
+        or k % 32
+        or weight.dtype != torch.float8_e4m3fn
+        or weight.shape != (n, k)
+        or scales.dtype != torch.uint8
+        or scales.shape != (n, k // 32)
+    ):
+        raise ValueError("SM70 MXFP8 requires serialized E4M3 [N,K], UE8M0 [N,K/32]")
+    # UE8M0 scale 255 is NaN. The exponent-bias factor is exact; reject any
+    # exponent that would overflow or underflow Marlin's FP16 scale storage.
+    exponent = scales.int() - 127
+    decoded = torch.ldexp(torch.ones_like(scales, dtype=torch.float32), exponent + 8)
+    encoded = decoded.half()
+    if bool((scales == 255).any()) or not bool(
+        (torch.isfinite(encoded) & (encoded > 0)).all()
+    ):
+        raise ValueError(
+            "MXFP8 scales cannot be represented exactly by SM70 FP16 scaling"
+        )
+    pn, pk = (n + 127) // 128 * 128, (k + 127) // 128 * 128
+    weight = torch.nn.functional.pad(weight.view(torch.uint8), (0, pk - k, 0, pn - n))
+    encoded = torch.nn.functional.pad(encoded, (0, (pk - k) // 32, 0, pn - n))
+    copy_or_rebind_param(layer, "weight", _dense_repack(weight[None], num_bits=8)[0])
+    copy_or_rebind_param(layer, "weight_scale_inv", encoded.T.contiguous())
+    layer.workspace = torch.zeros(
+        torch.cuda.get_device_properties(weight.device).multi_processor_count * 4,
+        device=weight.device,
+        dtype=torch.int32,
+    )
+    layer._sm70_fp8_physical_shape = (pn, pk)
+    layer._sm70_fp8_dense_ready = True
+
 
 def fp8_minimum_capability(original, config):
     if config.use_mxfp8:
@@ -66,7 +180,7 @@ def apply_fp8_dense(original, method, layer, x, bias=None):
     from .quantization import dense_marlin_gemm
 
     if not getattr(layer, "_sm70_fp8_dense_ready", False) or (
-        x.dtype != torch.float16 or not x.is_cuda or bias is not None
+        x.dtype != torch.float16 or not x.is_cuda
     ):
         raise ValueError(
             "SM70 dense FP8 requires prepared weights and FP16 activations"
@@ -77,6 +191,9 @@ def apply_fp8_dense(original, method, layer, x, bias=None):
         raise ValueError(
             "SM70 dense FP8 activation width does not match the checkpoint"
         )
+    pn, pk = getattr(layer, "_sm70_fp8_physical_shape", (n, k))
+    if pk != k:
+        a = torch.nn.functional.pad(a, (0, pk - k))
     output = dense_marlin_gemm(
         None,
         a,
@@ -90,9 +207,15 @@ def apply_fp8_dense(original, method, layer, x, bias=None):
         layer.workspace,
         get_scalar_types()[1].float8_e4m3fn,
         a.shape[0],
-        n,
-        k,
+        pn,
+        pk,
     )
+    if pn != n:
+        output = output[:, :n].contiguous()
+    if bias is not None:
+        if bias.dtype != torch.float16 or bias.shape != (n,):
+            raise ValueError("SM70 FP8 bias must match the logical FP16 output")
+        output.add_(bias)
     return output.reshape(*x.shape[:-1], n)
 
 

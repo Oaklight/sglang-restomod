@@ -127,13 +127,12 @@ def apply_fp4_marlin_linear(
         use_fp32_reduce=use_fp32_reduce,
     )
 
-    if bias is not None:
-        output.add_(bias)
-
     # A narrowed N dimension has the padded row stride, so materialize it
     # before reshaping. This is only needed for a TP shard that was padded.
     if padded_size_n != size_n:
         output = output[:, :size_n].contiguous()
+    if bias is not None:
+        output.add_(bias)
     return output.reshape(out_shape)
 
 

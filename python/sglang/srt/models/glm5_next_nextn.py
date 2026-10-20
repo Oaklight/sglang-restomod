@@ -22,6 +22,11 @@ logger = logging.getLogger(__name__)
 
 
 class Glm5NextForConditionalGenerationNextN(DeepseekV3ForCausalLMNextN):
+    def set_lm_head_from_target(self, target_lm_head):
+        # Quantized heads also own scales, layout and execution metadata.
+        # Eagle's weight-only sharing cannot preserve that contract.
+        self.lm_head = target_lm_head
+
     def prepare_cp_inputs(self, forward_batch, **kwargs):
         # The worker has rotated the target's multimodal embeddings per request.
         # Fill each appended token while indices still address full sequences,

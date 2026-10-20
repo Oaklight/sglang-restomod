@@ -1,0 +1,47 @@
+--- a/csrc/moe/marlin_moe_wna16/sm70_marlin_fp8_gemm.cu
++++ b/csrc/moe/marlin_moe_wna16/sm70_marlin_fp8_gemm.cu
+@@ -144,8 +144,8 @@
+     if constexpr (kGroupSize == -1) {
+       return 0;
+     } else {
+-      static_assert(kGroupSize == 128,
+-                    "SM70 Marlin MoE FP8 supports only group_size -1 or 128.");
++      static_assert(kGroupSize == 32 || kGroupSize == 128,
++                    "SM70 Marlin MoE FP8 supports only group_size -1,32 or128.");
+       return logical_k / kGroupSize;
+     }
+   }
+--- a/csrc/moe/marlin_moe_wna16/sm70_marlin_gemm.cuh
++++ b/csrc/moe/marlin_moe_wna16/sm70_marlin_gemm.cuh
+@@ -3001,13 +3001,16 @@
+     case -1:
+       return launcher.template operator()<CtaM, CtaN, CtaK, Warps, WarpM,
+                                           WarpN, WarpK, -1, PackedMacroN>();
++    case 32:
++      return launcher.template operator()<CtaM, CtaN, CtaK, Warps, WarpM,
++                                          WarpN, WarpK, 32, PackedMacroN>();
+     case 128:
+       return launcher.template operator()<CtaM, CtaN, CtaK, Warps, WarpM,
+                                           WarpN, WarpK, 128, PackedMacroN>();
+     default:
+       TORCH_CHECK(false,
+-                  "SM70 Marlin MoE fp8_e4m3 supports only group_size -1 "
+-                  "or 128. Got ",
++                  "SM70 Marlin MoE fp8_e4m3 supports only group_size -1,32 "
++                  "or128. Got ",
+                   group_size, ".");
+   }
+   return torch::Tensor();
+--- a/csrc/moe/marlin_moe_wna16/ops.cu
++++ b/csrc/moe/marlin_moe_wna16/ops.cu
+@@ -466,8 +466,8 @@
+ #endif
+ #if !defined(MARLIN_V100_NVFP4_ONLY) || defined(MARLIN_V100_FP8)
+   if (b_type == vllm::kFE4M3fn) {
+-    TORCH_CHECK(group_size == -1 || group_size == 128,
+-                "SM70 Marlin MoE fp8_e4m3 supports only group_size -1 or "
++    TORCH_CHECK(group_size == -1 || group_size == 32 || group_size == 128,
++                "SM70 Marlin MoE fp8_e4m3 supports only group_size -1,32 or "
+                 "128. Got ",
+                 group_size);
+     TORCH_CHECK(!has_zp && !is_zp_float,
