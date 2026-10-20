@@ -112,6 +112,8 @@ def kda_dispatcher_init(
     self.prefill_backend = prefill_backend
     self.verify_backend = verify_backend
     self.decode_kernel = self.extend_kernel = self.verify_kernel = V100KDAKernel()
+    self.supports_packed_decode = self.decode_kernel.supports_packed_decode
+    self.supports_packed_decode_safe_gate = False
 
 
 class V100KDAKernel(LinearAttnKernelBase):
