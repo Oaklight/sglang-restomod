@@ -15,7 +15,8 @@ Clone remotes: `origin` is this fork; `upstream` is `sgl-project/sglang`.
 
 Integrated upstream: [ab580b2e](https://github.com/sgl-project/sglang/commit/ab580b2e060059c0f8387b598a9f648dcec13f93), integrated 2026-10-19.
 The merge includes DSA index-cache relocation, speculative recurrent-checkpoint
-alignment and pipeline residual-handoff correctness fixes.
+alignment, pipeline residual-handoff and MoE scaling correctness fixes. Shared-expert
+layouts are now immutable per-model configuration, scoped for target/draft use.
 Hardware adapters live in [v100_plus/sglang_v100_plus](v100_plus/sglang_v100_plus),
 reusable operators in [python/sglang/kernels/ops](python/sglang/kernels/ops), and
 build/Marlin changes in [v100_plus/aot](v100_plus/aot) and [v100_plus/patches](v100_plus/patches).
@@ -238,27 +239,27 @@ strict dispatch and FP16 prefix reuse (4 recurrent slots, track2048,
 slots; TP8/EP1 uses262144/262656 and the small-allreduce tuner. **Temperature0**,
 32-token warmups and256 outputs per coherent near8K case; caches flushed before
 each request. Recorded controls match each layout's capacity and settings;
-PP2's524K control was collected immediately before integration. One candidate
-process per layout; compilation/warmup and profiling are outside timed requests.
+PP2's524K control was collected immediately before integration. Results cover the
+final integrated source; compilation/warmup and profiling are outside timed requests.
 
 | Category, tokens/s | PP2 prefill | PP2 generation | TP8 prefill | TP8 generation |
 | --- | ---: | ---: | ---: | ---: |
-| Coding |3,124|61.5|2,212|82.1|
-| Writing |3,097|53.5|2,203|72.8|
-| Document analysis |3,091|59.5|2,200|76.3|
+| Coding |3,127|59.3|2,208|87.5|
+| Writing |3,096|51.8|2,206|66.1|
+| Document analysis |3,092|60.4|2,205|78.2|
 
 | Tokens/s, category means | Before upstream merge | After |
 | --- | ---: | ---: |
-| PP2 prefill |3,080|3,104|
-| PP2 generation |57.4|58.2|
-| TP8 prefill |2,178|2,205|
-| TP8 generation |79.7|77.0|
+| PP2 prefill |3,080|3,105|
+| PP2 generation |57.4|57.2|
+| TP8 prefill |2,178|2,206|
+| TP8 generation |79.7|77.3|
 
-This short screen establishes no large throughput gain. TP8 acceptance changes
-from73.1% to69.2%, consistent with its lower generation rate; verification-cycle
-wall time stays effectively unchanged. This does not isolate the acceptance change
-to a particular upstream commit. PP2 changes are also small. Historical
-optimization screens below use earlier cache/template policies.
+This short screen establishes no large throughput gain. TP8 mean MTP acceptance
+changes from73.1% to69.8%, with variation across prompts; verification-cycle
+wall time stays effectively unchanged. The acceptance difference is not isolated
+to a particular upstream commit. Historical optimization screens below use earlier
+cache/template policies.
 
 Earlier mHC screens improved prefill **2.3% for PP2 and2.8% for TP8**. Whole
 PRE/gather/POST on two stage banks improves about 19% at 2048 rows and remains bit-exact to
