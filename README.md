@@ -84,11 +84,11 @@ FP4-Local parity screen (2026-10-20): TP8/DCP4, **1,048,576 configured context**
 FP16 KV/state, chunk2048, MTP3 and vision. Three coherent near8K categories
 (coding, writing, document analysis),32-token warmups,256 measured outputs,
 temperature0; uncached requests. A software control runs the original NVIDIA
-weights/compact FP8 MTP on both the frozen serving source `4fdaa41d` and current
-code `55be3330`. FP4-Local uses the same current code and its own NVFP4 MTP.
+weights/compact FP8 MTP on both the frozen serving source `4fdaa41d` and shared
+code `55be3330`. FP4-Local uses that same code and its own NVFP4 MTP.
 These are short-context throughput screens with a1M pool, not full-window benchmarks.
 
-| Tokens/s, category means | Original: frozen code | Original: current code | FP4-Local: current code |
+| Tokens/s, category means | Original: frozen code | Original: `55be3330` | FP4-Local: `55be3330` |
 | --- | ---: | ---: | ---: |
 | Prefill | 2,122.4 | 2,127.4 | 2,109.0 |
 | Generation, MTP3 | 73.7 | 83.2 | 83.7 |
@@ -98,7 +98,6 @@ On common code, Local is0.9% slower in prefill and0.6% faster in generation:
 effectively decode parity in this screen, with no established intrinsic speed
 advantage. Mean draft acceptance is71.2% for original versus72.6% for Local.
 Local uses240.48GiB total GPU memory versus246.12GiB for original at these settings.
-The initial Local port was1,961/18.3TPS with zero acceptance.
 The retained fixes restore fused draft quantization, replace underfilled dense
 FP8 decode launches, unpack each prefill projection once and stop clearing
 reserved index-history scratch on every speculative cycle. Numerical bounds
@@ -106,6 +105,22 @@ remain unchanged; FP64, graph-replay, canary and sanitizer checks pass.
 An ordinary-decoding control also matches the recorded frozen-code1M coding
 baseline: prefill−0.6%, generation+3.8%; it has not been repeated for original
 on current code.
+
+The subsequent FP4-Local prefill screen combines fused mHC cast/squared-mean
+preparation with upstream `--dcp-comm-backend a2a`. Full-shape FP32 projection,
+the squared-mean summation order and FP16 KV/state are preserved; mHC outputs
+are bit-exact. Same workload/context/MTP, one candidate process and reused control:
+
+| Tokens/s, category means | Before: `ag_rs` | After: fused mHC + `a2a` |
+| --- | ---: | ---: |
+| Prefill | 2,109.0 | 2,153.1 |
+| Generation, MTP3 | 83.7 | 82.0 |
+
+Prefill improves2.1%; decode TPS falls2.0%, with acceptance72.6%→70.2% and
+verification cycles0.4% shorter. This establishes a prefill tradeoff, not a decode
+gain. Total GPU memory240.48→242.13GiB. The combined model measurement does not
+isolate each change; original weights were not rebenchmarked in this follow-up.
+Near8K images/reuse, FP64 DCP merge, exact mHC graph/canary and sanitizer checks pass.
 
 ## SM70 execution
 
@@ -214,7 +229,7 @@ uv run --no-project .venv/bin/python -m sglang_v100_plus "${common[@]}" \
 | GLM TP8 MTP | TP8/EP1,262144context/262656pool/.95fraction/chunk2048 and the compact draft flags below. Export the small-allreduce tuner below and `SGLANG_OPT_SM70_HC_PREFILL_SP=1`. |
 | GLM TP8/DCP2 MTP | Same TP8 MTP recipe, context524288, `--max-total-tokens 262656 --dcp-size 2 --dcp-comm-backend ag_rs --no-dcp-replicate-q-proj`. Physical row capacity is doubled logically by DCP. Use device order1,2,0,3,4,7,5,6 on the reference machine: every adjacent DCP pair has direct NV2. Requires FA0.2.3; target FP16 latent KV is striped, native index and draft storage remain replicated. Full-window qualification pending. |
 | GLM TP8/DCP4 MTP | Optional memory profile: DCP2 recipe with `--dcp-size 4 --max-total-tokens 131584`, exposing526336 logical slots. Same context/chunk/MTP settings and device order, with each four-rank group inside one NVLink quad. Requires FA0.2.4/native H32 or newer. For context786432, use `--max-total-tokens 197120` (788480 logical slots,3.11GiB/GPU KV/index storage). Startup, near8K generation, images and prefix reuse pass at both sizes; full-window generation is unqualified. DCP2 remains a comparison profile; the selected hosting profile is DCP4/786432. |
-| GLM FP4-Local TP8/DCP4 MTP | Select FP4-Local for both target/draft paths and `modelopt_mixed` for both quantization options. Use MTP3 flags below, context1048576 and physical `--max-total-tokens 262656` (1050624 logical slots). Same DCP4 topology, FP16 KV/state, images and prefix settings. Full-window qualification remains pending. |
+| GLM FP4-Local TP8/DCP4 MTP | Select FP4-Local for both target/draft paths and `modelopt_mixed` for both quantization options. Use MTP3 flags below, context1048576 and physical `--max-total-tokens 262656` (1050624 logical slots). Same DCP4 topology, FP16 KV/state, images and prefix settings. The prefill screen above uses `--dcp-comm-backend a2a`; its decode/memory tradeoffs are measured separately from the earlier `ag_rs` profile. Full-window qualification remains pending. |
 | GLM TP8/DCP8 MTP | Capacity profile: DCP2 recipe with `--dcp-size 8 --max-total-tokens 66048`, exposing528384 logical slots at524K context. Requires FA0.2.5/native H64. Its attention group spans both quads; only target FP16 latent KV is striped, while draft/index storage stays replicated. Full-window capacity is unqualified. |
 | GLM PP2 MTP | TP4/PP2/EP1; `SGLANG_PP_LAYER_PARTITION=24,21`, `SGLANG_OPT_SM70_HC_PREFILL_SP=1`; context **524288**, total tokens **524800**, fraction **.95**, chunk2048. Add MTP flags below. Images are enabled; vision weights reside on the first PP stage. The table below leaves metadata graphs and the small-allreduce tuner off for PP2. |
 | MTP, either model | Add `--speculative-algorithm EAGLE --speculative-num-steps 3 --speculative-num-draft-tokens 4 --speculative-eagle-topk 1 --speculative-use-rejection-sampling`. PP2 also exports `SGLANG_ENABLE_PP_SPEC=1`. |

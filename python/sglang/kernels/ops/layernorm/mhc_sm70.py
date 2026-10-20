@@ -13,7 +13,17 @@ import torch.nn.functional as F
 import triton
 import triton.language as tl
 
+from sglang.kernels.jit.utils import cache_once, load_jit
 from sglang.kernels.ops.layernorm.mhc import _hc_combine_kernel
+
+
+@cache_once
+def _prepare_shard_module():
+    return load_jit(
+        "sm70_mhc_prepare",
+        cuda_files=["layernorm/sm70_mhc_prepare.cuh"],
+        cuda_wrappers=[("run", "sm70_mhc_prepare")],
+    )
 
 
 @triton.jit
@@ -270,8 +280,10 @@ def mhc_pre_shard_sm70(
 
     Keep the FP32 cuBLAS projection's full matrix shape: a quarter-row GEMM
     changes its reduction order and can move final Half outputs by two ULPs.
-    Partition the streaming squared-norm, gates, Sinkhorn and residual mixing.
-    The private cast is squared only after projection, never the input residual.
+    Fuse the full cast with each shard's squared-norm reduction, retaining the
+    contiguous torch mean's FP32 summation order. Partition gates, Sinkhorn and
+    residual mixing. Neither the FP16 residual nor its private FP32 cast is
+    modified by the statistics calculation.
     Padding has defined zero outputs and is removed by the integration adapter.
     """
     assert residual.ndim == 3 and residual.shape[1:] == (4, 4096)
@@ -293,9 +305,11 @@ def mhc_pre_shard_sm70(
     comb = alloc((local_rows, 4, 4), dtype=torch.float32, device=residual.device)
     layer_input = alloc((local_rows, 4096), dtype=torch.float16, device=residual.device)
     if valid_rows:
-        x = residual.view(rows, 16384).float()
+        x = torch.empty((rows, 16384), device=residual.device, dtype=torch.float32)
+        mean = torch.empty(valid_rows, device=residual.device, dtype=torch.float32)
+        _prepare_shard_module().run(residual, x, mean, start)
         mixes = F.linear(x, fn)[start:stop]
-        rms = torch.rsqrt(x[start:stop].square_().mean(-1) + rms_eps)
+        rms = torch.rsqrt(mean + rms_eps)
         _finalize_kernel[(valid_rows,)](
             mixes,
             rms,

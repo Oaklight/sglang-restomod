@@ -12,7 +12,7 @@
     "python/sglang/kernels/ops/gemm/sm70_nvfp4_gemv.py": "Volta NVFP4 GEMV for supported single-token projections.",
     "python/sglang/kernels/ops/layernorm/__init__.py": "Register SM70 fused mHC and bulk token-shard operators lazily.",
     "python/sglang/kernels/ops/layernorm/mhc_post_split_h.py": "Select the SM70-compatible FP16/FP32 mHC post-combine path.",
-    "python/sglang/kernels/ops/layernorm/mhc_sm70.py": "Volta mHC projection/RMS and pointwise implementations; partition bulk statistics/mixing while preserving full-row FP32 projection and Half boundaries, with bounded zero-padded shard outputs.",
+    "python/sglang/kernels/ops/layernorm/mhc_sm70.py": "Volta mHC projection/RMS and pointwise implementations; fuse bulk cast/owned-shard squared mean with unchanged FP32 reduction order, full-row projection and bounded zero-padded shard outputs.",
     "python/sglang/kernels/ops/moe/sm70_fp16.py": "Volta Tensor Core routed FP16 expert GEMM, upstream permutation and precision boundaries retained.",
     "python/sglang/kernels/ops/moe/__init__.py": "Register SM70 routed FP16 Tensor Core GEMM and small-row NVFP4 expert operators.",
     "python/sglang/kernels/ops/moe/sm70_nvfp4.py": "Volta NVFP4 expert GEMV with FP32 accumulation and ordinary FP16 activation/sum boundaries.",
@@ -53,6 +53,7 @@
     "python/sglang/srt/models/glm5_next_nextn.py": "GLM MTP integration. Preserve fused source-module quantization mappings and share the complete target LM head, including scales and execution metadata.",
     "python/sglang/kernels/ops/gemm/sm70_fp8_gemv.py": "Volta packed E4M3 small-row GEMV with group32/group128 scales, FP16 reconstructed operands/output and FP32 split-K reductions; bounded caller-owned scratch.",
     "python/sglang/kernels/ops/gemm/sm70_fp8_gemm.py": "Volta packed E4M3 prefill GEMM: transient projection-sized FP16 unpacking, native FP16 Tensor Cores with FP32 accumulation/output before final FP16 rounding; no resident FP16 weight expansion.",
-    "python/sglang/kernels/jit/csrc/gemm/sm70_fp8_gemm.cuh": "Scoped cuBLAS FP32 accumulation with FP16 output for unpacked wide FP8 prefill projections. Restores the caller handle math mode; no process-global precision changes."
+    "python/sglang/kernels/jit/csrc/gemm/sm70_fp8_gemm.cuh": "Scoped cuBLAS FP32 accumulation with FP16 output for unpacked wide FP8 prefill projections. Restores the caller handle math mode; no process-global precision changes.",
+    "python/sglang/kernels/jit/csrc/layernorm/sm70_mhc_prepare.cuh": "Fuse FP16 residual cast and owned-shard squared mean for bulk mHC, preserving contiguous Torch FP32 reduction order and full-shape projection."
   }
 }

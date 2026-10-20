@@ -9,7 +9,7 @@ from sglang.kernels.ops.layernorm.mhc import mhc_fused_post_pre, mhc_post, mhc_p
 from sglang.test.ci.ci_register import register_cuda_ci
 from sglang.test.test_utils import CustomTestCase
 
-register_cuda_ci(est_time=10, stage="base-b", runner_config="1-gpu-large")
+register_cuda_ci(est_time=20, stage="base-b", runner_config="1-gpu-large")
 
 
 @pytest.mark.parametrize("tokens", [0, 1024, 1025, 1754, 2048, 2049])
@@ -60,6 +60,51 @@ def test_fp16_mhc_shards_preserve_projection_and_post_layout(tokens):
             rtol=0,
             atol=0,
         )
+
+
+@pytest.mark.parametrize("tokens", [1025, 2048])
+def test_fp16_mhc_shard_preparation_graph_reads_current_inputs(tokens):
+    """Fused cast/statistics must preserve the mean tree and graph ownership.
+
+    An unaligned contiguous source, an uneven last shard and refreshed weights
+    catch vector-load assumptions, stale preparation and padded-row reads.
+    """
+    if not torch.cuda.is_available() or torch.version.hip is not None:
+        pytest.skip("CUDA FP16 mHC coverage")
+    from sglang.kernels.ops.layernorm.mhc_sm70 import (
+        mhc_pre_shard_sm70,
+        mhc_pre_sm70,
+    )
+
+    torch.manual_seed(537)
+    storage = torch.full(
+        (tokens * 16384 + 2,), 13.0, device="cuda", dtype=torch.float16
+    )
+    residual = storage[1:-1].view(tokens, 4, 4096)
+    residual.copy_(torch.randn_like(residual))
+    fn = torch.randn(24, 16384, device="cuda") * 0.015
+    scale = torch.tensor([0.5, 0.7, 0.9], device="cuda")
+    base = torch.randn(24, device="cuda") * 0.3
+    args = (residual, fn, scale, base, 1e-6, 1e-5, 1e-7, 1.7, 20)
+    rank = 3
+    local_rows = (tokens + 3) // 4
+    start = rank * local_rows
+    valid = tokens - start
+    mhc_pre_shard_sm70(*args, rank=rank)
+    torch.cuda.synchronize()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        actual = mhc_pre_shard_sm70(*args, rank=rank)
+    for refresh in range(3):
+        residual.copy_(torch.randn_like(residual) * (1.0, 128.0, 2**-20)[refresh])
+        fn.mul_(0.75)
+        saved = storage.clone()
+        expected = mhc_pre_sm70(*args)
+        graph.replay()
+        for got, want in zip(actual, expected):
+            torch.testing.assert_close(got[:valid], want[start:], rtol=0, atol=0)
+            assert torch.count_nonzero(got[valid:]) == 0
+        torch.testing.assert_close(storage, saved, rtol=0, atol=0)
 
 
 @pytest.mark.parametrize(
