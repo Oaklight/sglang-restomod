@@ -37,12 +37,12 @@ def resolve_profile(original, view):
     if view.dcp_size != 1:
         text = getattr(model, "text_config", model)
         if (
-            view.dcp_size != 2
+            view.dcp_size not in (2, 4)
             or view.pp_size != 1
             or text.num_attention_heads // view.tp_size != 8
         ):
             raise ValueError(
-                "v100_plus DCP requires two ranks, PP1 and eight local query heads"
+                "v100_plus DCP requires two or four ranks, PP1 and eight local query heads"
             )
     if view.max_running_requests != 1:
         raise ValueError(

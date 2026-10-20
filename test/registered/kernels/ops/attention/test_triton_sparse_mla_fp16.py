@@ -508,8 +508,9 @@ def test_sm70_sparse_fa_binding_rejects_unsafe_operands(invalid):
 
 
 @pytest.mark.parametrize("rows", [1, 4, 5, 129])
-def test_sm70_dcp_normalization_and_graph_replay(rows):
-    """Two latent stripes must reconstruct sparse attention, including empty owners.
+@pytest.mark.parametrize("dcp", [2, 4])
+def test_sm70_dcp_normalization_and_graph_replay(rows, dcp):
+    """Latent stripes must reconstruct sparse attention, including empty owners.
 
     Pooled-index selection stays global and replicated; normalizers must be
     base-2, with -inf for empty rows, before the upstream FP32 DCP correction.
@@ -523,18 +524,18 @@ def test_sm70_dcp_normalization_and_graph_replay(rows):
     from sglang.kernels.ops.attention.v100 import sparse_attention_v100
 
     torch.manual_seed(745)
-    heads, count, width = 16, 4099, 2051
+    heads, count, width = 8 * dcp, 4099, 2051
     q = torch.randn(rows, heads, 512, device="cuda", dtype=torch.float16)
     kv = torch.randn(count, 512, device="cuda", dtype=torch.float16)
-    stripes = [kv[rank::2].contiguous() for rank in range(2)]
+    stripes = [kv[rank::dcp].contiguous() for rank in range(dcp)]
     ids = torch.zeros(rows, width, device="cuda", dtype=torch.int32)
-    workspaces = [{}, {}]
+    workspaces = [{} for _ in range(dcp)]
     scale = 256**-0.5
 
     def run():
         outputs, normalizers = [], []
-        for rank in range(2):
-            local, lengths = transform_index_page_table_dcp(ids, 2, rank)
+        for rank in range(dcp):
+            local, lengths = transform_index_page_table_dcp(ids, dcp, rank)
             out, lse = sparse_attention_v100(
                 q,
                 stripes[rank],
@@ -558,9 +559,9 @@ def test_sm70_dcp_normalization_and_graph_replay(rows):
                 ),
                 is_lse_base_on_e=False,
             )[0]
-            for rank in range(2)
+            for rank in range(dcp)
         ]
-        return (corrected[0] + corrected[1]).transpose(0, 1).half(), lses
+        return torch.stack(corrected).sum(0).transpose(0, 1).half(), lses
 
     run()
     graph = torch.cuda.CUDAGraph()
@@ -573,21 +574,21 @@ def test_sm70_dcp_normalization_and_graph_replay(rows):
         if rows > 1 or replay == 1:
             ids[0].fill_(-1)  # Every owner is empty.
         if rows > 1:
-            ids[1] = 2 * (torch.arange(width, device="cuda") % (count // 2))
+            ids[1] = dcp * (torch.arange(width, device="cuda") % (count // dcp))
             ids[-1, -3:] = torch.tensor([count - 1, -1, 7], device="cuda")
-        for rank in range(2):
-            stripes[rank].copy_(kv[rank::2])
+        for rank in range(dcp):
+            stripes[rank].copy_(kv[rank::dcp])
         graph.replay()
         cq, ck, ci = q.double().cpu(), kv.double().cpu(), ids.cpu()
         expected = torch.zeros(rows, heads, 512, dtype=torch.float64)
-        expected_lse = torch.full((2, rows, heads), -torch.inf, dtype=torch.float64)
+        expected_lse = torch.full((dcp, rows, heads), -torch.inf, dtype=torch.float64)
         for row in range(rows):
             selected = ci[row][(ci[row] >= 0) & (ci[row] < count)].long()
             if selected.numel():
                 scores = cq[row] @ ck[selected].T * scale
                 expected[row] = scores.softmax(-1) @ ck[selected]
-            for rank in range(2):
-                local = selected[selected % 2 == rank]
+            for rank in range(dcp):
+                local = selected[selected % dcp == rank]
                 if local.numel():
                     expected_lse[rank, row] = torch.logsumexp(
                         cq[row] @ ck[local].T * scale, -1

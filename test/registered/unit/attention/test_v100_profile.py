@@ -68,7 +68,7 @@ class TestV100Profile(CustomTestCase):
             {"dsa_decode_backend": "triton"},
             {"mm_attention_backend": "sdpa"},
             {"linear_attn_verify_backend": "triton"},
-            {"dcp_size": 4},
+            {"dcp_size": 8},
             {"attn_dp_size": 2},
             {"attn_cp_size": 2},
             {"max_running_requests": 2},
@@ -130,9 +130,10 @@ class TestV100Profile(CustomTestCase):
         with patch(
             "sglang.srt.arg_groups.overrides.model_config_of", return_value=model
         ):
-            fields = resolve_profile(Mock(), self._view(dcp_size=2))
-        self.assertEqual(fields["dsa_prefill_backend"], "v100_plus")
-        self.assertEqual(fields["dsa_decode_backend"], "v100_plus")
+            for dcp in (2, 4):
+                fields = resolve_profile(Mock(), self._view(dcp_size=dcp))
+                self.assertEqual(fields["dsa_prefill_backend"], "v100_plus")
+                self.assertEqual(fields["dsa_decode_backend"], "v100_plus")
         import torch
 
         # One virtual allocator page contains two independent 256-token index

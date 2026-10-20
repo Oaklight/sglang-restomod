@@ -33,8 +33,8 @@ def sparse_attention_v100(
     Optional LSE is FP32/base-2 per query/head, with -inf for empty support;
     DCP combines the FP16 partials using that normalizer in FP32.
     """
-    if q.ndim != 3 or q.shape[1] not in (8, 16) or q.shape[2] != 512:
-        raise ValueError("V100 sparse attention requires Q[T,H8/16,512]")
+    if q.ndim != 3 or q.shape[1] not in (8, 16, 32) or q.shape[2] != 512:
+        raise ValueError("V100 sparse attention requires Q[T,H8/16/32,512]")
     if indices.shape[0] != q.shape[0] or indices.ndim not in (2, 3):
         raise ValueError("V100 sparse attention requires one ID row per query")
     if (indices.ndim == 3 and indices.shape[1] != 1) or (
@@ -71,22 +71,27 @@ def sparse_attention_v100(
         desired = kv_splits
     per_split = (tiles + desired - 1) // desired
     splits = (tiles + per_split - 1) // per_split
-    shape = (rows, splits, 16)
+    padded_heads = max(16, heads)
+    shape = (rows, splits, padded_heads)
     if workspace is None:
         scratch = None
     else:
         scratch = workspace.get("sparse")
-        if scratch is not None and scratch[0].numel() < rows * splits * 16:
+        if scratch is not None and scratch[0].numel() < rows * splits * padded_heads:
             scratch = None
     if scratch is None:
         scratch = (
-            torch.empty(rows * splits * 16, device=q.device, dtype=torch.float32),
-            torch.empty(rows * splits * 16 * dim, device=q.device, dtype=torch.float16),
+            torch.empty(
+                rows * splits * padded_heads, device=q.device, dtype=torch.float32
+            ),
+            torch.empty(
+                rows * splits * padded_heads * dim, device=q.device, dtype=torch.float16
+            ),
         )
         if workspace is not None:
             workspace["sparse"] = scratch
-    lse = scratch[0][: rows * splits * 16].view(shape)
-    partial = scratch[1][: rows * splits * 16 * dim].view(*shape, dim)
+    lse = scratch[0][: rows * splits * padded_heads].view(shape)
+    partial = scratch[1][: rows * splits * padded_heads * dim].view(*shape, dim)
     output = torch.empty(q.shape, device=q.device, dtype=torch.float16)
     ops.decode_out(q, kv, ids, lengths, lse, partial, float(scale))
     if return_lse:

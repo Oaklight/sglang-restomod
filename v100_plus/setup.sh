@@ -50,7 +50,7 @@ build_python="$PWD/.venv/bin/python"
 
 # Canonical SM70 attention package; no vLLM runtime or dense compilation grid.
 fa="$PWD/artifacts/flash-attention-v100"
-fa_revision=702ab3fab03f00bba729dfa033776b39f8cb19f2
+fa_revision=38a8cb8db4310bbafc11c34f536ed47c3719a7e9
 if [[ -d $fa/.git && $(git -C "$fa" rev-parse HEAD) != "$fa_revision" ]]; then
   previous="$PWD/artifacts/flash-attention-v100-previous-$(date -u +%Y%m%dT%H%M%S)"
   mv "$fa" "$previous"
