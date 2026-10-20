@@ -169,6 +169,7 @@ uv run --no-project .venv/bin/python -m sglang_v100_plus "${common[@]}" \
 | GLM TP8 MTP | TP8/EP1,262144context/262656pool/.95fraction/chunk2048 and the compact draft flags below. Export the small-allreduce tuner below and `SGLANG_OPT_SM70_HC_PREFILL_SP=1`. |
 | GLM TP8/DCP2 MTP | Same TP8 MTP recipe, context524288, `--max-total-tokens 262656 --dcp-size 2 --dcp-comm-backend ag_rs --no-dcp-replicate-q-proj`. Physical row capacity is doubled logically by DCP. Use device order1,2,0,3,4,7,5,6 on the reference machine: every adjacent DCP pair has direct NV2. Requires FA0.2.3; target FP16 latent KV is striped, native index and draft storage remain replicated. Full-window qualification pending. |
 | GLM TP8/DCP4 MTP | Optional memory profile: DCP2 recipe with `--dcp-size 4 --max-total-tokens 131584`, exposing526336 logical slots. Same context/chunk/MTP settings and device order, with each four-rank group inside one NVLink quad. Requires FA0.2.4/native H32. Near8K generation, images and prefix reuse pass; full-window capacity is unqualified. DCP2 remains the faster prefill default. |
+| GLM TP8/DCP8 MTP | Capacity profile: DCP2 recipe with `--dcp-size 8 --max-total-tokens 66048`, exposing528384 logical slots at524K context. Requires FA0.2.5/native H64. Its attention group spans both quads; only target FP16 latent KV is striped, while draft/index storage stays replicated. Full-window capacity is unqualified. |
 | GLM PP2 MTP | TP4/PP2/EP1; `SGLANG_PP_LAYER_PARTITION=24,21`, `SGLANG_OPT_SM70_HC_PREFILL_SP=1`; context **524288**, total tokens **524800**, fraction **.95**, chunk2048. Add MTP flags below. Images are enabled; vision weights reside on the first PP stage. The table below leaves metadata graphs and the small-allreduce tuner off for PP2. |
 | MTP, either model | Add `--speculative-algorithm EAGLE --speculative-num-steps 3 --speculative-num-draft-tokens 4 --speculative-eagle-topk 1 --speculative-use-rejection-sampling`. PP2 also exports `SGLANG_ENABLE_PP_SPEC=1`. |
 
@@ -233,9 +234,11 @@ controls found no prefill gain. Qwen sampling graphs use the separate optional
 flag listed above. PP adaptive/DFlash remain guarded;
 TP8/DCP2 uses upstream query gathering and partial-attention reduction, with native
 V100 LSE export, pooled-index addressing and owner-correct zero-RoPE KV writes.
-It gathers no full KV history. DCP4 uses the same contract with native H32 sparse
-attention. Other DCP degrees and logical-page KV sharding
-remain unqualified. At524K the logical-page sharding default reserves about8GiB
+It gathers no full KV history. DCP4 uses native H32 sparse attention within
+each NVLink quad; DCP8 uses native H64 across both quads. The recorded CUDA UUID
+order confirms contiguous rank groups map to physical GPUs1,2,0,3 and4,7,5,6.
+Global TP8 collectives still cross quads for every DCP setting. Logical-page KV
+sharding remains unqualified. At524K the logical-page sharding default reserves about8GiB
 of assembly scratch per GPU (two slots, eight contexts each); it is not the chosen
 capacity solution. Overlap needs buffer leases.
 These are implementation gaps, not unused free speed flags.
@@ -285,22 +288,27 @@ are preserved. Independent FP64/graph checks retain `rtol=.001, atol=.0002`;
 the zero-RoPE owner/canary regression reproduces the original failure and passes
 with zero Compute Sanitizer errors after the fix.
 
-The same short screen with native H32/DCP4 saves about **1.37 GiB/GPU** of cache
-storage (3.45→2.08 GiB, including replicated draft/index buffers), but gives no
-throughput advantage:
+The same short screen compares larger DCP groups at524K context, FP16 KV/state,
+MTP3 and chunk2048. Cache estimates include replicated draft/index buffers:
+DCP2 **3.45 GiB/GPU**, DCP4 **2.08 GiB/GPU**, DCP8 **1.40 GiB/GPU**.
 
-| Tokens/s, category means | Before: DCP2 | After: DCP4 |
-| --- | ---: | ---: |
-| Prefill |2,183|2,117|
-| Generation |79.8|79.8|
+| Tokens/s, category means | Before: DCP2 | After: DCP4 | After: DCP8 |
+| --- | ---: | ---: | ---: |
+| Prefill |2,183|2,117|1,236|
+| Generation |79.8|79.8|73.3|
 
-Both use 524K context, FP16 KV/state, MTP3, chunk2048 and the same three near8K
-prompts at temperature0. Prefill loses3.0%. Acceptance rises70.4%→72.6% while the
-generation-span-per-verification proxy grows2.1%; higher acceptance offsets slower
-cycles. Native H32 preserves FP16 operands/partials and FP32 accumulation/LSE;
-FP64/graph checks pass at unchanged bounds and decode/prefill memcheck finds zero
-errors. It uses direct Q reads for decode and64KiB prefill staging to fit SM70.
-DCP4 is retained as a capacity option; the hosted DCP2 profile is unchanged.
+Each uses the same three near8K prompts,32-token warmups and256 measured outputs
+at temperature0. Against DCP4, DCP8 loses41.6% prefill and8.2% generation; mean
+acceptance is72.6%→71.2% and the generation-span-per-verification proxy grows7.2%.
+DCP8's attention communication crosses quads; this screen does not isolate its
+cost from the larger gathered-query/head tiles. DCP4/DCP8 remain capacity options;
+DCP2 stays hosted. Image input and prefix reuse pass for all three.
+
+Native H32/H64 preserve FP16 operands/partials and FP32 accumulation/LSE. H64
+prefill uses two32-head native tiles with shared support preparation; decode
+reads Q directly. FP64/graph checks pass at unchanged DCP bounds; H64 head tiles
+match two H32 calls bit-exactly, and decode/prefill memcheck reports zero errors.
+Full-window generation remains unqualified for these TP8 DCP profiles.
 
 Earlier mHC screens improved prefill **2.3% for PP2 and2.8% for TP8**. Whole
 PRE/gather/POST on two stage banks improves about 19% at 2048 rows and remains bit-exact to
@@ -360,7 +368,7 @@ attention DP/CP configurations fail at profile resolution. Kernel tests:
 [NVFP4 GEMM](test/registered/kernels/ops/gemm/test_sm70_nvfp4_gemv.py),
 [expert/gather](test/registered/kernels/ops/moe/test_sm70_nvfp4.py),
 [adapter contracts](test/registered/kernels/ops/attention/test_v100_backend.py),
-[canonical attention](https://github.com/heislera763/flash-attention-v100/blob/38a8cb8db4310bbafc11c34f536ed47c3719a7e9/csrc/sparse_mla/tests/test_attention.py).
+[canonical attention](https://github.com/heislera763/flash-attention-v100/blob/531e92bd705b034705318a4641c9d6130cdc52a4/csrc/sparse_mla/tests/test_attention.py).
 Narrower tiles and six unpacking/scheduling prototypes lost their operator
 screens and were rejected without redundant model runs. Large-collective
 protocol overrides also failed the screen.

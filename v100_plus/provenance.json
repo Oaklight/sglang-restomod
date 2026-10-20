@@ -118,10 +118,10 @@
   },
   "attention_backend": {
     "repository": "https://github.com/heislera763/flash-attention-v100",
-    "revision": "38a8cb8db4310bbafc11c34f536ed47c3719a7e9",
+    "revision": "531e92bd705b034705318a4641c9d6130cdc52a4",
     "cutlass_revision": "62750a2b75c802660e4894434dc55e839f322277",
-    "package": "sglang-fa-sm70 0.2.4",
+    "package": "sglang-fa-sm70 0.2.5",
     "source": "csrc/sparse_mla",
-    "contracts": "FP16 KV/state, FP32 working accumulation; FP16 snapshot carry during verification; nonintrusive bounded FP32 prefill checkpoint copied into FP16 radix state; exact paired-query selected-key multiset, capacity-bounded device support preparation, up to 4096 selected columns; optional base-2 FP32 LSE for FP16 partial-attention DCP with FP32 correction/reduction; native H8/H16/H32 sparse attention and H32 resource-bounded staging for DCP4"
+    "contracts": "FP16 KV/state, FP32 working accumulation; FP16 snapshot carry during verification; nonintrusive bounded FP32 prefill checkpoint copied into FP16 radix state; exact paired-query selected-key multiset, capacity-bounded device support preparation, up to 4096 selected columns; optional base-2 FP32 LSE for FP16 partial-attention DCP with FP32 correction/reduction; native H8/H16/H32/H64 sparse attention; resource-bounded H32/H64 prefill staging, native H64 head tiling and direct-Q decode for DCP4/DCP8"
   }
 }

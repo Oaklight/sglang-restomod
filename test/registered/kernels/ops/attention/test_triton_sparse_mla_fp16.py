@@ -508,7 +508,7 @@ def test_sm70_sparse_fa_binding_rejects_unsafe_operands(invalid):
 
 
 @pytest.mark.parametrize("rows", [1, 4, 5, 129])
-@pytest.mark.parametrize("dcp", [2, 4])
+@pytest.mark.parametrize("dcp", [2, 4, 8])
 def test_sm70_dcp_normalization_and_graph_replay(rows, dcp):
     """Latent stripes must reconstruct sparse attention, including empty owners.
 

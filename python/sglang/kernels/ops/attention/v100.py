@@ -33,8 +33,8 @@ def sparse_attention_v100(
     Optional LSE is FP32/base-2 per query/head, with -inf for empty support;
     DCP combines the FP16 partials using that normalizer in FP32.
     """
-    if q.ndim != 3 or q.shape[1] not in (8, 16, 32) or q.shape[2] != 512:
-        raise ValueError("V100 sparse attention requires Q[T,H8/16/32,512]")
+    if q.ndim != 3 or q.shape[1] not in (8, 16, 32, 64) or q.shape[2] != 512:
+        raise ValueError("V100 sparse attention requires Q[T,H8/16/32/64,512]")
     if indices.shape[0] != q.shape[0] or indices.ndim not in (2, 3):
         raise ValueError("V100 sparse attention requires one ID row per query")
     if (indices.ndim == 3 and indices.shape[1] != 1) or (
