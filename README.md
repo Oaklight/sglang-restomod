@@ -50,13 +50,17 @@ execution scratch and required page/sentinel/speculative overhead:
 | NVIDIA GLM | 1,048,576 | 11.35 GiB | 6.19 GiB |
 
 Qwen MTP adds about0.27GiB on its owning stage. Native FP16 PP2/MTP3
-capacity262106input+32output and request reuse pass. GLM's FP16 latent KV is replicated
-across TP ranks. The current GLM PP2/MTP3 session limit is **524,288** with a
+capacity262106input+32output and request reuse pass. Ordinary GLM FP16 latent KV is
+replicated across TP ranks. The current GLM PP2/MTP3 session limit is **524,288** with a
 524,800-slot pool (~3.10GiB/GPU including target/draft KV and index storage).
 A 524,250-input/32-output capacity probe, subsequent request reuse and an image-bearing
 near8K request pass with FP16 KV/state and compact FP8 MTP. This establishes functional
-capacity, not long-context quality. Native1M remains unqualified. TP8 retains its
-262,144-context/262,656-slot profile (~3.10GiB/GPU); larger TP8 windows are unqualified.
+capacity, not long-context quality. Native1M remains unqualified. TP8/DCP2 stripes
+target latent KV across NVLink pairs while retaining replicated native index and
+draft storage: **3.45 GiB/GPU** at 524K versus 6.20 GiB without DCP. The allocator cap is
+262,656 physical rows/rank, exposing 525,312 logical slots. A 524,250-token full
+prefill, near8K generation, prefix reuse and images pass. Generation at the 524K
+boundary remains unverified; ordinary TP8 retains its 262,144-context profile.
 
 ## SM70 execution
 
@@ -163,20 +167,23 @@ uv run --no-project .venv/bin/python -m sglang_v100_plus "${common[@]}" \
 | --- | --- |
 | Qwen TP8 | TP8/EP8; omit PP and unset `SGLANG_PP_LAYER_PARTITION`/metadata flag. Keep HC/chunk4352. |
 | GLM TP8 MTP | TP8/EP1,262144context/262656pool/.95fraction/chunk2048 and the compact draft flags below. Export the small-allreduce tuner below and `SGLANG_OPT_SM70_HC_PREFILL_SP=1`. |
-| GLM PP2 MTP | TP4/PP2/EP1; `SGLANG_PP_LAYER_PARTITION=24,21`, `SGLANG_OPT_SM70_HC_PREFILL_SP=1`; context **524288**, total tokens **524800**, fraction **.95**, chunk2048. Add MTP flags below and `--speculative-draft-model-path "$HOME/models/sglang/local-GLM-5.3-Flash-MTP-FP8" --speculative-draft-model-quantization fp8`. Images are enabled; vision weights reside on the first PP stage. The table below leaves metadata graphs and the small-allreduce tuner off for PP2. |
+| GLM TP8/DCP2 MTP | Same TP8 MTP recipe, context524288, `--max-total-tokens 262656 --dcp-size 2 --dcp-comm-backend ag_rs --no-dcp-replicate-q-proj`. Physical row capacity is doubled logically by DCP. Use device order1,2,0,3,4,7,5,6 on the reference machine: every adjacent DCP pair has direct NV2. Requires FA0.2.3; target FP16 latent KV is striped, native index and draft storage remain replicated. Full-window qualification pending. |
+| GLM PP2 MTP | TP4/PP2/EP1; `SGLANG_PP_LAYER_PARTITION=24,21`, `SGLANG_OPT_SM70_HC_PREFILL_SP=1`; context **524288**, total tokens **524800**, fraction **.95**, chunk2048. Add MTP flags below. Images are enabled; vision weights reside on the first PP stage. The table below leaves metadata graphs and the small-allreduce tuner off for PP2. |
 | MTP, either model | Add `--speculative-algorithm EAGLE --speculative-num-steps 3 --speculative-num-draft-tokens 4 --speculative-eagle-topk 1 --speculative-use-rejection-sampling`. PP2 also exports `SGLANG_ENABLE_PP_SPEC=1`. |
 
+All GLM MTP profiles additionally set
+`--speculative-draft-model-path "$HOME/models/sglang/local-GLM-5.3-Flash-MTP-FP8" --speculative-draft-model-quantization fp8`.
 Three draft steps plus one target/bonus position; built-in MTP head, one linear branch,
 classical sampled rejection. Lab sampling sources: [Qwen](https://huggingface.co/Qwen/Qwen3.8-Flash-Next#api-usage),
 [ZAI](https://huggingface.co/zai-org/GLM-5.3-Flash#footnotes). Use lab sampling for model use; comparative tuning screens use temperature0.
 
 The commands above disable prefix reuse for uncached comparisons. The qualified
-GLM PP2 conversation profile uses these changes:
+GLM PP2 and TP8/DCP2 conversation profiles use these changes:
 
 | Setting | Value / reason |
 | --- | --- |
 | Prefix caching | Remove `--disable-radix-cache`; use `--mamba-radix-cache-strategy extra_buffer`. KV and recurrent checkpoints remain FP16. |
-| State capacity | `--max-mamba-cache-size 4`: bound one active session, tracking and retained-state headroom; keep the524800-token pool. |
+| State capacity | `--max-mamba-cache-size 4`: bound one active session, tracking and retained-state headroom; keep524800 logical token slots for PP2 or525312 for DCP2 (262656 physical rows/rank). |
 | Checkpoint placement | `--mamba-track-interval 2048`: apply to prefill and decode, matching the prefill chunk. Avoid introducing an interior FP16 rounding boundary when resuming the FP32 prefill recurrence. |
 | Agent history | `clear_thinking=false`; return complete original reasoning blocks for prefix continuity. |
 | Pi client | `maxTokens:131072`, `samplingParams:{"temperature":1.0,"top_p":0.95}`. Output and input share the524288-token window. |
@@ -199,7 +206,7 @@ controls also show numerical variation, so sequence identity is not guaranteed.
 | Eager prefill/full decode graphs | Qualified native paths; earlier Qwen prefill-graph screens lost. Chunk4352/2048 are measured per-model choices. |
 | Context and pool capacity | Qwen targets native262144 plus128page/workspace slots. FP16 PP2/MTP3 allocation,262106-input/32-output generation and request reuse pass. GLM PP2/MTP3 reserves524800 slots for524288 context;524250-input/32-output, images and reuse pass. Explicit max1 reservations fail instead of shrinking, including with prefix reuse enabled. |
 | Static fraction/state pool | Qwen uses the automatic fraction estimate. GLM uses.95 for262K TP8 and524K PP2 MTP profiles; .92 is the earlier short reference. The fraction is a profiled allowance, not a physical VRAM allocation or speed setting. With radix off/max1, state slots derive from the request count; cached GLM conversations pin4 slots. A state-memory ratio is redundant in both cases. Host PLE saves device memory. |
-| GLM attention | `--attention-backend v100_plus` selects the shared native sparse engine, KDA and vision; rows1–4 use bounded split work. Conflicting mode overrides fail. |
+| GLM attention | `--attention-backend v100_plus` selects the shared native sparse engine, KDA and vision; rows1–4 use bounded split work. DCP2 gathers queries within NVLink pairs, computes owned selected keys, then combines FP16 partial outputs using base-2 FP32 normalizers and FP32 correction/reduction. Conflicting mode overrides fail. |
 | GLM mHC flags0 | Select supported mHC paths; fused DSA top-k retains its default1. |
 | CPU-only tests | `CUDA_VISIBLE_DEVICES=""`; numeric/disabled/UUID port allocation is supported. No999 workaround. |
 
@@ -223,11 +230,12 @@ It selects Tree/LL for small eight-rank transfers, leaving large prefill collect
 alone. On GLM it shortens verification cycles about 2%; large-transfer protocol
 controls found no prefill gain. Qwen sampling graphs use the separate optional
 flag listed above. PP adaptive/DFlash remain guarded;
-Upstream DSA/MTP DCP and logical-page KV sharding are available as integration
-work: the V100 backend still needs compatible partial-attention/LSE and KV
-ownership support. At524K the sharding default reserves about8GiB of assembly
-scratch per GPU (two slots, eight contexts each); single-user sizing needs
-attention before enabling it. Overlap needs buffer leases.
+TP8/DCP2 uses upstream query gathering and partial-attention reduction, with native
+V100 LSE export, pooled-index addressing and owner-correct zero-RoPE KV writes.
+It gathers no full KV history. Other DCP degrees and logical-page KV sharding
+remain unqualified. At524K the logical-page sharding default reserves about8GiB
+of assembly scratch per GPU (two slots, eight contexts each); it is not the chosen
+capacity solution. Overlap needs buffer leases.
 These are implementation gaps, not unused free speed flags.
 
 ## Performance and checks
@@ -260,6 +268,20 @@ changes from73.1% to69.8%, with variation across prompts; verification-cycle
 wall time stays effectively unchanged. The acceptance difference is not isolated
 to a particular upstream commit. Historical optimization screens below use earlier
 cache/template policies.
+
+TP8/DCP2 doubles configured context from 262K to 524K with comparable near8K rates:
+
+| Tokens/s, category means | Before: TP8/262K | After: TP8/DCP2/524K |
+| --- | ---: | ---: |
+| Prefill |2,206|2,183|
+| Generation |77.3|79.8|
+
+Same three categories, 32-token warmups and 256 measured outputs at temperature 0.
+Mean MTP acceptance is 69.8%→70.4%; this small screen establishes no decode speedup.
+DCP changes softmax partition/reduction order; selected-key multisets and FP16 KV
+are preserved. Independent FP64/graph checks retain `rtol=.001, atol=.0002`;
+the zero-RoPE owner/canary regression reproduces the original failure and passes
+with zero Compute Sanitizer errors after the fix.
 
 Earlier mHC screens improved prefill **2.3% for PP2 and2.8% for TP8**. Whole
 PRE/gather/POST on two stage banks improves about 19% at 2048 rows and remains bit-exact to
@@ -319,7 +341,7 @@ attention DP/CP configurations fail at profile resolution. Kernel tests:
 [NVFP4 GEMM](test/registered/kernels/ops/gemm/test_sm70_nvfp4_gemv.py),
 [expert/gather](test/registered/kernels/ops/moe/test_sm70_nvfp4.py),
 [adapter contracts](test/registered/kernels/ops/attention/test_v100_backend.py),
-[canonical attention](https://github.com/heislera763/flash-attention-v100/blob/2345e3da21c6501a26f691b9325ded12ab34e52b/csrc/sparse_mla/tests/test_attention.py).
+[canonical attention](https://github.com/heislera763/flash-attention-v100/blob/702ab3fab03f00bba729dfa033776b39f8cb19f2/csrc/sparse_mla/tests/test_attention.py).
 Narrower tiles and six unpacking/scheduling prototypes lost their operator
 screens and were rejected without redundant model runs. Large-collective
 protocol overrides also failed the screen.

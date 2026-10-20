@@ -16,6 +16,8 @@ class TestV100Profile(CustomTestCase):
             kv_cache_dtype="auto",
             enable_prefill_cp=False,
             dcp_size=1,
+            tp_size=8,
+            pp_size=1,
             dp_size=1,
             attn_dp_size=1,
             attn_cp_size=1,
@@ -66,7 +68,7 @@ class TestV100Profile(CustomTestCase):
             {"dsa_decode_backend": "triton"},
             {"mm_attention_backend": "sdpa"},
             {"linear_attn_verify_backend": "triton"},
-            {"dcp_size": 2},
+            {"dcp_size": 4},
             {"attn_dp_size": 2},
             {"attn_cp_size": 2},
             {"max_running_requests": 2},
@@ -113,6 +115,34 @@ class TestV100Profile(CustomTestCase):
         view = self._view(attention_backend="qsa")
         self.assertEqual(resolve_profile(original, view), {"sentinel": 1})
         original.assert_called_once_with(view)
+
+    def test_dcp_uses_native_sparse_backends_and_preserves_replica_index_space(self):
+        """DCP must not select TRTLLM or alias halves of widened draft pages."""
+        from sglang_v100_plus.attention import resolve_profile
+        from sglang_v100_plus.glm_dsa import pooled_locations
+
+        model = SimpleNamespace(
+            hf_config=SimpleNamespace(
+                architectures=["Glm5NextForConditionalGeneration"],
+                text_config=SimpleNamespace(num_attention_heads=64),
+            )
+        )
+        with patch(
+            "sglang.srt.arg_groups.overrides.model_config_of", return_value=model
+        ):
+            fields = resolve_profile(Mock(), self._view(dcp_size=2))
+        self.assertEqual(fields["dsa_prefill_backend"], "v100_plus")
+        self.assertEqual(fields["dsa_decode_backend"], "v100_plus")
+        import torch
+
+        # One virtual allocator page contains two independent 256-token index
+        # pages. A 512-token-page divisor would alias their pooled keys.
+        table = 1536 + torch.arange(512)
+        pools = torch.arange(128)
+        positions = pooled_locations(
+            table, pools, token_page_size=256, index_page_size=64
+        )
+        torch.testing.assert_close(positions, table[::4] // 4)
 
     def test_safe_gate_dispatch_uses_capability(self):
         from sglang_v100_plus.attention import V100KDAKernel

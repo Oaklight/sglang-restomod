@@ -25,7 +25,7 @@ def _dsa_dcp_overrides(cfg: Any) -> dict:
     if cfg.speculative_eagle_topk not in (None, 1):
         raise ValueError("DSA DCP requires --speculative-eagle-topk 1.")
     overrides = {
-        name: "trtllm"
+        name: "v100_plus" if cfg.attention_backend == "v100_plus" else "trtllm"
         for name in ("dsa_prefill_backend", "dsa_decode_backend")
         if getattr(cfg, name) is None
     }
@@ -161,7 +161,13 @@ def _deepseek_family_overrides(server_args: Any, hf_config: Any) -> dict:
                 )
             else:
                 index_kpool = get_dsa_index_kpool(hf_config)
-                if index_kpool > 1 and cfg.dcp_size > 1:
+                # The native V100 backend retains a global replicated indexer
+                # and stripes latent KV only; pooled keys need no owner split.
+                if (
+                    index_kpool > 1
+                    and cfg.dcp_size > 1
+                    and cfg.attention_backend != "v100_plus"
+                ):
                     raise ValueError(
                         "--dcp-size > 1 is not supported for DSA with "
                         f"index_kpool={index_kpool}: a pooled index key spans "

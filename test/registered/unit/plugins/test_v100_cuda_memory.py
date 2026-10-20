@@ -99,19 +99,26 @@ class TestSingleSessionReservation(CustomTestCase):
     """Explicit pools used to be silently clamped, reducing session capacity."""
 
     def test_native_context_tail_needs_admission_headroom(self):
-        allocator = SimpleNamespace(page_size=64)
-        for capacity, expected in ((262208, 0), (262272, 32)):
-            self.assertEqual(
-                BaseTokenToKVPoolAllocator.max_new_tokens_for_memory(
-                    allocator,
-                    262144 - 38,  # 32 output + 4 draft + 2 guard positions
-                    32,
-                    token_capacity=capacity,
-                    sliding_window_size=None,
-                    chunk_size=4352,
-                ),
-                expected,
-            )
+        for context, page_size, chunk_size, capacities in (
+            (262144, 64, 4352, ((262208, 0), (262272, 32))),
+            # DCP2 widens a 256-token physical page to 512 logical tokens.
+            # The first full GLM prefill succeeded but clipped generation to0.
+            (524288, 512, 2048, ((524800, 0), (525312, 32))),
+        ):
+            allocator = SimpleNamespace(page_size=page_size)
+            for capacity, expected in capacities:
+                with self.subTest(context=context, capacity=capacity):
+                    self.assertEqual(
+                        BaseTokenToKVPoolAllocator.max_new_tokens_for_memory(
+                            allocator,
+                            context - 38,  # 32 output + 4 draft + 2 guard positions
+                            32,
+                            token_capacity=capacity,
+                            sliding_window_size=None,
+                            chunk_size=chunk_size,
+                        ),
+                        expected,
+                    )
 
     def test_shortfall_rejected_after_pipeline_minimum(self):
         def remote_stage_minimum(tensor, **_):

@@ -1,5 +1,7 @@
 """FP16 sparse MLA parity, including GLM's zero-dimensional RoPE tail."""
 
+import math
+
 import pytest
 import torch
 
@@ -503,6 +505,101 @@ def test_sm70_sparse_fa_binding_rejects_unsafe_operands(invalid):
         q = torch.empty(q.numel() + 1, device="cuda", dtype=q.dtype)[1:].view_as(q)
     with pytest.raises(RuntimeError, match="SM70 sparse MLA"):
         torch.ops.sglang_fa_sm70.prefill(q, kv, ids, lengths, 0.0625)
+
+
+@pytest.mark.parametrize("rows", [1, 4, 5, 129])
+def test_sm70_dcp_normalization_and_graph_replay(rows):
+    """Two latent stripes must reconstruct sparse attention, including empty owners.
+
+    Pooled-index selection stays global and replicated; normalizers must be
+    base-2, with -inf for empty rows, before the upstream FP32 DCP correction.
+    """
+    if torch.cuda.get_device_capability() != (7, 0):
+        pytest.skip("Volta FA partial normalization")
+    from sglang.kernels.ops.attention.dcp_kernels import correct_attn_out
+    from sglang.kernels.ops.attention.dsa.transform_index import (
+        transform_index_page_table_dcp,
+    )
+    from sglang.kernels.ops.attention.v100 import sparse_attention_v100
+
+    torch.manual_seed(745)
+    heads, count, width = 16, 4099, 2051
+    q = torch.randn(rows, heads, 512, device="cuda", dtype=torch.float16)
+    kv = torch.randn(count, 512, device="cuda", dtype=torch.float16)
+    stripes = [kv[rank::2].contiguous() for rank in range(2)]
+    ids = torch.zeros(rows, width, device="cuda", dtype=torch.int32)
+    workspaces = [{}, {}]
+    scale = 256**-0.5
+
+    def run():
+        outputs, normalizers = [], []
+        for rank in range(2):
+            local, lengths = transform_index_page_table_dcp(ids, 2, rank)
+            out, lse = sparse_attention_v100(
+                q,
+                stripes[rank],
+                local,
+                scale,
+                lengths=lengths,
+                workspace=workspaces[rank],
+                return_lse=True,
+            )
+            outputs.append(out)
+            normalizers.append(lse)
+        lses = torch.stack(normalizers)
+        corrected = [
+            correct_attn_out(
+                outputs[rank],
+                lses,
+                rank,
+                None,
+                new_output=torch.empty(
+                    heads, rows, 512, device="cuda", dtype=torch.float32
+                ),
+                is_lse_base_on_e=False,
+            )[0]
+            for rank in range(2)
+        ]
+        return (corrected[0] + corrected[1]).transpose(0, 1).half(), lses
+
+    run()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        actual, lses = run()
+    for replay in range(3):
+        q.normal_()
+        kv.normal_()
+        ids.random_(-1, count + 2)
+        if rows > 1 or replay == 1:
+            ids[0].fill_(-1)  # Every owner is empty.
+        if rows > 1:
+            ids[1] = 2 * (torch.arange(width, device="cuda") % (count // 2))
+            ids[-1, -3:] = torch.tensor([count - 1, -1, 7], device="cuda")
+        for rank in range(2):
+            stripes[rank].copy_(kv[rank::2])
+        graph.replay()
+        cq, ck, ci = q.double().cpu(), kv.double().cpu(), ids.cpu()
+        expected = torch.zeros(rows, heads, 512, dtype=torch.float64)
+        expected_lse = torch.full((2, rows, heads), -torch.inf, dtype=torch.float64)
+        for row in range(rows):
+            selected = ci[row][(ci[row] >= 0) & (ci[row] < count)].long()
+            if selected.numel():
+                scores = cq[row] @ ck[selected].T * scale
+                expected[row] = scores.softmax(-1) @ ck[selected]
+            for rank in range(2):
+                local = selected[selected % 2 == rank]
+                if local.numel():
+                    expected_lse[rank, row] = torch.logsumexp(
+                        cq[row] @ ck[local].T * scale, -1
+                    ) / math.log(2)
+        torch.testing.assert_close(
+            actual.double().cpu(), expected, rtol=0.001, atol=0.0002
+        )
+        torch.testing.assert_close(
+            lses.double().cpu(), expected_lse, rtol=0.0001, atol=0.0001
+        )
+        if rows > 1 or replay == 1:
+            assert torch.count_nonzero(actual[0]) == 0
 
 
 if __name__ == "__main__":

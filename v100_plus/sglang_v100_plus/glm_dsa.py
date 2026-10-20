@@ -160,6 +160,8 @@ class SM70IndexerKPool(IndexerKPool):
         pool = get_token_to_kv_pool()
         buffer = pool.get_index_k_with_scale_buffer(layer_id)
         index_page_size = pool4_cache_page_size(buffer)
+        # A replicated DCP draft has widened allocator pages. The packed
+        # index buffer still addresses one index_page_size*kpool token span.
         tail_k, tail_s = pool.get_compress_tail_buffers(layer_id)
         table = get_req_to_token_pool().req_to_token
         if mode.is_decode():
@@ -175,7 +177,7 @@ class SM70IndexerKPool(IndexerKPool):
                 forward_batch.seq_lens,
                 self.scale_fmt is not None,
                 retain_closed_tail=tail_k.shape[1] > 4,
-                token_page_size=pool.page_size,
+                token_page_size=index_page_size * self.index_kpool,
             )
             if not return_indices:
                 return None
@@ -238,7 +240,7 @@ class SM70IndexerKPool(IndexerKPool):
                     pooled_locations(
                         token_table,
                         ids,
-                        token_page_size=pool.page_size,
+                        token_page_size=index_page_size * self.index_kpool,
                         index_page_size=index_page_size,
                     ),
                     compressed,
@@ -262,7 +264,7 @@ class SM70IndexerKPool(IndexerKPool):
                     pooled_locations(
                         token_table,
                         ids,
-                        token_page_size=pool.page_size,
+                        token_page_size=index_page_size * self.index_kpool,
                         index_page_size=index_page_size,
                     ),
                 )
@@ -362,7 +364,10 @@ class SM70IndexerKPool(IndexerKPool):
             lengths,
             effective_num_tokens=plan.effective_n_per_batch,
             round_scale=self.scale_fmt is not None,
-            token_page_size=pool.page_size,
+            token_page_size=pool4_cache_page_size(
+                pool.get_index_k_with_scale_buffer(layer_id)
+            )
+            * self.index_kpool,
         )
         if not return_indices:
             return None
@@ -471,6 +476,26 @@ class SM70SparseAttnBackend(DeepseekSparseAttnBackend):
             self.v100_sparse_workspaces = {}
         stream = int(torch.cuda.current_stream(q_nope.device).cuda_stream)
         workspace = self.v100_sparse_workspaces.setdefault(stream, {})
+        lengths = None
+        if self.dcp_size > 1:
+            from sglang.kernels.ops.attention.dsa.transform_index import (
+                transform_index_page_table_dcp,
+            )
+
+            # Index-K stays replicated: only latent KV rows are striped.
+            # Select every owned key (including the live pool4 tail), keeping
+            # score order and duplicate multiplicity. No full-history gather.
+            page_table_1, lengths = transform_index_page_table_dcp(
+                page_table_1.reshape(q_nope.shape[0], -1),
+                self.dcp_size,
+                self.dcp_rank,
+            )
         return sparse_attention_v100(
-            q_nope, kv_cache, page_table_1, sm_scale, workspace=workspace
+            q_nope,
+            kv_cache,
+            page_table_1,
+            sm_scale,
+            lengths=lengths,
+            workspace=workspace,
+            return_lse=self.dcp_size > 1,
         )

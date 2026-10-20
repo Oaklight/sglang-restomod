@@ -32,7 +32,7 @@
     "python/sglang/test/test_utils.py": "Handle CPU-only and UUID CUDA visibility without breaking numeric CI test-port lanes.",
     "python/sglang/kernels/ops/attention/dsa/sm70_indexer_decode.py": "Volta MMA decode/verification index scoring: live causal tile bounds and fused FP32 head reduction, without dense per-head score scratch.",
     "python/sglang/kernels/ops/gemm/sm70_nvfp4_routed.py": "Volta MMA small-row routed NVFP4 GEMM with encoded Marlin scales, K-major decoded weights and unchanged precision boundaries.",
-    "python/sglang/kernels/ops/attention/v100.py": "Lazy canonical V100 sparse, dense vision and recurrent CUDA adapters; backend-owned bounded scratch and nonintrusive prefill prefix checkpoints.",
+    "python/sglang/kernels/ops/attention/v100.py": "Lazy canonical V100 sparse, dense vision and recurrent CUDA adapters; backend-owned bounded scratch, optional base-2 sparse LSE for DCP and nonintrusive prefill prefix checkpoints.",
     "python/sglang/srt/arg_groups/fields/exec_.py": "Expose canonical V100 DSA profile and resolvable linear-attention backend fields.",
     "python/sglang/srt/arg_groups/fields/mm.py": "Expose resolvable V100 vision attention for the unified GLM profile.",
     "python/sglang/srt/layers/attention/linear/kda_backend.py": "Check safe-gate backend capability independently of Triton implementation identity.",
@@ -46,6 +46,8 @@
     "python/sglang/srt/entrypoints/openai/serving_chat.py": "Emit requested per-choice native prefill/decode timing metrics without changing default streams. Preserve GLM literal media spelling as ordinary tokens and carry image prompt IDs.",
     "python/sglang/srt/entrypoints/openai/utils.py": "Build finite scheduler prefill and native decode rates without conflating TTFT or queue latency. Encode quoted GLM media delimiters without attachment IDs.",
     "python/sglang/srt/multimodal/processors/glm4v.py": "Preserve GLM5 tokenized image prompts and expand only actual attachment IDs, with full-prompt MRoPE.",
-    "python/sglang/srt/multimodal/processors/base_processor.py": "Allow model-required exact image prompt expansion to fail closed instead of retokenizing literals."
+    "python/sglang/srt/multimodal/processors/base_processor.py": "Allow model-required exact image prompt expansion to fail closed instead of retokenizing literals.",
+    "python/sglang/srt/arg_groups/model_overrides/deepseek_v2.py": "Permit native V100 DCP with replicated pool4 indexers and explicit V100 sparse backends; other backends retain the pooled-index restriction.",
+    "python/sglang/kernels/ops/kvcache/mla_buffer.py": "Zero-RoPE MLA writes must honor DCP owner selection, local row collapse and reserved padding slots, matching the existing RoPE writer."
   }
 }

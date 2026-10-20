@@ -28,13 +28,22 @@ def resolve_profile(original, view):
     if view.enable_prefill_cp or any(
         size != 1
         for size in (
-            view.dcp_size,
             view.dp_size,
             view.attn_dp_size,
             view.attn_cp_size,
         )
     ):
         raise ValueError("v100_plus attention currently supports TP/PP with DP/CP1")
+    if view.dcp_size != 1:
+        text = getattr(model, "text_config", model)
+        if (
+            view.dcp_size != 2
+            or view.pp_size != 1
+            or text.num_attention_heads // view.tp_size != 8
+        ):
+            raise ValueError(
+                "v100_plus DCP requires two ranks, PP1 and eight local query heads"
+            )
     if view.max_running_requests != 1:
         raise ValueError(
             "v100_plus attention currently requires max-running-requests=1"

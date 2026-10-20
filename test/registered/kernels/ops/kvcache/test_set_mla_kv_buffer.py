@@ -352,5 +352,42 @@ def test_can_use_set_mla_kv_buffer():
     assert not can_use_set_mla_kv_buffer(13, 8)  # not multiple of 4
 
 
+@pytest.mark.parametrize("world_size", [1, 2])
+def test_norope_dcp_writer_keeps_owner_rows_and_canaries(world_size):
+    """Zero-RoPE stores formerly used global ids, corrupting compact DCP pools."""
+    from sglang.kernels.ops.kvcache.mla_buffer import _set_mla_kv_buffer_impl
+
+    for rank in range(world_size):
+        backing = torch.full((128, 512), -17.0, dtype=torch.float16, device="cuda")
+        compact = backing[: 64 // world_size]
+        loc = torch.arange(64, dtype=torch.int64, device="cuda")
+        values = torch.randn(64, 512, dtype=torch.float16, device="cuda")
+
+        def run():
+            _set_mla_kv_buffer_impl(
+                compact,
+                loc,
+                values,
+                None,
+                reserved_skip_index=0,
+                dcp_world_size=world_size,
+                dcp_rank=rank,
+            )
+
+        run()
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            run()
+        for _ in range(2):
+            backing.fill_(-17.0)
+            values.normal_()
+            loc.copy_(torch.randperm(64, device="cuda"))
+            graph.replay()
+            expected = torch.full_like(backing, -17.0)
+            owned = (loc != 0) & (loc % world_size == rank)
+            expected[loc[owned] // world_size] = values[owned]
+            torch.testing.assert_close(backing, expected, rtol=0, atol=0)
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v", "-s"]))

@@ -15,13 +15,23 @@ def _ops():
 
 
 def sparse_attention_v100(
-    q, kv, indices, scale, lengths=None, workspace=None, kv_splits=None
+    q,
+    kv,
+    indices,
+    scale,
+    lengths=None,
+    workspace=None,
+    kv_splits=None,
+    *,
+    return_lse=False,
 ):
     """Selected physical keys, FP16 latent512; prefill or bounded split decode.
 
     Negative/out-of-pool IDs are masked. Rows1..4 use split work; all other
     sizes use the same engine without splitting. Scratch is call-owned unless
     a backend supplies its own per-stream dictionary. Shapes use host metadata.
+    Optional LSE is FP32/base-2 per query/head, with -inf for empty support;
+    DCP combines the FP16 partials using that normalizer in FP32.
     """
     if q.ndim != 3 or q.shape[1] not in (8, 16) or q.shape[2] != 512:
         raise ValueError("V100 sparse attention requires Q[T,H8/16,512]")
@@ -47,6 +57,8 @@ def sparse_attention_v100(
         q = q.clone(memory_format=torch.contiguous_format)
     if not 1 <= rows <= 4:
         q = q.contiguous()
+        if return_lse:
+            return ops.prefill_lse(q, kv, ids, lengths, float(scale))
         return ops.prefill(q, kv, ids, lengths, float(scale))
     # Match the baseline contiguous split grouping without reading GPU counts.
     tiles = (ids.shape[1] + 63) // 64
@@ -77,6 +89,10 @@ def sparse_attention_v100(
     partial = scratch[1][: rows * splits * 16 * dim].view(*shape, dim)
     output = torch.empty(q.shape, device=q.device, dtype=torch.float16)
     ops.decode_out(q, kv, ids, lengths, lse, partial, float(scale))
+    if return_lse:
+        output_lse = torch.empty((rows, heads), device=q.device, dtype=torch.float32)
+        ops.reduce_out(lse, partial, output, output_lse)
+        return output, output_lse
     ops.reduce_out(lse, partial, output)
     return output
 
