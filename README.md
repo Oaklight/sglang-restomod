@@ -128,22 +128,29 @@ chunks of at most2048 tokens, retaining the existing FP16 KDA state boundaries.
 Each chunk owns its metadata, mHC scratch and activations. Attention, experts
 and weights keep their existing sharding; decode uses the existing graph path.
 
-Matched serial/overlapped schedules: FP4-Local,TP8/DCP4/EP1,1M allocation,MTP3 or ordinary,
+Matched serial/overlapped schedules and subsequent FP8 decode tuning: FP4-Local,TP8/DCP4/EP1,1M allocation,MTP3 or ordinary,
 FP16 KV/state,images,three coherent near8K categories,T0,256 outputs:
 
-| Tokens/s, category means | Before: serial | After: overlap |
-| --- | ---: | ---: |
-| Prefill, MTP3 |2,137.4|2,375.4|
-| Generation, MTP3 |81.6|81.3|
-| Prefill, ordinary |2,202.7|2,462.1|
-| Generation, ordinary |43.4|43.5|
+| Tokens/s, category means | Serial | Paired prefill | Paired + FP8 decode |
+| --- | ---: | ---: | ---: |
+| Prefill, MTP3 |2,137.4|2,375.4|2,408.8|
+| Generation, MTP3 |81.6|81.3|82.4|
+| Prefill, ordinary |2,202.7|2,462.1|2,495.5|
+| Generation, ordinary |43.4|43.5|43.4|
 
 Prefill improves11.1% with MTP and11.8% without it; generation is flat. Identical serial controls can differ
 because the pool selector returns keys in an unsorted atomic-append order.
-Replaying the same selected-key order makes whole-model outputs and KDA/conv
+Schedule-only replay with the same selected-key order makes whole-model outputs and KDA/conv
 state bit-exact across all eight ranks. Timed requests use the live selector.
 Image-bearing near8K,15.8K text and prefix reuse pass. The chunkwise Tensor Core
 KDA prototype lost complete-operation tests and was rejected.
+
+The FP8 follow-up vectorizes large four-row verification projections and fuses
+short-K finishing reductions. MTP verification cycles are2.8% shorter; measured
+generation improves1.4%, with acceptance69.0%→68.0%. Ordinary generation is flat;
+small prefill differences are not isolated gains. FP16 operands/output and full-K
+FP32 accumulation remain. Real-bank FP64/graph/canary, cancellation, memcheck and
+synccheck checks pass; image input and prefix reuse pass in both modes.
 
 ## SM70 execution
 
@@ -153,7 +160,7 @@ in software; it does not imply native arithmetic in those formats.
 | Operation | Implementation / contract |
 | --- | --- |
 | NVFP4 GEMMs | [marlin-v100](https://github.com/heislera763/marlin-v100) at `95b1e62e` plus local patches: W4A16, FP16 WMMA with FP32 accumulation; block/global scales remain distinct. TP4/TP8 routed prefill uses64×256×32 cached-row Marlin tiles. Small routed groups at both TP sizes use [Volta MMA](python/sglang/kernels/ops/gemm/sm70_nvfp4_routed.py) with M16 tiles and K-major decoded weights; FP16 dequantization/output and FP32 accumulation/scaling remain. Unused alternate-backend MoE scale buffers alias active scales, saving17.72GiB across GLM's8GPUs. |
-| FP8 GEMMs | W8A16 with block128 or MXFP8 group32 scales. [Small-row GEMV](python/sglang/kernels/ops/gemm/sm70_fp8_gemv.py) reuses reconstructed FP16 weights across1–4 rows and reduces K in FP32. [Prefill](python/sglang/kernels/ops/gemm/sm70_fp8_gemm.py) transiently unpacks one projection for native FP16 Tensor Cores/FP32 accumulation; no persistent FP16 weight bank. Intermediate row counts retain SM70 Marlin. Qwen block-FP8 experts retain their separate small-row kernels; EP4/EP8 preserves whole experts. |
+| FP8 GEMMs | W8A16 with block128 or MXFP8 group32 scales. [Small-row GEMV](python/sglang/kernels/ops/gemm/sm70_fp8_gemv.py) reuses reconstructed FP16 weights across1–4 rows and reduces K in FP32. Short-K projections fuse their finishing reduction; large four-row group32 projections decode four packed bytes together in native CUDA and retain scales across each group. [Prefill](python/sglang/kernels/ops/gemm/sm70_fp8_gemm.py) transiently unpacks one projection for native FP16 Tensor Cores/FP32 accumulation; no persistent FP16 weight bank. Intermediate row counts retain SM70 Marlin. Qwen block-FP8 experts retain their separate small-row kernels; EP4/EP8 preserves whole experts. |
 | FP16 routed experts | [Volta MMA GEMM](python/sglang/kernels/ops/moe/sm70_fp16.py), used by NVIDIA GLM's unquantized MTP experts. FP16 inputs/weights/output, FP32 accumulation and router multiply; upstream routing, activation and expert sum retained. Automatically selected by the SM70 plugin; unsupported epilogues fail under strict dispatch. |
 | Qwen QSA/GDN/HC | Direct FP16-cache sparse prefill/decode/verification, masked Tensor Core prefill, SM70 GDN and gated-residual kernels; HC eager prefill partitions within each quad, including TP8. |
 | GLM attention | [Canonical V100 CUDA backend](python/sglang/kernels/ops/attention/v100.py) from the [FA fork](https://github.com/heislera763/flash-attention-v100): selected-key FP16 sparse prefill/decode/MTP, FP32 reductions and FP16 probabilities/partials. Empty tiles skip identity work. The model-native FP8 indexer retains [live-history MMA scoring](python/sglang/kernels/ops/attention/dsa/sm70_indexer_decode.py) and bounded prefill scoring. Decode/verification gathers initialize only live counted prefixes; future scratch is masked by the scorer. |

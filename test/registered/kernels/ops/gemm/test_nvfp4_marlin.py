@@ -39,8 +39,19 @@ def sm70_runtime():
     not torch.cuda.is_available() or torch.cuda.get_device_capability() != (7, 0),
     reason="Requires the SM70 plugin and group32 Marlin extension",
 )
-@pytest.mark.parametrize("n,k", [(160, 160), (1024, 4096), (19360, 4096)])
-def test_sm70_mxfp8_padded_dense_bias_and_graph(sm70_runtime, n, k):
+@pytest.mark.parametrize(
+    "n,k,scale_offset",
+    [
+        (160, 160, 0),
+        (1024, 4096, 0),
+        (19360, 4096, 0),
+        (3072, 4096, 0),
+        (4096, 256, 0),
+        (4096, 1024, 0),
+        (2051, 1120, 1),
+    ],
+)
+def test_sm70_mxfp8_padded_dense_bias_and_graph(sm70_runtime, n, k, scale_offset):
     """Group32 scales must not collapse to128; padding must not shift bias/head rows."""
     from sglang_v100_plus.fp8 import SM70MXFP8LinearMethod
 
@@ -73,8 +84,19 @@ def test_sm70_mxfp8_padded_dense_bias_and_graph(sm70_runtime, n, k):
         weight.float() * torch.exp2(scales.float() - 127).repeat_interleave(32, 1)
     ).half()
     method.process_weights_after_loading(layer)
+    if scale_offset:
+        stored = layer.weight_scale_inv
+        guarded_scales = torch.full(
+            (stored.numel() + 2,), 37, device="cuda", dtype=torch.float16
+        )
+        unaligned = guarded_scales[1:-1].view_as(stored)
+        unaligned.copy_(stored)
+        layer.weight_scale_inv = torch.nn.Parameter(unaligned, requires_grad=False)
     bias = torch.randn(n, device="cuda", dtype=torch.float16) * 0.01
-    for rows in (1, 2, 3, 4, 33, 257):
+    # The public GEMV accepts a contiguous two-byte-offset scale view. The
+    # separate Marlin path for medium batches requires 16-byte-aligned scales.
+    row_counts = (1, 2, 3, 4) if scale_offset else (1, 2, 3, 4, 33, 257)
+    for rows in row_counts:
         x = torch.randn(rows, k, device="cuda", dtype=torch.float16) * 0.1
         method.apply(layer, x, bias)
         graph = torch.cuda.CUDAGraph()
@@ -83,15 +105,26 @@ def test_sm70_mxfp8_padded_dense_bias_and_graph(sm70_runtime, n, k):
             biased = method.apply(layer, x, bias)
         x.normal_(std=0.1)
         bias.normal_(std=0.01)
+        if scale_offset:
+            layer.weight_scale_inv.mul_(0.5)
         graph.replay()
         # Independent FP64 dot product, with the required FP16 operand/output
         # and post-projection bias boundaries retained explicitly.
-        expected = (x.double() @ reference.double().T).half()
+        current_reference = reference
+        if scale_offset:
+            current_reference = (
+                weight.float()
+                * torch.exp2(scales.float() - 128).repeat_interleave(32, 1)
+            ).half()
+        expected = (x.double() @ current_reference.double().T).half()
         torch.testing.assert_close(actual, expected, rtol=0.001, atol=0.0002)
         # Check the two rounding boundaries separately. Composing half output
         # rounding with half bias rounding can turn a one-ULP dot difference
         # into two ULPs; that does not imply an incorrect bias epilogue.
         torch.testing.assert_close(biased, actual.add(bias), rtol=0, atol=0)
+        if scale_offset:
+            layer.weight_scale_inv.mul_(2)
+            assert bool((guarded_scales[[0, -1]] == 37).all())
 
 
 @pytest.mark.skipif(
@@ -168,7 +201,8 @@ def test_sm70_block_fp8_graph_and_canaries(sm70_runtime, n, k):
     not torch.cuda.is_available() or torch.cuda.get_device_capability() != (7, 0),
     reason="Requires SM70 packed FP8 kernels",
 )
-def test_sm70_fp8_full_k_cancellation(sm70_runtime):
+@pytest.mark.parametrize("k", [256, 4096])
+def test_sm70_fp8_full_k_cancellation(sm70_runtime, k):
     """A small final result must survive partial sums far beyond FP16 range."""
     from sglang_v100_plus.fp8 import SM70MXFP8LinearMethod
 
@@ -186,7 +220,7 @@ def test_sm70_fp8_full_k_cancellation(sm70_runtime):
     )
     layer = torch.nn.Module()
     layer.tp_group = None
-    n, k = 2048, 4096
+    n = 2048
     with torch.device("cuda"):
         method.create_weights(layer, k, [n], k, n, torch.float16)
     weights = torch.full((n, k), 64, device="cuda", dtype=torch.float16)
@@ -198,7 +232,8 @@ def test_sm70_fp8_full_k_cancellation(sm70_runtime):
     for rows in (1, 4, 128, 257):
         x = torch.full((rows, k), 32, device="cuda", dtype=torch.float16)
         actual = method.apply(layer, x)
-        # The positive partial is 4,194,304; only the final 128 fits FP16.
+        # The positive half is32*64*(K/2), beyond FP16 for both full-K and
+        # split-K dispatch. Only the final128 fits FP16.
         torch.testing.assert_close(actual, torch.full_like(actual, 128), rtol=0, atol=0)
 
 

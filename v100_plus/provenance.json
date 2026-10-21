@@ -130,6 +130,13 @@
     "source": "csrc/sparse_mla",
     "contracts": "FP16 KV/state, FP32 working accumulation; FP16 snapshot carry during verification; nonintrusive bounded FP32 prefill checkpoint copied into FP16 radix state; exact paired-query selected-key multiset, capacity-bounded device support preparation, up to 4096 selected columns; optional base-2 FP32 LSE for FP16 partial-attention DCP with FP32 correction/reduction; native H8/H16/H32/H64 sparse attention; resource-bounded H32/H64 prefill staging, native H64 head tiling and direct-Q decode for DCP4/DCP8"
   },
+  "dense_fp8_decode": {
+    "implementation": "python/sglang/kernels/ops/gemm/sm70_fp8_gemv.py",
+    "native_source": "python/sglang/kernels/jit/csrc/gemm/sm70_fp8_gemv.cuh",
+    "dispatch": "SM70 only: PK<=256 uses one full-K Triton tile; four-row group32 projections with logical N>=2048,K>=1024 use vector CUDA; other shapes retain the existing SM70 Triton contraction.",
+    "contract": "Original packed Marlin weight layout and group32/group128 FP16 scales; exact FP16 reconstructed operands and output; full-K FP32 working sums/partials; caller-owned capacity-bounded scratch, including padded logical widths and two-byte-offset scale views. No new quantization, checkpoint format, tuning flags or persistent expanded weights.",
+    "validation": "Production/prototype results bit-exact on15 captured real FP8 banks; independent FP64 and prior implementation within unchanged rtol=.001,atol=.0002; graph replay with changed inputs/scales and canaries, registered numerical/graph/cancellation tests, memcheck and synccheck."
+  },
   "execution_schedules": {
     "glm_paired_prefill": {
       "implementation": "v100_plus/sglang_v100_plus/paired_prefill.py",

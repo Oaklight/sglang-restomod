@@ -8,6 +8,20 @@ import torch
 import triton
 import triton.language as tl
 
+from sglang.kernels.jit.utils import cache_once, load_jit, make_cpp_args
+
+
+@cache_once
+def _vector_module(rows, group):
+    args = make_cpp_args(rows, group)
+    return load_jit(
+        "sm70_fp8_vector_gemv",
+        *args,
+        cuda_files=["gemm/sm70_fp8_gemv.cuh"],
+        cuda_wrappers=[("run", f"sm70_fp8_vector_run<{args}>")],
+        extra_cuda_cflags=["--fmad=false"],
+    )
+
 
 @triton.jit
 def _fp8_partial(
@@ -24,6 +38,7 @@ def _fp8_partial(
     BK: tl.constexpr,
     MACRO: tl.constexpr,
     ROWS: tl.constexpr,
+    FULL: tl.constexpr = False,
 ):
     lane = tl.arange(0, BN)
     tiles = MACRO // 64
@@ -49,7 +64,10 @@ def _fp8_partial(
     for row in tl.static_range(ROWS):
         x = tl.load(X + row * K + k, k < K, 0).to(tl.float32)
         accum = tl.sum(x[:, None] * weight.to(tl.float32), axis=0)
-        tl.store(P + (row * (PK // BK) + tl.program_id(1)) * N + n, accum, n < N)
+        if FULL:
+            tl.store(P + row * N + n, accum, n < N)
+        else:
+            tl.store(P + (row * (PK // BK) + tl.program_id(1)) * N + n, accum, n < N)
 
 
 @triton.jit
@@ -110,23 +128,51 @@ def sm70_fp8_gemv(x, weight, scales, output, partials):
     ):
         raise ValueError("SM70 FP8 GEMV requires contiguous colocated tensors")
     macro = 256 if pn % 256 == 0 else 128
-    _fp8_partial[(pn // 64, pk // 128)](
-        x,
-        weight,
-        scales,
-        partials,
-        n,
-        k,
-        pn,
-        pk,
-        group,
-        64,
-        128,
-        macro,
-        rows,
-        num_warps=4,
-        enable_fp_fusion=False,
-    )
+    if pk <= 256:
+        # A short projection fits in one full-K tile. Round directly to the
+        # output, avoiding a partial-buffer round trip and finishing launch.
+        _fp8_partial[(pn // 32, 1)](
+            x,
+            weight,
+            scales,
+            output,
+            n,
+            k,
+            pn,
+            pk,
+            group,
+            32,
+            pk,
+            macro,
+            rows,
+            True,
+            num_warps=4,
+            enable_fp_fusion=False,
+        )
+        return output
+    if rows == 4 and group == 32 and n >= 2048 and k >= 1024:
+        # Four-row verification benefits from decoding each word once and
+        # retaining its scale across a group. Tiny/skinny projections keep
+        # the existing SM70 tile, which is faster for their lower reuse.
+        _vector_module(rows, group).run(x, weight, scales, partials, output)
+    else:
+        _fp8_partial[(pn // 64, pk // 128)](
+            x,
+            weight,
+            scales,
+            partials,
+            n,
+            k,
+            pn,
+            pk,
+            group,
+            64,
+            128,
+            macro,
+            rows,
+            num_warps=4,
+            enable_fp_fusion=False,
+        )
     _fp8_reduce[(triton.cdiv(n, 128), rows)](
         partials,
         output,

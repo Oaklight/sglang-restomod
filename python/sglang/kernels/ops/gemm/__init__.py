@@ -51,7 +51,7 @@ register_kernel(
 register_kernel(
     KernelSpec(
         op="gemm.sm70_fp8_gemv",
-        backend=KernelBackend.TRITON,
+        backend=KernelBackend.JIT,
         target="sglang.kernels.ops.gemm.sm70_fp8_gemv:sm70_fp8_gemv",
         capabilities=frozenset(
             {CapabilityRequirement.cuda(min_sm=(7, 0), max_sm=(7, 0))}
