@@ -127,30 +127,31 @@ the next chunk's computation. `--chunked-prefill-size 4096` admits two internal
 chunks of at most2048 tokens, retaining the existing FP16 KDA state boundaries.
 Each chunk owns its metadata, mHC scratch and activations. Attention, experts
 and weights keep their existing sharding; decode uses the existing graph path.
+The initial schedule change improved prefill by 11.1% with MTP and 11.8% without it.
+Fixed selected-key order makes whole-model outputs and KDA/conv state bit-exact
+across all eight ranks; timed requests use the live, unsorted pool selector.
 
-Matched serial/overlapped schedules and subsequent FP8 decode tuning: FP4-Local,TP8/DCP4/EP1,1M allocation,MTP3 or ordinary,
-FP16 KV/state,images,three coherent near8K categories,T0,256 outputs:
+Latest mHC follow-up: reuse exact fused cast/mean preparation for full rows and
+avoid two quad gathers per PRE during paired forwards. Other layouts retain
+their partition choice. Same full FP32 projection, FP16 operands/KV/state,
+weights, graph decode and launch options. FP4-Local, TP8/DCP4/EP1, 1M allocation,
+images, three coherent near8K categories, T0/seed531, 256 outputs:
 
-| Tokens/s, category means | Serial | Paired prefill | Paired + FP8 decode |
-| --- | ---: | ---: | ---: |
-| Prefill, MTP3 |2,137.4|2,375.4|2,408.8|
-| Generation, MTP3 |81.6|81.3|82.4|
-| Prefill, ordinary |2,202.7|2,462.1|2,495.5|
-| Generation, ordinary |43.4|43.5|43.4|
+| Tokens/s, category means | Before mHC follow-up | Current |
+| --- | ---: | ---: |
+| Prefill, MTP3 |2,408.8|2,521.3|
+| Generation, MTP3 |82.4|85.2|
+| Prefill, ordinary |2,495.5|2,624.1|
+| Generation, ordinary |43.4|43.4|
 
-Prefill improves11.1% with MTP and11.8% without it; generation is flat. Identical serial controls can differ
-because the pool selector returns keys in an unsorted atomic-append order.
-Schedule-only replay with the same selected-key order makes whole-model outputs and KDA/conv
-state bit-exact across all eight ranks. Timed requests use the live selector.
-Image-bearing near8K,15.8K text and prefix reuse pass. The chunkwise Tensor Core
-KDA prototype lost complete-operation tests and was rejected.
-
-The FP8 follow-up vectorizes large four-row verification projections and fuses
-short-K finishing reductions. MTP verification cycles are2.8% shorter; measured
-generation improves1.4%, with acceptance69.0%→68.0%. Ordinary generation is flat;
-small prefill differences are not isolated gains. FP16 operands/output and full-K
-FP32 accumulation remain. Real-bank FP64/graph/canary, cancellation, memcheck and
-synccheck checks pass; image input and prefix reuse pass in both modes.
+Prefill improves by 4.7% with MTP and 5.2% without it across all three categories.
+Decode execution is unchanged: verification cycles 36.66→36.60ms, ordinary
+generation flat. Higher MTP generation accompanies acceptance 68.05%→71.04%.
+Compatible recorded controls are reused, with one fresh process per mode.
+Both captured mHC banks are bit-exact; changed-input graph/canary, memcheck,
+image input and prefix reuse checks pass, plus 15.8K text continuation.
+Full 1M execution remains unqualified. The tested chunkwise Tensor Core KDA and
+expert unpacking/layout variants were rejected after complete-operation screens.
 
 ## SM70 execution
 
@@ -305,7 +306,7 @@ controls also show numerical variation, so sequence identity is not guaranteed.
 
 | Optional flag | Recommendation |
 | --- | --- |
-| `SGLANG_OPT_SM70_HC_PREFILL_SP=1` | Serialized eager prefill within TP4/TP8/PP2 quads. Qwen partitions HC residuals; GLM partitions bulk mHC statistics/mixing at≥1024rows, restoring full input/coefficients before attention and experts. Small rows and decode keep their existing native paths. |
+| `SGLANG_OPT_SM70_HC_PREFILL_SP=1` | Serialized eager prefill within TP4/TP8/PP2 quads. Qwen partitions HC residuals; GLM partitions bulk mHC statistics/mixing at≥1024rows. Active paired GLM forwards use exact fused full-row preparation instead, avoiding local gathers competing with TP sums. Small rows and decode keep their existing native paths. |
 | `SGLANG_ENABLE_METADATA_GLUE_GRAPH=1` | Qwen PP2 fixed EAGLE1–3 commit copies; GLM fixed chains/full KDA snapshots supported; NVIDIA speed benefit unmeasured, leave off. |
 | `SGLANG_OPT_SM70_SPEC_SAMPLE_GRAPH=1` | Qwen TP8 MTP3; leave off on PP2. Unsupported sampling features use their declared original path. |
 | `SGLANG_OPT_SM70_NVFP4_MOE_GEMV=1` | GLM opt-in supports1–4 rows; prior publisher screen found no aggregate win, NVIDIA benefit unmeasured. Leave off. |

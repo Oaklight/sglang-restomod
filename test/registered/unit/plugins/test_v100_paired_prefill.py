@@ -51,6 +51,8 @@ class TestV100PairedPrefill(CustomTestCase):
             return p.all_reduce(lambda _group, value: value + 1, group, input_ids)
 
         def operation(x):
+            if p.is_active():
+                raise AssertionError("compiled execution entered eager schedule")
             return p.model_forward(original_model, None, x, None, None)
 
         compiled = torch.compile(operation, backend="eager", fullgraph=True)

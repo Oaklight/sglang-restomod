@@ -167,6 +167,8 @@ def mhc_pre_sm70(
     Rows retain the batch-one reduction, including speculative verification.
     ``fuse_pointwise`` retains cuBLAS projection and torch mean reduction,
     fusing only cast/square and epsilon/rsqrt operations for the same shape.
+    Bulk (M>=1024, H=4096) reuses the exact cast/mean preparation from the
+    sharded path; the full FP32 projection and all finalization remain intact.
     """
     assert residual.ndim == 3 and residual.shape[1] == 4
     assert residual.dtype == torch.float16 and residual.is_contiguous()
@@ -218,6 +220,12 @@ def mhc_pre_sm70(
             # Identical input layout and reduction implementation to the default.
             rms = square.mean(-1)
             mixes = F.linear(x, fn)
+        elif m >= 1024 and h == 4096:
+            x = torch.empty((m, 16384), dtype=torch.float32, device=residual.device)
+            mean = torch.empty(m, dtype=torch.float32, device=residual.device)
+            _prepare_shard_module().run(residual, x, mean, 0)
+            mixes = F.linear(x, fn)
+            rms = torch.rsqrt(mean + rms_eps)
         else:
             x = residual.view(m, hc * h).float()
             mixes = F.linear(x, fn)

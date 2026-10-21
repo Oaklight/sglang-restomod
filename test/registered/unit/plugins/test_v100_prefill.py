@@ -27,6 +27,66 @@ with patch.object(
 
 
 class TestV100Prefill(CustomTestCase):
+    def test_glm_paired_mhc_keeps_full_rows_without_gathering(self):
+        """Active chunk scheduling uses replicated PRE without a local gather.
+
+        The chunk's full token rows and optional normalization must reach the
+        native dispatch unchanged. A leaked schedule context would also make
+        later ordinary prefill bypass the separately tested partition path.
+        """
+        from sglang_v100_plus import paired_prefill
+
+        value = torch.arange(1024, dtype=torch.float16)[:, None, None]
+        value = value.expand(1024, 4, 4096).contiguous()
+        weight = torch.ones(4096, dtype=torch.float16)
+
+        def full(residual, _fn, _scale, _base, *_args):
+            norm_weight, norm_eps = _args[-2:]
+            layer = residual[:, 0] * norm_weight + norm_eps
+            return residual[:, :, :1].float(), residual[:, :, :4].float(), layer, True
+
+        fields = dict(
+            model_path="dummy",
+            tp_size=8,
+            pp_size=1,
+            max_running_requests=1,
+            disable_overlap_schedule=True,
+            disable_prefill_cuda_graph=True,
+        )
+        with (
+            get_context().override_server_args(**fields),
+            envs.SGLANG_OPT_SM70_HC_PREFILL_SP.override(True),
+            prefill_scope(True),
+            patch(
+                "sglang_v100_plus.prefill.quad_partition",
+                side_effect=AssertionError("paired PRE attempted a gather"),
+            ),
+        ):
+            slot = paired_prefill._slot()
+            token = slot.set(object())
+            try:
+                post, comb, layer, norm_fused = mhc_pre_dispatch(
+                    full,
+                    value,
+                    None,
+                    None,
+                    None,
+                    1e-5,
+                    1e-6,
+                    1e-6,
+                    2.0,
+                    20,
+                    weight,
+                    0.5,
+                )
+                self.assertTrue(norm_fused)
+                self.assertEqual(post.shape, (1024, 4, 1))
+                self.assertEqual(comb.shape, (1024, 4, 4))
+                torch.testing.assert_close(layer, value[:, 0] + 0.5)
+            finally:
+                slot.reset(token)
+            self.assertFalse(paired_prefill.is_active())
+
     def test_glm_mhc_restores_fp32_coefficients_and_trims_padded_tokens(self):
         """POST needs dense coefficient strides and matching original token IDs.
 

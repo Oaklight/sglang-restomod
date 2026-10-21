@@ -107,6 +107,56 @@ def test_fp16_mhc_shard_preparation_graph_reads_current_inputs(tokens):
         torch.testing.assert_close(storage, saved, rtol=0, atol=0)
 
 
+def test_fp16_mhc_full_preparation_graph_reads_every_row():
+    """Bulk PRE must reduce all rows, preserve the mean tree and own its cast.
+
+    A two-byte source offset and uneven row count catch alignment assumptions;
+    graph refresh at large/tiny magnitudes catches stale or truncated means.
+    Canaries guard the full-row mean output as well as the FP32 cast.
+    """
+    if not torch.cuda.is_available() or torch.version.hip is not None:
+        pytest.skip("CUDA FP16 mHC coverage")
+    from sglang.kernels.ops.layernorm.mhc_sm70 import (
+        _prepare_shard_module,
+        mhc_pre_sm70,
+    )
+
+    torch.manual_seed(538)
+    rows = 1025
+    source = torch.full((rows * 16384 + 2,), 13.0, device="cuda", dtype=torch.float16)
+    residual = source[1:-1].view(rows, 4, 4096)
+    residual.copy_(torch.randn_like(residual))
+    cast_storage = torch.full((rows * 16384 + 8,), 17.0, device="cuda")
+    cast = cast_storage[4:-4].view(rows, 16384)
+    mean_storage = torch.full((rows + 2,), 19.0, device="cuda")
+    mean = mean_storage[1:-1]
+    fn = torch.randn(24, 16384, device="cuda") * 0.015
+    scale = torch.tensor([0.5, 0.7, 0.9], device="cuda")
+    base = torch.randn(24, device="cuda") * 0.3
+    args = (residual, fn, scale, base, 1e-6, 1e-5, 1e-7, 1.7, 20)
+    prepare = _prepare_shard_module().run
+    prepare(residual, cast, mean, 0)
+    mhc_pre_sm70(*args)
+    torch.cuda.synchronize()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        prepare(residual, cast, mean, 0)
+        actual = mhc_pre_sm70(*args)
+    for magnitude in (1.0, 128.0, 2**-20):
+        residual.copy_(torch.randn_like(residual) * magnitude)
+        fn.mul_(0.75)
+        saved = source.clone()
+        expected = mhc._mhc_pre_torch(*args)
+        graph.replay()
+        torch.testing.assert_close(cast, residual.flatten(1).float(), rtol=0, atol=0)
+        torch.testing.assert_close(mean, cast.square().mean(-1), rtol=0, atol=0)
+        for got, want in zip(actual, expected):
+            torch.testing.assert_close(got, want, rtol=0.001, atol=0.002)
+        torch.testing.assert_close(source, saved, rtol=0, atol=0)
+        assert torch.all(cast_storage[:4] == 17) and torch.all(cast_storage[-4:] == 17)
+        assert mean_storage[0] == mean_storage[-1] == 19
+
+
 @pytest.mark.parametrize(
     "tokens,iterations,fuse_projection",
     [

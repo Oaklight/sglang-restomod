@@ -29,12 +29,16 @@ def mhc_pre_dispatch(
     from sglang.srt.environ import envs
     from sglang.srt.runtime_context import get_exec, get_schedule
 
+    from .paired_prefill import is_active
     from .prefill import quad_partition
 
     partition = None
     if (
         in_prefill()
         and envs.SGLANG_OPT_SM70_HC_PREFILL_SP.get()
+        # Fused full-row PRE avoids two gathers competing with the paired
+        # schedule's outstanding TP sums. Other prefill layouts keep sharding.
+        and not is_active()
         and residual.ndim == 3
         and residual.dtype == torch.float16
         # Below a large chunk the local gather costs more than replicated PRE.

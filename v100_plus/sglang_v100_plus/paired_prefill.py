@@ -32,6 +32,11 @@ def _slot():
     )
 
 
+def is_active():
+    """Whether this eager forward belongs to the two-chunk compute schedule."""
+    return not torch.compiler.is_compiling() and _slot().get() is not None
+
+
 def _states_of(model):
     from sglang.srt.layers.layer_boundary.residual.mhc import MHCState
 

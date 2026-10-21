@@ -143,8 +143,8 @@
       "profile": "GLM mHC4/4096, TP8/DCP4/EP1, single-session eager prefill, ordinary or EAGLE",
       "admission_tokens": 4096,
       "internal_chunk_tokens": 2048,
-      "contract": "Same-layer KDA state and DSA key publication precede the next chunk; owned metadata/mHC/forward flags, one compute stream and a per-pair communication stream; FP16 KV/state boundaries and existing collectives preserved.",
-      "validation": "Bit-exact whole-model outputs and KDA/conv state on all eight ranks with fixed selected-key order; live-indexer three-category throughput, image-bearing near8K,15.8K continuation, prefix reuse and CPU ownership regressions."
+      "contract": "Same-layer KDA state and DSA key publication precede the next chunk; owned metadata/mHC/forward flags, one compute stream and a per-pair communication stream; FP16 KV/state boundaries and global TP sums preserved. Active paired forwards use replicated mHC PRE with the existing exact fused full-row cast/mean, avoiding two local gathers per PRE; other prefill layouts keep their partition choice.",
+      "validation": "Bit-exact whole-model outputs and KDA/conv state on all eight ranks with fixed selected-key order; exact full/sharded mHC results on both captured stage banks, full-range changed-input graph/canary and memcheck checks; live-indexer three-category throughput, image input,15.8K continuation, prefix reuse and CPU ownership/compile regressions."
     }
   },
   "checkpoint_formats": {
