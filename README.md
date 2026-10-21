@@ -122,6 +122,29 @@ gain. Total GPU memory240.48→242.13GiB. The combined model measurement does no
 isolate each change; original weights were not rebenchmarked in this follow-up.
 Near8K images/reuse, FP64 DCP merge, exact mHC graph/canary and sanitizer checks pass.
 
+GLM paired prefill (2026-10-20, `dev`) overlaps each token chunk's TP sums with
+the next chunk's computation. `--chunked-prefill-size 4096` admits two internal
+chunks of at most2048 tokens, retaining the existing FP16 KDA state boundaries.
+Each chunk owns its metadata, mHC scratch and activations. Attention, experts
+and weights keep their existing sharding; decode uses the existing graph path.
+
+Matched serial/overlapped schedules: FP4-Local,TP8/DCP4/EP1,1M allocation,MTP3 or ordinary,
+FP16 KV/state,images,three coherent near8K categories,T0,256 outputs:
+
+| Tokens/s, category means | Before: serial | After: overlap |
+| --- | ---: | ---: |
+| Prefill, MTP3 |2,137.4|2,375.4|
+| Generation, MTP3 |81.6|81.3|
+| Prefill, ordinary |2,202.7|2,462.1|
+| Generation, ordinary |43.4|43.5|
+
+Prefill improves11.1% with MTP and11.8% without it; generation is flat. Identical serial controls can differ
+because the pool selector returns keys in an unsorted atomic-append order.
+Replaying the same selected-key order makes whole-model outputs and KDA/conv
+state bit-exact across all eight ranks. Timed requests use the live selector.
+Image-bearing near8K,15.8K text and prefix reuse pass. The chunkwise Tensor Core
+KDA prototype lost complete-operation tests and was rejected.
+
 ## SM70 execution
 
 Volta supports FP16 Tensor Cores. FP4/FP8/BF16 checkpoint storage is decoded or cast
@@ -229,7 +252,7 @@ uv run --no-project .venv/bin/python -m sglang_v100_plus "${common[@]}" \
 | GLM TP8 MTP | TP8/EP1,262144context/262656pool/.95fraction/chunk2048 and the compact draft flags below. Export the small-allreduce tuner below and `SGLANG_OPT_SM70_HC_PREFILL_SP=1`. |
 | GLM TP8/DCP2 MTP | Same TP8 MTP recipe, context524288, `--max-total-tokens 262656 --dcp-size 2 --dcp-comm-backend ag_rs --no-dcp-replicate-q-proj`. Physical row capacity is doubled logically by DCP. Use device order1,2,0,3,4,7,5,6 on the reference machine: every adjacent DCP pair has direct NV2. Requires FA0.2.3; target FP16 latent KV is striped, native index and draft storage remain replicated. Full-window qualification pending. |
 | GLM TP8/DCP4 MTP | Optional memory profile: DCP2 recipe with `--dcp-size 4 --max-total-tokens 131584`, exposing526336 logical slots. Same context/chunk/MTP settings and device order, with each four-rank group inside one NVLink quad. Requires FA0.2.4/native H32 or newer. For context786432, use `--max-total-tokens 197120` (788480 logical slots,3.11GiB/GPU KV/index storage). Startup, near8K generation, images and prefix reuse pass at both sizes; full-window generation is unqualified. DCP2 remains a comparison profile; the selected hosting profile is DCP4/786432. |
-| GLM FP4-Local TP8/DCP4 MTP | Select FP4-Local for both target/draft paths and `modelopt_mixed` for both quantization options. Use MTP3 flags below, context1048576 and physical `--max-total-tokens 262656` (1050624 logical slots). Same DCP4 topology, FP16 KV/state, images and prefix settings. The prefill screen above uses `--dcp-comm-backend a2a`; its decode/memory tradeoffs are measured separately from the earlier `ag_rs` profile. Full-window qualification remains pending. |
+| GLM FP4-Local TP8/DCP4 MTP | Select FP4-Local for both target/draft paths and `modelopt_mixed` for both quantization options. Use MTP3 flags below, context1048576 and physical `--max-total-tokens 262656` (1050624 logical slots). Use `--dcp-comm-backend a2a --chunked-prefill-size 4096` for paired prefill on `dev`; internal chunks remain2048. Same DCP4 topology, FP16 KV/state, images and prefix settings. Full-window qualification remains pending. |
 | GLM TP8/DCP8 MTP | Capacity profile: DCP2 recipe with `--dcp-size 8 --max-total-tokens 66048`, exposing528384 logical slots at524K context. Requires FA0.2.5/native H64. Its attention group spans both quads; only target FP16 latent KV is striped, while draft/index storage stays replicated. Full-window capacity is unqualified. |
 | GLM PP2 MTP | TP4/PP2/EP1; `SGLANG_PP_LAYER_PARTITION=24,21`, `SGLANG_OPT_SM70_HC_PREFILL_SP=1`; context **524288**, total tokens **524800**, fraction **.95**, chunk2048. Add MTP flags below. Images are enabled; vision weights reside on the first PP stage. The table below leaves metadata graphs and the small-allreduce tuner off for PP2. |
 | MTP, either model | Add `--speculative-algorithm EAGLE --speculative-num-steps 3 --speculative-num-draft-tokens 4 --speculative-eagle-topk 1 --speculative-use-rejection-sampling`. PP2 also exports `SGLANG_ENABLE_PP_SPEC=1`. |

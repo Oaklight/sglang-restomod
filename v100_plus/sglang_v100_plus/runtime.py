@@ -399,10 +399,22 @@ def install():
             HookType.AROUND,
         ),
     ]
+    from .paired_prefill import all_reduce as paired_all_reduce
+    from .paired_prefill import model_forward as paired_model_forward
     from .prefill import model_forward, prepare_attention
 
     hooks.extend(
         (
+            (
+                "sglang.srt.models.glm5_next.Glm5NextModel.forward",
+                paired_model_forward,
+                HookType.AROUND,
+            ),
+            (
+                "sglang.srt.distributed.parallel_state.GroupCoordinator.all_reduce",
+                paired_all_reduce,
+                HookType.AROUND,
+            ),
             (
                 "sglang.srt.models.qwen4_exp.Qwen4ExpModel.forward",
                 model_forward,

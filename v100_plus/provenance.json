@@ -130,6 +130,16 @@
     "source": "csrc/sparse_mla",
     "contracts": "FP16 KV/state, FP32 working accumulation; FP16 snapshot carry during verification; nonintrusive bounded FP32 prefill checkpoint copied into FP16 radix state; exact paired-query selected-key multiset, capacity-bounded device support preparation, up to 4096 selected columns; optional base-2 FP32 LSE for FP16 partial-attention DCP with FP32 correction/reduction; native H8/H16/H32/H64 sparse attention; resource-bounded H32/H64 prefill staging, native H64 head tiling and direct-Q decode for DCP4/DCP8"
   },
+  "execution_schedules": {
+    "glm_paired_prefill": {
+      "implementation": "v100_plus/sglang_v100_plus/paired_prefill.py",
+      "profile": "GLM mHC4/4096, TP8/DCP4/EP1, single-session eager prefill, ordinary or EAGLE",
+      "admission_tokens": 4096,
+      "internal_chunk_tokens": 2048,
+      "contract": "Same-layer KDA state and DSA key publication precede the next chunk; owned metadata/mHC/forward flags, one compute stream and a per-pair communication stream; FP16 KV/state boundaries and existing collectives preserved.",
+      "validation": "Bit-exact whole-model outputs and KDA/conv state on all eight ranks with fixed selected-key order; live-indexer three-category throughput, image-bearing near8K,15.8K continuation, prefix reuse and CPU ownership regressions."
+    }
+  },
   "checkpoint_formats": {
     "glm_fp4_local": {
       "repository": "https://huggingface.co/nvidia/GLM-5.3-Flash-FP4-Local",
@@ -137,7 +147,7 @@
       "reference_vllm": "https://github.com/local-inference-lab/vllm/tree/8244d1c44348ae8a5bbfc9f1b607021652283ed4",
       "csf32_specification": "https://github.com/local-inference-lab/flashinfer/blob/35c0f234c4b82f4b3b30258132c8bf718e222309/docs/csf-scale-blocks.md",
       "implementation": "Indexed nested-shard completion and block-scale normalization; lossless CPU CSF32 expansion before TP slicing; native SM70 MXFP8 group32 W8A16; fixed FP16 MLA / FP32 indexer projection boundaries; original quantized weights and global calibration preserved.",
-      "status": "Experimental on dev: near8K text, images and prefix reuse pass at TP8/DCP4/786432 allocation; MTP acceptance is zero and remains unresolved."
+      "status": "Validated short-context TP8/DCP4 ordinary/MTP3, images and prefix reuse with native1048576 context allocation and FP16 KV/state. Own NVFP4 MTP required; fused draft source-module/scale mapping fixed in55be3330. Full1M execution and long-context quality remain unqualified."
     }
   }
 }
