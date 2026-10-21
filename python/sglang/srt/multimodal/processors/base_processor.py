@@ -1075,10 +1075,7 @@ class BaseMultimodalProcessor(ABC):
 
     def _image_decode_mode(self):
         # CPU preprocessing must not first stage every JPEG on the serving GPU.
-        if (
-            self.disable_fast_image_processor
-            or self.image_config.get("device") == "cpu"
-        ):
+        if self.image_config.get("device") == "cpu":
             return False
         return self.gpu_image_decode
 

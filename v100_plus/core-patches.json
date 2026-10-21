@@ -55,6 +55,7 @@
     "python/sglang/kernels/ops/gemm/sm70_fp8_gemv.py": "Volta packed E4M3 small-row GEMV with group32/group128 scales, FP16 reconstructed operands/output and FP32 split-K reductions; bounded caller-owned scratch.",
     "python/sglang/kernels/ops/gemm/sm70_fp8_gemm.py": "Volta packed E4M3 prefill GEMM: transient projection-sized FP16 unpacking, native FP16 Tensor Cores with FP32 accumulation/output before final FP16 rounding; no resident FP16 weight expansion.",
     "python/sglang/kernels/jit/csrc/gemm/sm70_fp8_gemm.cuh": "Scoped cuBLAS FP32 accumulation with FP16 output for unpacked wide FP8 prefill projections. Restores the caller handle math mode; no process-global precision changes.",
-    "python/sglang/kernels/jit/csrc/layernorm/sm70_mhc_prepare.cuh": "Fuse FP16 residual cast and owned-shard squared mean for bulk mHC, preserving contiguous Torch FP32 reduction order and full-shape projection."
+    "python/sglang/kernels/jit/csrc/layernorm/sm70_mhc_prepare.cuh": "Fuse FP16 residual cast and owned-shard squared mean for bulk mHC, preserving contiguous Torch FP32 reduction order and full-shape projection.",
+    "python/sglang/srt/multimodal/processors/embedding_gemma2.py": "Forward optional per-request JPEG decode placement through the existing custom media loader."
   }
 }
