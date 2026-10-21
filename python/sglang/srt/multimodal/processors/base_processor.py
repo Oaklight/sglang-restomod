@@ -745,6 +745,8 @@ class BaseMultimodalProcessor(ABC):
             return False
         if self.disable_fast_image_processor:
             return False
+        if self.image_config.get("device") == "cpu":
+            return False
         image_processor = getattr(self._processor, "image_processor", None)
         if not isinstance(image_processor, BaseImageProcessor):
             return False
@@ -784,6 +786,9 @@ class BaseMultimodalProcessor(ABC):
         server_args = self.server_args
         if _is_cpu or get_exec().deterministic.rl_on_policy_target is not None:
             return "cpu"
+        configured_device = self.image_config.get("device")
+        if configured_device is not None:
+            return configured_device
         if _is_xpu:
             return "xpu"
         if not _is_npu:
@@ -901,6 +906,9 @@ class BaseMultimodalProcessor(ABC):
         ):
             processor_device = self._fast_image_processor_device(processor)
             if processor_device is not None:
+                # HF rejects the same key in both flat and modality kwargs.
+                # Placement must also select the matching temporary CUDA pool.
+                kwargs.setdefault("images_kwargs", {}).pop("device", None)
                 kwargs["device"] = processor_device
 
         # Long-video preprocessing stays on CPU to avoid competing with scheduler GPU pools.
@@ -976,6 +984,7 @@ class BaseMultimodalProcessor(ABC):
         frame_count_limit=None,
         audio_sample_rate: Optional[int] = None,
         discard_alpha_channel=True,
+        gpu_image_decode=None,
     ):
         """
         Load a single multimodal data.
@@ -988,7 +997,12 @@ class BaseMultimodalProcessor(ABC):
             return data
         try:
             if modality == Modality.IMAGE:
-                img, _ = load_image(data, cls.gpu_image_decode)
+                decode_mode = (
+                    cls.gpu_image_decode
+                    if gpu_image_decode is None
+                    else gpu_image_decode
+                )
+                img, _ = load_image(data, decode_mode)
                 if isinstance(img, torch.Tensor):
                     return img  # JPEG already decoded on GPU by nvJPEG
                 # PIL decodes lazily; do it here in the io worker so the decode
@@ -1059,6 +1073,15 @@ class BaseMultimodalProcessor(ABC):
                     return False
         return has_mm_data
 
+    def _image_decode_mode(self):
+        # CPU preprocessing must not first stage every JPEG on the serving GPU.
+        if (
+            self.disable_fast_image_processor
+            or self.image_config.get("device") == "cpu"
+        ):
+            return False
+        return self.gpu_image_decode
+
     def _submit_mm_data_loading_tasks_simple(
         self,
         data_list: Optional[list],
@@ -1095,6 +1118,7 @@ class BaseMultimodalProcessor(ABC):
                 None,  # frame_count_limit: no consider for fast path
                 audio_sample_rate,
                 discard_alpha_channel,
+                gpu_image_decode=self._image_decode_mode(),
             )
             futures.append((modality, idx, future))
 
@@ -1155,6 +1179,7 @@ class BaseMultimodalProcessor(ABC):
                         frame_count_limit,
                         audio_sample_rate,
                         discard_alpha_channel,
+                        gpu_image_decode=self._image_decode_mode(),
                     )
                 )
                 task_info.append((modality, data, frame_count_limit))

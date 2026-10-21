@@ -7,13 +7,20 @@ device has to come from what the worker was handed.
 """
 
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
+from io import BytesIO
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import torch
+from PIL import Image
+
+from sglang.srt.managers.schedule_batch import Modality
 from sglang.srt.multimodal.processors.base_processor import BaseMultimodalProcessor
 from sglang.srt.runtime_context import publish, reset_context
 from sglang.srt.server_args import ServerArgs
+from sglang.srt.utils.common import load_image
 from sglang.test.ci.ci_register import register_cpu_ci
 from sglang.test.test_utils import CustomTestCase
 
@@ -43,6 +50,7 @@ def _make(**fields):
     publish(server_args, role="tokenizer")
     processor = _StubProcessor.__new__(_StubProcessor)
     processor.server_args = server_args
+    processor.image_config = {}
     return processor
 
 
@@ -83,6 +91,63 @@ class TestFastImageProcessorDevice(CustomTestCase):
     def test_rl_on_policy_target_forces_cpu(self):
         processor = _make(base_gpu_id=3, rl_on_policy_target="fsdp")
         self.assertEqual(self._device(processor), "cpu")
+
+    def test_cpu_image_config_keeps_preprocessing_off_cuda(self):
+        """A long image history must not allocate a second GPU patch bank."""
+        processor = _make(base_gpu_id=0)
+        processor.image_config = {"device": "cpu"}
+        processor.disable_fast_image_processor = False
+        processor.mm_feature_transport = "cpu"
+        processor.precompute_hash_before_cpu_transfer = False
+        processor._tokenizer = SimpleNamespace(bos_token=None)
+        processor._tokenizer_auto_adds_specials = False
+        processor.video_config = processor.audio_config = {}
+        processor.FEATURE_NAMES = ["pixel_values"]
+
+        class ImageProcessor:
+            pass
+
+        class Processor:
+            image_processor = ImageProcessor()
+
+            def __call__(self, **kwargs):
+                # Like HF, duplicate flat/modality device keys are invalid.
+                return {
+                    "pixel_values": torch.zeros(
+                        4, device=kwargs["device"], **kwargs.get("images_kwargs", {})
+                    )
+                }
+
+        processor._processor = Processor()
+        with patch(f"{BASE}.BaseImageProcessor", ImageProcessor):
+            result = processor.process_mm_data("test", images=["image"])
+        self.assertEqual(result["pixel_values"].device.type, "cpu")
+        self.assertEqual(processor.image_config, {"device": "cpu"})
+
+    def test_cpu_image_config_also_decodes_jpeg_on_cpu(self):
+        """CPU transforms must not first decode all history JPEGs into VRAM."""
+        processor = _make(base_gpu_id=0)
+        processor.image_config = {"device": "cpu"}
+        processor.disable_fast_image_processor = False
+        image_bytes = BytesIO()
+        Image.new("RGB", (16, 16), "red").save(image_bytes, format="JPEG")
+
+        def cpu_only_loader(data, gpu_image_decode):
+            if gpu_image_decode:
+                raise RuntimeError("No VRAM available for JPEG decoding")
+            return load_image(data, gpu_image_decode=False)
+
+        with (
+            ThreadPoolExecutor(max_workers=1) as executor,
+            patch(f"{BASE}.load_image", side_effect=cpu_only_loader),
+        ):
+            processor.io_executor = executor
+            tasks = processor._submit_mm_data_loading_tasks_simple(
+                [image_bytes.getvalue()], Modality.IMAGE, None, True
+            )
+            image = tasks[0][2].result()
+        self.assertEqual(image.size, (16, 16))
+        self.assertGreater(image.getpixel((0, 0))[0], 240)
 
     def test_cpu_and_xpu_platforms_win_over_base_gpu_id(self):
         processor = _make(base_gpu_id=3)
