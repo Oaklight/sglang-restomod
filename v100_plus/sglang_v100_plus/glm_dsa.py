@@ -288,7 +288,7 @@ class SM70IndexerKPool(IndexerKPool):
                 # All ranks still publish the complete index cache above.
                 # Only independent query scoring/top-k is divided within DCP;
                 # exchange final physical IDs once, after the whole chunk.
-                partition = indexer_partition(count)
+                partition = indexer_partition(count, max_pools)
                 first = (
                     0
                     if partition is None

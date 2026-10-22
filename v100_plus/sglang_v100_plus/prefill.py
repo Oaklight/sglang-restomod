@@ -131,17 +131,18 @@ def quad_partition(rows):
     return None
 
 
-def indexer_partition(rows):
+def indexer_partition(rows, pooled_keys=0):
     """Share replicated GLM selection within an existing four-rank DCP group.
 
-    Keep small appends local: one selected-ID exchange costs more than their
-    scoring. Partition a whole input chunk, never each scorer launch. DCP's
-    consecutive groups must match the launcher's NVLink quads; query/index
-    cache and token-page ownership remain replicated inside those groups.
+    Keep cheap appends local: exchange must amortize against scoring work.
+    Deep history pays for sharing even with few new rows: amortize exchange
+    over at least two million query/key pairs. Partition a whole input chunk,
+    never each scorer launch. DCP's consecutive groups must match the launcher's
+    NVLink quads; query/index cache and token-page ownership remain replicated.
     """
     parallel = get_parallel()
     if not (
-        rows >= 512
+        (rows >= 512 or (rows >= 64 and rows * pooled_keys >= (1 << 21)))
         and parallel.tp_size == parallel.attn_tp_size == 8
         and parallel.pp_size == 1
         and parallel.attn_dcp_size == 4

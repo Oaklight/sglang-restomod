@@ -604,10 +604,21 @@ class TestV100Prefill(CustomTestCase):
             disable_overlap_schedule=True,
         )
         with get_context().override_server_args(**fields):
-            for rank in range(8):
+            for rank, rows, pooled_keys in (
+                (r, n, k)
+                for r in range(8)
+                for n, k in (
+                    (64, 32768),
+                    (65, 32768),
+                    (128, 16384),
+                    (256, 8192),
+                    (513, 0),
+                )
+            ):
                 quad = rank // 4
-                full = torch.arange(513 * 3).reshape(513, 3) + quad * 10000
-                padded = torch.nn.functional.pad(full, (0, 0, 0, 3))
+                full = torch.arange(rows * 3).reshape(rows, 3) + quad * 10000
+                local_rows = (rows + 3) // 4
+                padded = torch.nn.functional.pad(full, (0, 0, 0, local_rows * 4 - rows))
 
                 class Group:
                     ranks = list(range(quad * 4, quad * 4 + 4))
@@ -615,10 +626,12 @@ class TestV100Prefill(CustomTestCase):
 
                     def all_gather(group, value, dim):
                         self.assertEqual(dim, 0)
-                        first = group.rank_in_group * 129
-                        torch.testing.assert_close(value, padded[first : first + 129])
+                        first = group.rank_in_group * local_rows
+                        torch.testing.assert_close(
+                            value, padded[first : first + local_rows]
+                        )
                         gathered = padded.clone()
-                        gathered[513:] = -777
+                        gathered[rows:] = -777
                         return gathered
 
                 group = Group()
@@ -629,10 +642,15 @@ class TestV100Prefill(CustomTestCase):
                     attn_tp_group=parent,
                     dcp_group=group,
                 ):
-                    plan = prefill.indexer_partition(513)
+                    plan = prefill.indexer_partition(rows, pooled_keys)
                     self.assertIs(plan.group, group)
                     torch.testing.assert_close(plan.gather(plan.local(full)), full)
                     self.assertIsNone(prefill.indexer_partition(511))
+                    self.assertIsNone(prefill.indexer_partition(63, 1 << 20))
+                    self.assertIsNone(prefill.indexer_partition(64, 16384))
+                    self.assertIsNone(prefill.indexer_partition(64, 32767))
+                    self.assertIsNone(prefill.indexer_partition(128, 16383))
+                    self.assertIsNone(prefill.indexer_partition(256, 8191))
                     group.ranks = [0, 2, 4, 6]
                     with self.assertRaisesRegex(RuntimeError, "consecutive"):
                         prefill.indexer_partition(513)

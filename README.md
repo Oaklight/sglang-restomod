@@ -175,7 +175,7 @@ Lab sampling references: [Qwen](https://huggingface.co/Qwen/Qwen3.8-Flash-Next#a
 | --- | --- |
 | TP8 versus TP4×PP2 | TP8 uses both quads concurrently in single-request decode. PP2 makes most layer collectives quad-local but serializes the two stages. FP4-Local's current tuning targets TP8. |
 | DCP4 | Stripes target latent KV inside each NVLink quad; native index and draft storage remain replicated. Queries/FP32 normalizers are exchanged; full KV history is not. DCP8 crosses quads and lost its earlier screen. |
-| Quad selector sharing | Identical queries/index keys/page IDs were proved in all11target layers and MTP. Shard whole-chunk scoring/top-k, gather selected IDs once; ≥512rows, TP8/DCP4/max1 only. Other layouts and small appends retain their supported SM70 route. |
+| Quad selector sharing | Identical queries/index keys/page IDs were proved in all11target layers and MTP. Shard whole-chunk scoring/top-k, gather selected IDs once; ≥512rows, or ≥64rows with rows×pooled keys≥2²¹. TP8/DCP4/max1 only; cheap appends stay local. |
 | Paired prefill | Overlaps unchanged global TP sums with another chunk's compute; preserves metadata ownership and FP16 recurrence boundaries. Cross-quad NCCL still uses host staging; NCCL duration includes rank waiting. |
 | Prefix caching | Reuses KV plus matching recurrent snapshots.2048spacing can require tail replay on tool turns; reducing it arbitrarily changes FP16 persistence/rounding. Exact append-only continuation is separate work. |
 | Memory fraction / slots | .95 leaves measured execution headroom; explicit context/pool/state capacities prevent silent shrinking. Four recurrent slots for serving; eight only in private pinned-prefix experiments. No state-memory ratio is needed. |
@@ -205,7 +205,7 @@ recorded process; deep append pairs use one resident process and exact pinned pr
 | Prefill, 400K history | 1,273 | 1,943 |
 | Generation, 400K history | 86.9 | 84.6 |
 
-Deep-prefill gains are **37.4%/52.7%**. The current native trace put selector scoring
+Deep-prefill gains are **37.4%/52.7%**. The pre-sharing native trace put selector scoring
 at44–45% of paired-prefill wall windows; scoring/top-k improved3.5–4× in the
 complete-operator screen including exchange. Model gains fit the cost budget.
 Exchanging after every32-query scorer group was rejected because communication
@@ -213,6 +213,23 @@ erased most benefit. Short-context prefill is effectively flat. Decode kernels
 and verification-cycle execution are unchanged; acceptance at200K/400K changes
 69.8→72.4% /89.5→86.1%, explaining the opposing small generation changes.
 The252-commit upstream integration itself established throughput parity.
+
+Follow-up retuning keeps32-query launch batches and paired prefill. Larger128-query
+batches improved the complete selector4–6%, but only about1% in the warm model;
+serializing the same paired children reduced prefill1942→1733tokens/s. Selector
+scoring now occupies17.4% of native paired windows, so its remaining operator
+gains have less model impact. The new history-aware cutoff helps short deep appends:
+
+| Tokens/s, 195-token append at400K history | Before | After |
+| --- | ---: | ---: |
+| Prefill, mean of two matched comparisons | 531 | 561 |
+| Generation, same requests | 75.5 | 75.6 |
+
+This cutoff-only gain is5.6%; MTP3/decode kernels are unchanged. A first request
+after idle was slower regardless of variant; an explicit warmup excluded that
+effect from the final comparison. Its cause is unproven. No routine reverse pairs
+or extra cold model starts were added. MTP depth tuning remains separate: moving
+beyond four verification rows also changes projection/attention dispatch.
 
 
 Prefill counts only newly processed tokens divided by native prefill time;
