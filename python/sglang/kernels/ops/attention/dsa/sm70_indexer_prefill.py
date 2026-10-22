@@ -1,7 +1,7 @@
 """Shared-history SM70 index scoring without global per-head intermediates.
 
 Volta Tensor Cores reconstruct the existing FP16 operands and accumulate each
-full128-element dot in FP32. ReLU, head weighting/reduction and key scaling
+full 128-element dot in FP32. ReLU, head weighting/reduction and key scaling
 remain FP32. History width is dynamic: chunked prefill reuses one compiled
 kernel instead of compiling for each newly appended history bank.
 """
@@ -32,41 +32,62 @@ def _index_score_prefill_kernel():
         L: T.Tensor([rows], T.int32),
         O: T.Tensor([rows, capacity], T.float32),
     ):
-        with T.Kernel(T.ceildiv(capacity, block), rows, threads=128) as (tile, row):
+        with T.Kernel(T.ceildiv(capacity, block), T.ceildiv(rows, 2), threads=128) as (
+            tile,
+            pair,
+        ):
             qs = T.alloc_shared([heads, dim], T.float16)
             ks = T.alloc_shared([block, dim], T.float16)
             dots = T.alloc_fragment([heads, block], T.float32)
             result = T.alloc_fragment([block], T.float32)
-            length = T.min(capacity, T.max(0, L[row]))
+            first = pair * 2
+            last = T.min(first + 1, rows - 1)
+            longest = T.min(capacity, T.max(0, T.max(L[first], L[last])))
             start = tile * block
-            if start < length:
-                T.copy(Q[row, :, :], qs)
+            if start < longest:
                 for n, d in T.Parallel(block, dim):
-                    ks[n, d] = T.if_then_else(start + n < length, K[start + n, d], 0)
-                T.clear(dots)
-                T.gemm(qs, ks, dots, transpose_B=True, policy=T.GemmWarpPolicy.FullCol)
-                for h, n in T.Parallel(heads, block):
-                    dots[h, n] = (
-                        T.if_then_else(dots[h, n] < 0, 0, dots[h, n]) * W[row, h]
-                    )
-                T.reduce_sum(dots, result, dim=0)
-                for n in T.Parallel(block):
-                    if start + n < capacity:
-                        O[row, start + n] = T.if_then_else(
-                            start + n < length,
-                            result[n] * S[start + n],
-                            -T.infinity(T.float32),
+                    ks[n, d] = T.if_then_else(start + n < longest, K[start + n, d], 0)
+                # Retain one key tile; reuse query/accumulator storage so pairing
+                # does not double the shared-memory or register footprint.
+                for item in T.serial(2):
+                    row = first + item
+                    if row < rows:
+                        length = T.min(capacity, T.max(0, L[row]))
+                        T.copy(Q[row, :, :], qs)
+                        T.clear(dots)
+                        T.gemm(
+                            qs,
+                            ks,
+                            dots,
+                            transpose_B=True,
+                            policy=T.GemmWarpPolicy.FullCol,
                         )
+                        for h, n in T.Parallel(heads, block):
+                            dots[h, n] = (
+                                T.if_then_else(dots[h, n] < 0, 0, dots[h, n])
+                                * W[row, h]
+                            )
+                        T.reduce_sum(dots, result, dim=0)
+                        for n in T.Parallel(block):
+                            if start + n < capacity:
+                                O[row, start + n] = T.if_then_else(
+                                    start + n < length,
+                                    result[n] * S[start + n],
+                                    -T.infinity(T.float32),
+                                )
             else:
-                for n in T.Parallel(block):
-                    if start + n < capacity:
-                        O[row, start + n] = -T.infinity(T.float32)
+                for item in T.serial(2):
+                    row = first + item
+                    if row < rows:
+                        for n in T.Parallel(block):
+                            if start + n < capacity:
+                                O[row, start + n] = -T.infinity(T.float32)
 
     return mqa_logits_prefill_sm70_kernel
 
 
 def mqa_logits_prefill_sm70(query, keys, key_scales, weights, lengths):
-    """Score a shared FP16 index bank with32heads of width128 on SM70.
+    """Score a shared FP16 index bank with 32 heads of width 128 on SM70.
 
     The caller converts the unchanged index bank once per prefill chunk. No
     latent KV or selected-key budget changes. Only reduced [query,history]
@@ -100,7 +121,7 @@ def mqa_logits_prefill_sm70(query, keys, key_scales, weights, lengths):
     if query.shape[0] and keys.shape[0]:
         query = query.half().contiguous()
         if query.data_ptr() % 16:
-            raise ValueError("SM70 prefill scoring queries require16-byte alignment")
+            raise ValueError("SM70 prefill scoring queries require 16-byte alignment")
         _index_score_prefill_kernel()(
             query,
             keys,

@@ -844,15 +844,32 @@ def test_shared_prefill_scoring_changed_graph_and_output_canaries():
     graph = torch.cuda.CUDAGraph()
     with torch.cuda.graph(graph):
         kernel(query, keys, scales, weights, lengths, output)
-    for end in (0, 1, 63, 64, 65, capacity):
+    for pattern in (
+        [0, 0, 0, 0, 0],
+        [capacity, 0, 65, 1, capacity],
+        [1, capacity, 0, 65, 1],
+        [63, 64, 65, 0, capacity],
+        [capacity] * rows,
+    ):
         query.mul_(-0.9)
         keys.mul_(0.95)
         scales.mul_(0.8)
         weights.mul_(-0.75)
-        lengths.fill_(end)
+        lengths.copy_(torch.tensor(pattern, device="cuda", dtype=torch.int32))
         graph.replay()
         eager = mqa_logits_prefill_sm70(query, keys, scales, weights, lengths)
         assert torch.equal(output.view(torch.int32), eager.view(torch.int32))
+        # Adjacent queries can have opposite causal limits; an odd last query
+        # must not read its absent partner or inherit another row's reduction.
+        expected = (
+            torch.einsum("rhd,kd->rhk", query.double(), keys.double()).relu()
+            * weights.double()[:, :, None]
+        ).sum(1) * scales.double()[None, :]
+        expected.masked_fill_(
+            torch.arange(capacity, device="cuda")[None, :] >= lengths[:, None],
+            -torch.inf,
+        )
+        torch.testing.assert_close(output.double(), expected, rtol=2e-5, atol=2e-6)
         assert torch.all(guard[:16] == 1234567).item()
         assert torch.all(guard[-16:] == 1234567).item()
 

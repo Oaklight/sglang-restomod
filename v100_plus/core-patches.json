@@ -58,6 +58,6 @@
     "python/sglang/kernels/jit/csrc/layernorm/sm70_mhc_prepare.cuh": "Fuse FP16 residual cast and owned-shard squared mean for bulk mHC, preserving contiguous Torch FP32 reduction order and full-shape projection.",
     "python/sglang/srt/multimodal/processors/embedding_gemma2.py": "Forward optional per-request JPEG decode placement through the existing custom media loader.",
     "python/sglang/srt/entrypoints/openai/parallel_prompt_encode.py": "Limit HF prompt chunking to native HF backends so alternative encoders such as fastokens retain their own parallelism and avoid unsupported postprocessor introspection.",
-    "python/sglang/kernels/ops/attention/dsa/sm70_indexer_prefill.py": "Dynamic-history Volta MMA prefill index scoring with fused FP32 ReLU/head weighting/reduction/key scaling; only reduced scores reach global memory."
+    "python/sglang/kernels/ops/attention/dsa/sm70_indexer_prefill.py": "Dynamic-history Volta MMA prefill index scoring with fused FP32 head reduction/scaling; adjacent queries reuse one key tile and the same query/accumulator scratch, preserving24KiB shared memory."
   }
 }

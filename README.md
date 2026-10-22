@@ -127,23 +127,26 @@ Deep-history file appends (2026-10-22): FP4-Local, TP8/DCP4/EP1,524K
 configured context, own MTP3, vision and FP16 KV/state, paired4096/2048 prefill.
 One real coherent prefix grows from200K to400K; each pair processes the same
 8,267 uncached tokens (~8K file) at the exact same retained prefix, then128
-T0/seed531 output tokens. Same process and weights; no repeated cold-fill grid.
+T0/seed531 output tokens. Same process/weights; no repeated cold-fill grid.
+Before is the fused single-query scorer (`c1761ce9`); after reuses each key tile
+for two queries sequentially, with the same query/accumulator scratch.
 
 | Tokens/s | Before | After |
 | --- | ---: | ---: |
-| Prefill at200K history | 842.1 | 1,546.5 |
-| Generation, MTP3 at200K history | 75.8 | 81.0 |
-| Prefill at400K history | 485.4 | 1,149.0 |
-| Generation, MTP3 at400K history | 88.0 | 87.9 |
+| Prefill at200K history | 1,545.1 | 1,672.1 |
+| Generation, MTP3 at200K history | 77.5 | 82.0 |
+| Prefill at400K history | 1,151.9 | 1,288.0 |
+| Generation, MTP3 at400K history | 85.7 | 83.2 |
 
-The fused shared-history index scorer raises prefill1.84× at200K and2.37× at400K.
-The append's prefill time falls9.82→5.35s and17.03→7.19s respectively. Causal
-search/top-k budgets and FP16 KV are unchanged. Captured real128-query banks at
-both depths preserve selected pool sets; Torch/FP64 bounds, changed-input graph
-replay, canaries, memcheck, images and prefix reuse pass. Scores are numerically
-close, not bit-exact. Decode/verification kernels are unchanged; the200K
-sample's acceptance differs65.9%→74.2%, while400K generation is flat. These are
-single matched request pairs, not a long-context quality evaluation.
+The earlier shared-history fusion established1.84×/2.37× prefill gains at200K/400K
+against Torch per-head intermediates. This follow-up halves measured scorer
+DRAM reads848→424MB per32queries, retaining76registers/thread and24KiB shared
+memory per block. Captured-bank scores and selected pool sets are bit-exact
+against the fused single-query scorer; original Torch-score bounds stay unchanged.
+Independent FP64, opposite adjacent causal limits/odd-tail graph replay, canaries,
+memcheck, images and prefix reuse pass. Decode/verification kernels are unchanged;
+acceptance metadata is recorded separately. These matched request pairs establish
+throughput, not comprehensive long-context quality.
 
 ## SM70 execution
 
@@ -156,7 +159,7 @@ in software; it does not imply native arithmetic in those formats.
 | FP8 GEMMs | W8A16 with block128 or MXFP8 group32 scales. [Small-row GEMV](python/sglang/kernels/ops/gemm/sm70_fp8_gemv.py) reuses reconstructed FP16 weights across1–4 rows and reduces K in FP32. Short-K projections fuse their finishing reduction; large four-row group32 projections decode four packed bytes together in native CUDA and retain scales across each group. [Prefill](python/sglang/kernels/ops/gemm/sm70_fp8_gemm.py) transiently unpacks one projection for native FP16 Tensor Cores/FP32 accumulation; no persistent FP16 weight bank. Intermediate row counts retain SM70 Marlin. Qwen block-FP8 experts retain their separate small-row kernels; EP4/EP8 preserves whole experts. |
 | FP16 routed experts | [Volta MMA GEMM](python/sglang/kernels/ops/moe/sm70_fp16.py), used by NVIDIA GLM's unquantized MTP experts. FP16 inputs/weights/output, FP32 accumulation and router multiply; upstream routing, activation and expert sum retained. Automatically selected by the SM70 plugin; unsupported epilogues fail under strict dispatch. |
 | Qwen QSA/GDN/HC | Direct FP16-cache sparse prefill/decode/verification, masked Tensor Core prefill, SM70 GDN and gated-residual kernels; HC eager prefill partitions within each quad, including TP8. |
-| GLM attention | [Canonical V100 CUDA backend](python/sglang/kernels/ops/attention/v100.py) from the [FA fork](https://github.com/heislera763/flash-attention-v100): selected-key FP16 sparse prefill/decode/MTP, FP32 reductions and FP16 probabilities/partials. Empty tiles skip identity work. The model-native FP8 indexer uses [live-history MMA decode scoring](python/sglang/kernels/ops/attention/dsa/sm70_indexer_decode.py) and [fused shared-history prefill scoring](python/sglang/kernels/ops/attention/dsa/sm70_indexer_prefill.py). Prefill keeps ReLU/head weighting/reduction on-chip and converts the shared index bank to FP16 once per chunk; no global per-head score tensor. Decode/verification gathers initialize only live counted prefixes; future scratch is masked by the scorer. |
+| GLM attention | [Canonical V100 CUDA backend](python/sglang/kernels/ops/attention/v100.py) from the [FA fork](https://github.com/heislera763/flash-attention-v100): selected-key FP16 sparse prefill/decode/MTP, FP32 reductions and FP16 probabilities/partials. Empty tiles skip identity work. The model-native FP8 indexer uses [live-history MMA decode scoring](python/sglang/kernels/ops/attention/dsa/sm70_indexer_decode.py) and [fused shared-history prefill scoring](python/sglang/kernels/ops/attention/dsa/sm70_indexer_prefill.py). Prefill keeps ReLU/head weighting/reduction on-chip, converts the shared index bank once per chunk and reuses64-key tiles across query pairs with24KiB shared scratch; no global per-head score tensor. Decode/verification gathers initialize only live counted prefixes; future scratch is masked by the scorer. |
 | GLM KDA / mHC | Native CUDA full-K FP32 recurrence, FP16 state and per-step verification carry. KDA prefill prepares normalized Q/K and gates once; a Tensor Core chunk formulation is future work. Bulk mHC shares statistics/mixing within each quad, gathering FP16 input and FP32 coefficients. Its learned FP32 projection stays replicated to preserve reduction order. |
 | Storage | Unquantized FP16 attention KV for both models; Qwen FP16 QSA index, GLM's separate model-native FP8 indexer. KV-cache quantization is excluded from the project recipes. FP16 recurrent state is retained. |
 | Cold module loading | Return idle Torch allocator blocks to CUDA when first-use Triton loads have little headroom; leave live tensors unchanged. Skip capture/custom arenas; steady kernel replay has no callback. |
