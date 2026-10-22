@@ -411,6 +411,31 @@ class _SlowWordTokenizer(PreTrainedTokenizer):
 
 
 class TestUnsafeTokenizersFallBack(_EncodeCase):
+    def test_wrapped_backend_keeps_its_native_encoder(self):
+        """Long prompts with a fastokens-style backend must not inspect HF internals.
+
+        The wrapper encodes identically but its postprocessor lacks HF's
+        num_special_tokens_to_add method, which previously raised HTTP500.
+        """
+
+        class BackendShim:
+            def __init__(self, backend):
+                self.backend = backend
+                self.post_processor = object()
+
+            def __getattr__(self, name):
+                return getattr(self.backend, name)
+
+        self._no_min_chars()
+        tokenizer = _tokenizer()
+        text = "<|user|>hello world\n<think>inspect the files</think>" * 100
+        expected = tokenizer.encode(text, add_special_tokens=False)
+        tokenizer._tokenizer = BackendShim(tokenizer._tokenizer)
+        self.assertEqual(
+            ppe.parallel_prompt_encode(tokenizer, text, {"add_special_tokens": False}),
+            expected,
+        )
+
     def setUp(self):
         super().setUp()
         self._no_min_chars()

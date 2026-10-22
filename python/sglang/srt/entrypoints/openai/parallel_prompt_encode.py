@@ -147,11 +147,14 @@ def _build_plan(tokenizer):
     """Return (backend, specials_added, pattern, normalized_pattern, intra)
     or None."""
     try:
+        from tokenizers import Tokenizer
         from transformers import PreTrainedTokenizerBase
     except ImportError:
         return None
     backend = getattr(tokenizer, "_tokenizer", None)
-    if not getattr(tokenizer, "is_fast", False) or backend is None:
+    # Alternative engines (e.g. fastokens) own their encoding/parallelism and
+    # need not implement the HF backend/postprocessor interfaces below.
+    if not getattr(tokenizer, "is_fast", False) or not isinstance(backend, Tokenizer):
         return None
     if not hasattr(backend, "encode_batch") or not hasattr(backend, "to_str"):
         return None
