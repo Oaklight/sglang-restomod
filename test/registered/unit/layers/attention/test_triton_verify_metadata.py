@@ -1,20 +1,112 @@
 import sys
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 import torch
 
+from sglang.srt.configs.model_config import AttentionArch, ModelConfig
 from sglang.srt.layers.attention.triton_backend import (
     ForwardMetadata,
     TritonAttnBackend,
 )
 from sglang.srt.layers.radix_attention import AttentionType
 from sglang.srt.mem_cache.kv_loc_plan import IdSpaceKind
+from sglang.srt.mem_cache.memory_pool import KVWriteLoc
 from sglang.srt.model_executor.forward_batch_info import ForwardMode
+from sglang.srt.runtime_context import get_context, get_parallel
 from sglang.srt.speculative.spec_info import SpecInput, SpecInputType
 from sglang.test.ci.ci_register import register_cpu_ci
+from sglang.test.test_utils import CustomTestCase
 
 register_cpu_ci(est_time=2, suite="base-a-test-cpu")
+
+
+class TestReplicatedDraftDCP(CustomTestCase):
+    def test_draft_cache_writes_keep_all_virtual_slots_under_target_dcp(self):
+        """Target DCP leaked into drafts, dropping rows and dividing their IDs.
+
+        Draft KV heads/cache remain TP-sharded and token-replicated. Construct
+        the real backend and exercise its actual write selector; targets must
+        keep their DCP owner mask while drafts retain every virtual write.
+        """
+        for is_draft in (False, True):
+            config = SimpleNamespace(
+                attention_arch=AttentionArch.MHA,
+                get_max_num_attention_heads=lambda: 32,
+                get_total_num_kv_heads=lambda: 8,
+                is_draft_model=is_draft,
+                v_head_dim=128,
+                swa_v_head_dim=128,
+                context_len=1024,
+                head_dim=128,
+                is_encoder_decoder=False,
+            )
+            config.get_num_kv_heads = lambda tp, dcp: ModelConfig.get_num_kv_heads(
+                config, tp, dcp
+            )
+            writes = []
+            pool = SimpleNamespace(
+                start_layer=0,
+                get_value_buffer=lambda _: torch.empty(1, 1, 128),
+                set_kv_buffer=lambda *args, **kwargs: writes.append((args, kwargs)),
+            )
+            runner = SimpleNamespace(
+                req_to_token_pool=SimpleNamespace(
+                    size=1, req_to_token=torch.zeros(1, 1024, dtype=torch.int64)
+                ),
+                sliding_window_size=2048,
+                token_to_kv_pool=pool,
+                token_to_kv_pool_allocator=None,
+                page_size=256,
+                kv_index_translator=None,
+                decode_num_tokens_per_req=lambda: 8,
+                model_config=config,
+                is_draft_worker=is_draft,
+                device=torch.device("cpu"),
+                gpu_id=0,
+            )
+            with (
+                self.subTest(is_draft=is_draft),
+                get_context().override_server_args(
+                    model_path="dummy", tp_size=8, dcp_size=4
+                ),
+                get_parallel().override(attn_dcp_rank=2),
+                patch(
+                    "sglang.srt.layers.attention.triton_backend.mambaish_config",
+                    return_value=None,
+                ),
+                patch(
+                    "sglang.srt.layers.attention.triton_backend.get_device_core_count",
+                    return_value=80,
+                ),
+                patch(
+                    "sglang.srt.layers.attention.triton_backend.is_arch_support_pdl",
+                    return_value=False,
+                ),
+            ):
+                backend = TritonAttnBackend(runner)
+                expected_dcp = 1 if is_draft else 4
+                self.assertEqual(backend.dcp_size, expected_dcp)
+                self.assertEqual(backend.num_head, 4 * expected_dcp)
+                self.assertEqual(backend.num_kv_head, expected_dcp)
+                loc = torch.arange(64, 72)
+                batch = SimpleNamespace(
+                    out_cache_loc=loc,
+                    out_cache_loc_is_physical=False,
+                    positions=torch.arange(1000, 1008),
+                )
+                key = torch.empty(8, backend.num_kv_head, 128)
+                backend._set_kv_buffer(batch, object(), KVWriteLoc(loc), key, key)
+                args, kwargs = writes.pop()
+                torch.testing.assert_close(args[1].loc, loc if is_draft else loc // 4)
+                if is_draft:
+                    self.assertNotIn("dcp_kv_mask", kwargs)
+                else:
+                    torch.testing.assert_close(
+                        kwargs["dcp_kv_mask"],
+                        batch.positions % 4 == backend.dcp_rank,
+                    )
 
 
 class _BonusTokenVerifyInput(SpecInput):

@@ -1,5 +1,6 @@
 {
   "upstream_paths": {
+    "python/sglang/srt/layers/attention/triton_backend.py": "Keep replicated draft attention outside target DCP: preserve TP-local query/KV head geometry and all virtual cache writes; targets retain DCP owner masks and rank-local slots.",
     "python/sglang/srt/managers/schedule_batch.py": "Permit a backend to coarsen prefill checkpoint placement while preserving default grid validation and tracking logic; SM70 aligns FP16 reuse with prefill persistence boundaries.",
     "python/sglang/kernels/ops/attention/__init__.py": "Register SM70 sparse indexer and fused K-pool decode operators.",
     "python/sglang/kernels/ops/attention/dsa/sm70_indexer.py": "Volta sparse-attention indexer with FP16 cache support.",

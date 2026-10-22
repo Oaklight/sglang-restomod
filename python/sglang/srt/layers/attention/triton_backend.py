@@ -249,14 +249,9 @@ class TritonAttnBackend(AttentionBackend):
             self.use_mla,
             self.use_verify_splitkv,
         )
-        # TODO: this logic should be fixed in non-hip platform
-        self.is_hip_dspark_draft = (
-            _is_hip
-            and model_runner.is_draft_worker
-            and model_runner.spec_algorithm.is_dspark()
-        )
-        if self.is_hip_dspark_draft:
-            # Drafts never join the dcp group so we ignore it
+        if model_runner.is_draft_worker:
+            # Draft KV spans every virtual token slot; only the target joins
+            # DCP. Sharding draft writes would drop rows and alias their IDs.
             self.dcp_size = 1
             self.dcp_rank = 0
         else:
