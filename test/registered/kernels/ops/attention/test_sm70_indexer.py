@@ -779,6 +779,112 @@ def test_decode_scoring_rejects_unsafe_inputs(bad_input):
         mqa_logits_decode_sm70(query, keys, scales, weights, lengths)
 
 
+@pytest.mark.parametrize(
+    "rows,capacity", [(1, 1), (5, 65), (32, 513), (128, 4099), (5, 0), (0, 64)]
+)
+def test_shared_prefill_scoring_masks_tails_and_matches_fp64(rows, capacity):
+    """Shared-bank addressing must preserve rows, causal tails and FP32 math."""
+    from sglang.kernels.ops.attention.dsa.sm70_indexer_prefill import (
+        mqa_logits_prefill_sm70,
+    )
+
+    if torch.cuda.get_device_capability() != (7, 0):
+        pytest.skip("Volta shared-history index scoring")
+    torch.manual_seed(753)
+    query = torch.randn(rows, 32, 128, device="cuda", dtype=torch.float16).to(
+        torch.float8_e4m3fn
+    )
+    keys = (
+        torch.randn(capacity, 128, device="cuda", dtype=torch.float16)
+        .to(torch.float8_e4m3fn)
+        .half()
+    )
+    scales = torch.rand(capacity, device="cuda") * 0.01
+    weights = torch.randn(rows, 32, device="cuda")
+    lengths = torch.linspace(-1, capacity + 7, rows, device="cuda").int()
+    values = (query, keys, scales, weights, lengths)
+    saved = [x.clone() for x in values]
+    actual = mqa_logits_prefill_sm70(*values)
+    assert actual.shape == (rows, capacity)
+    if not rows or not capacity:
+        return
+    expected = (
+        torch.einsum("rhd,kd->rhk", query.cpu().double(), keys.cpu().double()).relu()
+        * weights.cpu().double()[:, :, None]
+    ).sum(1) * scales.cpu().double()[None, :]
+    future = torch.arange(capacity)[None, :] >= lengths.cpu()[:, None]
+    expected.masked_fill_(future, -torch.inf)
+    assert torch.equal(torch.isneginf(actual.cpu()), future)
+    torch.testing.assert_close(actual.cpu().double(), expected, rtol=2e-5, atol=2e-6)
+    for value, snapshot in zip(values, saved):
+        dtype = torch.uint8 if value.dtype == torch.float8_e4m3fn else value.dtype
+        assert torch.equal(value.view(dtype), snapshot.view(dtype))
+
+
+def test_shared_prefill_scoring_changed_graph_and_output_canaries():
+    """Replay must refresh shared keys/weights/causality without writing guards."""
+    from sglang.kernels.ops.attention.dsa.sm70_indexer_prefill import (
+        _index_score_prefill_kernel,
+        mqa_logits_prefill_sm70,
+    )
+
+    if torch.cuda.get_device_capability() != (7, 0):
+        pytest.skip("Volta shared-history index scoring")
+    rows, capacity = 5, 513
+    query = torch.randn(rows, 32, 128, device="cuda", dtype=torch.float16)
+    keys = torch.randn(capacity, 128, device="cuda", dtype=torch.float16)
+    scales = torch.rand(capacity, device="cuda") * 0.01
+    weights = torch.randn(rows, 32, device="cuda")
+    lengths = torch.full((rows,), capacity, device="cuda", dtype=torch.int32)
+    guard = torch.full((rows * capacity + 32,), 1234567.0, device="cuda")
+    output = guard[16:-16].view(rows, capacity)
+    kernel = _index_score_prefill_kernel()
+    kernel(query, keys, scales, weights, lengths, output)
+    torch.cuda.synchronize()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        kernel(query, keys, scales, weights, lengths, output)
+    for end in (0, 1, 63, 64, 65, capacity):
+        query.mul_(-0.9)
+        keys.mul_(0.95)
+        scales.mul_(0.8)
+        weights.mul_(-0.75)
+        lengths.fill_(end)
+        graph.replay()
+        eager = mqa_logits_prefill_sm70(query, keys, scales, weights, lengths)
+        assert torch.equal(output.view(torch.int32), eager.view(torch.int32))
+        assert torch.all(guard[:16] == 1234567).item()
+        assert torch.all(guard[-16:] == 1234567).item()
+
+
+@pytest.mark.parametrize("bad", ["query_alignment", "key_alignment", "length_dtype"])
+def test_shared_prefill_scoring_rejects_unsafe_views(bad):
+    """Vector-copy addresses and causal integer dtypes are kernel preconditions."""
+    from sglang.kernels.ops.attention.dsa.sm70_indexer_prefill import (
+        mqa_logits_prefill_sm70,
+    )
+
+    if torch.cuda.get_device_capability() != (7, 0):
+        pytest.skip("Volta shared-history index scoring")
+    query = torch.zeros(3, 32, 128, device="cuda", dtype=torch.float16)
+    keys = torch.zeros(65, 128, device="cuda", dtype=torch.float16)
+    scales = torch.ones(65, device="cuda")
+    weights = torch.ones(3, 32, device="cuda")
+    lengths = torch.ones(3, device="cuda", dtype=torch.int32)
+    if bad == "query_alignment":
+        query = torch.zeros(query.numel() + 1, device="cuda", dtype=query.dtype)[
+            1:
+        ].view_as(query)
+    elif bad == "key_alignment":
+        keys = torch.zeros(keys.numel() + 1, device="cuda", dtype=keys.dtype)[
+            1:
+        ].view_as(keys)
+    else:
+        lengths = lengths.long()
+    with pytest.raises(ValueError):
+        mqa_logits_prefill_sm70(query, keys, scales, weights, lengths)
+
+
 if __name__ == "__main__":
     import sys
 

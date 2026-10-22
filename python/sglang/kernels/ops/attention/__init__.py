@@ -198,6 +198,15 @@ del _fn
 
 register_kernel(
     KernelSpec(
+        op="attention.mqa_logits_prefill_sm70",
+        backend=KernelBackend.JIT,
+        target="sglang.kernels.ops.attention.dsa.sm70_indexer_prefill:mqa_logits_prefill_sm70",
+        capabilities={CapabilityRequirement.cuda(min_sm=(7, 0), max_sm=(7, 0))},
+    )
+)
+
+register_kernel(
+    KernelSpec(
         op="attention.mqa_logits_decode_sm70",
         backend=KernelBackend.JIT,
         target="sglang.kernels.ops.attention.dsa.sm70_indexer_decode:mqa_logits_decode_sm70",

@@ -55,9 +55,10 @@ QAD changes the weights: **use FP4-Local's own MTP**, never the draft derived
 from the original target. Missing fused-module quantization mappings initially
 loaded two draft projections without their scales, causing zero acceptance;
 this is fixed and covered by loaded-source and FP64 projection checks.
-TP8/DCP4 now allocates native1M context with MTP3, vision and FP16 KV/state;
-near8K text, completed image responses and prefix reuse pass. Full-window
-requests and long-context quality remain unqualified.
+TP8/DCP4 completed a native1M runtime check with MTP3, vision and FP16 KV/state:
+1,047,546 input tokens plus1,024 generated tokens, followed by image/prefix reuse.
+The selected hosting/development limit is now **524,288**; comprehensive long-context
+quality evaluation is separate from that capacity check.
 
 At checkpoint-native context, cache estimates below exclude weights, state,
 execution scratch and required page/sentinel/speculative overhead:
@@ -73,7 +74,8 @@ replicated across TP ranks. The current GLM PP2/MTP3 session limit is **524,288*
 524,800-slot pool (~3.10GiB/GPU including target/draft KV and index storage).
 A 524,250-input/32-output capacity probe, subsequent request reuse and an image-bearing
 near8K request pass with FP16 KV/state and compact FP8 MTP. This establishes functional
-capacity, not long-context quality. Full-window1M requests remain unqualified. TP8/DCP2 stripes
+capacity, not long-context quality. These original-checkpoint measurements predate
+the FP4-Local full1M runtime check above. TP8/DCP2 stripes
 target latent KV across NVLink pairs while retaining replicated native index and
 draft storage: **3.45 GiB/GPU** at 524K versus 6.20 GiB without DCP. The allocator cap is
 262,656 physical rows/rank, exposing 525,312 logical slots. A 524,250-token full
@@ -106,52 +108,42 @@ An ordinary-decoding control also matches the recorded frozen-code1M coding
 baseline: prefill−0.6%, generation+3.8%; it has not been repeated for original
 on current code.
 
-The subsequent FP4-Local prefill screen combines fused mHC cast/squared-mean
-preparation with upstream `--dcp-comm-backend a2a`. Full-shape FP32 projection,
-the squared-mean summation order and FP16 KV/state are preserved; mHC outputs
-are bit-exact. Same workload/context/MTP, one candidate process and reused control:
+Paired prefill overlaps one internal chunk's unchanged TP sums with the next
+chunk's computation:4096-token admission, two internal chunks of at most2048,
+separate metadata/activations and existing FP16 recurrent boundaries. Exact fused
+mHC preparation avoids two quad gathers per PRE. Fixed selected-key replay is
+bit-exact across all ranks; live unsorted routing is used for throughput tests.
+The retained changes improved near8K prefill by11.1%, then4.7% with MTP;
+decode execution was unchanged. Latest recorded near8K means at1M allocation:
 
-| Tokens/s, category means | Before: `ag_rs` | After: fused mHC + `a2a` |
+| Tokens/s | MTP3 | Ordinary |
 | --- | ---: | ---: |
-| Prefill | 2,109.0 | 2,153.1 |
-| Generation, MTP3 | 83.7 | 82.0 |
+| Prefill | 2,521.3 | 2,624.1 |
+| Generation | 85.2 | 43.4 |
 
-Prefill improves2.1%; decode TPS falls2.0%, with acceptance72.6%→70.2% and
-verification cycles0.4% shorter. This establishes a prefill tradeoff, not a decode
-gain. Total GPU memory240.48→242.13GiB. The combined model measurement does not
-isolate each change; original weights were not rebenchmarked in this follow-up.
-Near8K images/reuse, FP64 DCP merge, exact mHC graph/canary and sanitizer checks pass.
+These short-context results do not describe file appends into deep history.
 
-GLM paired prefill (2026-10-20, `dev`) overlaps each token chunk's TP sums with
-the next chunk's computation. `--chunked-prefill-size 4096` admits two internal
-chunks of at most2048 tokens, retaining the existing FP16 KDA state boundaries.
-Each chunk owns its metadata, mHC scratch and activations. Attention, experts
-and weights keep their existing sharding; decode uses the existing graph path.
-The initial schedule change improved prefill by 11.1% with MTP and 11.8% without it.
-Fixed selected-key order makes whole-model outputs and KDA/conv state bit-exact
-across all eight ranks; timed requests use the live, unsorted pool selector.
+Deep-history file appends (2026-10-22): FP4-Local, TP8/DCP4/EP1,524K
+configured context, own MTP3, vision and FP16 KV/state, paired4096/2048 prefill.
+One real coherent prefix grows from200K to400K; each pair processes the same
+8,267 uncached tokens (~8K file) at the exact same retained prefix, then128
+T0/seed531 output tokens. Same process and weights; no repeated cold-fill grid.
 
-Latest mHC follow-up: reuse exact fused cast/mean preparation for full rows and
-avoid two quad gathers per PRE during paired forwards. Other layouts retain
-their partition choice. Same full FP32 projection, FP16 operands/KV/state,
-weights, graph decode and launch options. FP4-Local, TP8/DCP4/EP1, 1M allocation,
-images, three coherent near8K categories, T0/seed531, 256 outputs:
-
-| Tokens/s, category means | Before mHC follow-up | Current |
+| Tokens/s | Before | After |
 | --- | ---: | ---: |
-| Prefill, MTP3 |2,408.8|2,521.3|
-| Generation, MTP3 |82.4|85.2|
-| Prefill, ordinary |2,495.5|2,624.1|
-| Generation, ordinary |43.4|43.4|
+| Prefill at200K history | 842.1 | 1,546.5 |
+| Generation, MTP3 at200K history | 75.8 | 81.0 |
+| Prefill at400K history | 485.4 | 1,149.0 |
+| Generation, MTP3 at400K history | 88.0 | 87.9 |
 
-Prefill improves by 4.7% with MTP and 5.2% without it across all three categories.
-Decode execution is unchanged: verification cycles 36.66→36.60ms, ordinary
-generation flat. Higher MTP generation accompanies acceptance 68.05%→71.04%.
-Compatible recorded controls are reused, with one fresh process per mode.
-Both captured mHC banks are bit-exact; changed-input graph/canary, memcheck,
-image input and prefix reuse checks pass, plus 15.8K text continuation.
-Full 1M execution remains unqualified. The tested chunkwise Tensor Core KDA and
-expert unpacking/layout variants were rejected after complete-operation screens.
+The fused shared-history index scorer raises prefill1.84× at200K and2.37× at400K.
+The append's prefill time falls9.82→5.35s and17.03→7.19s respectively. Causal
+search/top-k budgets and FP16 KV are unchanged. Captured real128-query banks at
+both depths preserve selected pool sets; Torch/FP64 bounds, changed-input graph
+replay, canaries, memcheck, images and prefix reuse pass. Scores are numerically
+close, not bit-exact. Decode/verification kernels are unchanged; the200K
+sample's acceptance differs65.9%→74.2%, while400K generation is flat. These are
+single matched request pairs, not a long-context quality evaluation.
 
 ## SM70 execution
 
@@ -164,7 +156,7 @@ in software; it does not imply native arithmetic in those formats.
 | FP8 GEMMs | W8A16 with block128 or MXFP8 group32 scales. [Small-row GEMV](python/sglang/kernels/ops/gemm/sm70_fp8_gemv.py) reuses reconstructed FP16 weights across1–4 rows and reduces K in FP32. Short-K projections fuse their finishing reduction; large four-row group32 projections decode four packed bytes together in native CUDA and retain scales across each group. [Prefill](python/sglang/kernels/ops/gemm/sm70_fp8_gemm.py) transiently unpacks one projection for native FP16 Tensor Cores/FP32 accumulation; no persistent FP16 weight bank. Intermediate row counts retain SM70 Marlin. Qwen block-FP8 experts retain their separate small-row kernels; EP4/EP8 preserves whole experts. |
 | FP16 routed experts | [Volta MMA GEMM](python/sglang/kernels/ops/moe/sm70_fp16.py), used by NVIDIA GLM's unquantized MTP experts. FP16 inputs/weights/output, FP32 accumulation and router multiply; upstream routing, activation and expert sum retained. Automatically selected by the SM70 plugin; unsupported epilogues fail under strict dispatch. |
 | Qwen QSA/GDN/HC | Direct FP16-cache sparse prefill/decode/verification, masked Tensor Core prefill, SM70 GDN and gated-residual kernels; HC eager prefill partitions within each quad, including TP8. |
-| GLM attention | [Canonical V100 CUDA backend](python/sglang/kernels/ops/attention/v100.py) from the [FA fork](https://github.com/heislera763/flash-attention-v100): selected-key FP16 sparse prefill/decode/MTP, FP32 reductions and FP16 probabilities/partials. Empty tiles skip identity work. The model-native FP8 indexer retains [live-history MMA scoring](python/sglang/kernels/ops/attention/dsa/sm70_indexer_decode.py) and bounded prefill scoring. Decode/verification gathers initialize only live counted prefixes; future scratch is masked by the scorer. |
+| GLM attention | [Canonical V100 CUDA backend](python/sglang/kernels/ops/attention/v100.py) from the [FA fork](https://github.com/heislera763/flash-attention-v100): selected-key FP16 sparse prefill/decode/MTP, FP32 reductions and FP16 probabilities/partials. Empty tiles skip identity work. The model-native FP8 indexer uses [live-history MMA decode scoring](python/sglang/kernels/ops/attention/dsa/sm70_indexer_decode.py) and [fused shared-history prefill scoring](python/sglang/kernels/ops/attention/dsa/sm70_indexer_prefill.py). Prefill keeps ReLU/head weighting/reduction on-chip and converts the shared index bank to FP16 once per chunk; no global per-head score tensor. Decode/verification gathers initialize only live counted prefixes; future scratch is masked by the scorer. |
 | GLM KDA / mHC | Native CUDA full-K FP32 recurrence, FP16 state and per-step verification carry. KDA prefill prepares normalized Q/K and gates once; a Tensor Core chunk formulation is future work. Bulk mHC shares statistics/mixing within each quad, gathering FP16 input and FP32 coefficients. Its learned FP32 projection stays replicated to preserve reduction order. |
 | Storage | Unquantized FP16 attention KV for both models; Qwen FP16 QSA index, GLM's separate model-native FP8 indexer. KV-cache quantization is excluded from the project recipes. FP16 recurrent state is retained. |
 | Cold module loading | Return idle Torch allocator blocks to CUDA when first-use Triton loads have little headroom; leave live tensors unchanged. Skip capture/custom arenas; steady kernel replay has no callback. |
@@ -259,8 +251,8 @@ uv run --no-project .venv/bin/python -m sglang_v100_plus "${common[@]}" \
 | Qwen TP8 | TP8/EP8; omit PP and unset `SGLANG_PP_LAYER_PARTITION`/metadata flag. Keep HC/chunk4352. |
 | GLM TP8 MTP | TP8/EP1,262144context/262656pool/.95fraction/chunk2048 and the compact draft flags below. Export the small-allreduce tuner below and `SGLANG_OPT_SM70_HC_PREFILL_SP=1`. |
 | GLM TP8/DCP2 MTP | Same TP8 MTP recipe, context524288, `--max-total-tokens 262656 --dcp-size 2 --dcp-comm-backend ag_rs --no-dcp-replicate-q-proj`. Physical row capacity is doubled logically by DCP. Use device order1,2,0,3,4,7,5,6 on the reference machine: every adjacent DCP pair has direct NV2. Requires FA0.2.3; target FP16 latent KV is striped, native index and draft storage remain replicated. Full-window qualification pending. |
-| GLM TP8/DCP4 MTP | Optional memory profile: DCP2 recipe with `--dcp-size 4 --max-total-tokens 131584`, exposing526336 logical slots. Same context/chunk/MTP settings and device order, with each four-rank group inside one NVLink quad. Requires FA0.2.4/native H32 or newer. For context786432, use `--max-total-tokens 197120` (788480 logical slots,3.11GiB/GPU KV/index storage). Startup, near8K generation, images and prefix reuse pass at both sizes; full-window generation is unqualified. DCP2 remains a comparison profile; the selected hosting profile is DCP4/786432. |
-| GLM FP4-Local TP8/DCP4 MTP | Select FP4-Local for both target/draft paths and `modelopt_mixed` for both quantization options. Use MTP3 flags below, context1048576 and physical `--max-total-tokens 262656` (1050624 logical slots). Use `--dcp-comm-backend a2a --chunked-prefill-size 4096` for paired prefill on `dev`; internal chunks remain2048. Same DCP4 topology, FP16 KV/state, images and prefix settings. Full-window qualification remains pending. |
+| GLM TP8/DCP4 MTP | Optional memory profile: DCP2 recipe with `--dcp-size 4 --max-total-tokens 131584`, exposing526336 logical slots. Same context/chunk/MTP settings and device order, with each four-rank group inside one NVLink quad. Requires FA0.2.4/native H32 or newer. For context786432, use `--max-total-tokens 197120` (788480 logical slots,3.11GiB/GPU KV/index storage). Startup, near8K generation, images and prefix reuse pass at both sizes; full-window generation is unqualified. This original-checkpoint capacity screen is historical; selected hosting uses FP4-Local below. |
+| GLM FP4-Local TP8/DCP4 MTP (selected) | Both target/draft use FP4-Local and `modelopt_mixed`, MTP3. Context524288, physical `--max-total-tokens 131584` (526336 logical slots), `.95` memory fraction. Use `--dcp-comm-backend a2a --chunked-prefill-size 4096` (internal2048), `--tokenizer-backend fastokens`. Omit common `--disable-radix-cache`; use `--mamba-radix-cache-strategy extra_buffer --max-mamba-cache-size 4 --mamba-track-interval 2048`. Keep FP16 KV/state, images and `--mm-process-config '{"image":{"device":"cpu"}}'`. Previous-source full1M runtime passed; current524K deep-prefill checks are listed above. |
 | GLM TP8/DCP8 MTP | Capacity profile: DCP2 recipe with `--dcp-size 8 --max-total-tokens 66048`, exposing528384 logical slots at524K context. Requires FA0.2.5/native H64. Its attention group spans both quads; only target FP16 latent KV is striped, while draft/index storage stays replicated. Full-window capacity is unqualified. |
 | GLM PP2 MTP | TP4/PP2/EP1; `SGLANG_PP_LAYER_PARTITION=24,21`, `SGLANG_OPT_SM70_HC_PREFILL_SP=1`; context **524288**, total tokens **524800**, fraction **.95**, chunk2048. Add MTP flags below. Images are enabled; vision weights reside on the first PP stage. The table below leaves metadata graphs and the small-allreduce tuner off for PP2. |
 | MTP, either model | Add `--speculative-algorithm EAGLE --speculative-num-steps 3 --speculative-num-draft-tokens 4 --speculative-eagle-topk 1 --speculative-use-rejection-sampling`. PP2 also exports `SGLANG_ENABLE_PP_SPEC=1`. |
@@ -272,12 +264,12 @@ classical sampled rejection. Lab sampling sources: [Qwen](https://huggingface.co
 [ZAI](https://huggingface.co/zai-org/GLM-5.3-Flash#footnotes). Use lab sampling for model use; comparative tuning screens use temperature0.
 
 The commands above disable prefix reuse for uncached comparisons. The qualified
-GLM PP2 and TP8/DCP2 conversation profiles use these changes:
+GLM conversation profiles, including selected TP8/DCP4, use these changes:
 
 | Setting | Value / reason |
 | --- | --- |
 | Prefix caching | Remove `--disable-radix-cache`; use `--mamba-radix-cache-strategy extra_buffer`. KV and recurrent checkpoints remain FP16. |
-| State capacity | `--max-mamba-cache-size 4`: bound one active session, tracking and retained-state headroom; keep524800 logical token slots for PP2 or525312 for DCP2 (262656 physical rows/rank). |
+| State capacity | `--max-mamba-cache-size 4`: bound one active session, tracking and retained-state headroom; keep524800 logical token slots for PP2,525312 for DCP2 (262656 physical rows/rank), or526336 for DCP4 (131584 physical rows/rank). |
 | Checkpoint placement | `--mamba-track-interval 2048`: apply to prefill and decode, matching the prefill chunk. Avoid introducing an interior FP16 rounding boundary when resuming the FP32 prefill recurrence. |
 | Agent history | `clear_thinking=false`; return complete original reasoning blocks for prefix continuity. |
 | Pi client | `maxTokens:131072`, `samplingParams:{"temperature":1.0,"top_p":0.95}`. Output and input share the524288-token window. |

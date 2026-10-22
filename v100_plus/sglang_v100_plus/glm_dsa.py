@@ -8,10 +8,12 @@ import torch.nn.functional as F
 from sglang.kernels.ops.attention.dsa.sm70_indexer import (
     fp8_quantize_sm70,
     kpool_compress_sm70,
-    mqa_logits_sm70,
 )
 from sglang.kernels.ops.attention.dsa.sm70_indexer_decode import (
     mqa_logits_decode_sm70,
+)
+from sglang.kernels.ops.attention.dsa.sm70_indexer_prefill import (
+    mqa_logits_prefill_sm70,
 )
 from sglang.kernels.ops.attention.dsa.sm70_pool4_decode import (
     pool4_cache_page_size,
@@ -113,7 +115,7 @@ def read_pooled_cache(buf, locations):
 
 
 class SM70IndexerKPool(IndexerKPool):
-    # Bound the temporary [query, head, pooled-history] FP32 score tensor.
+    # Bound the reduced [query, pooled-history] FP32 score tensor.
     # A query's GEMM reduction and causal pool/tail lengths remain independent
     # of this launch batching; cache writes still happen once per input chunk.
     _prefill_query_chunk_size = 128
@@ -268,13 +270,12 @@ class SM70IndexerKPool(IndexerKPool):
                         index_page_size=index_page_size,
                     ),
                 )
-                # Larger batches are qualified at <=8K. Preserve the previous
-                # temporary-score bound for longer pooled histories.
-                # Bound the private FP32 [query, head, history] scores to
-                # 128 MiB as history grows. Use power-of-two batches so the
-                # qualified GEMM shapes stay stable; every causal row and all
-                # pooled history are still scored.
-                score_row_bytes = self.n_heads * max(max_pools, 1) * 4
+                # This index bank is shared by every query subgroup. Convert
+                # it once; latent KV and the resident FP8 index cache stay as-is.
+                cached_keys = cached_keys.half()
+                # The fused scorer writes only [query,history] FP32 scores.
+                # Bound that actual scratch, without the eliminated head axis.
+                score_row_bytes = max(max_pools, 1) * 4
                 score_rows = max(1, (128 << 20) // score_row_bytes)
                 score_rows = 1 << (score_rows.bit_length() - 1)
                 query_chunk = min(
@@ -291,7 +292,7 @@ class SM70IndexerKPool(IndexerKPool):
                         dtype=torch.int32,
                     )
                     pools = torch.div(lengths, 4, rounding_mode="floor")
-                    logits = mqa_logits_sm70(
+                    logits = mqa_logits_prefill_sm70(
                         query_fp8[offset + start : offset + stop],
                         cached_keys,
                         cached_scales,
