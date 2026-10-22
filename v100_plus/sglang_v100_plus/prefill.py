@@ -1,9 +1,10 @@
-"""Partition replicated HC work by token within each four-rank group.
+"""Partition replicated prefill work by token within each four-rank group.
 
 Attention and experts still receive the complete token matrix. Qwen residual
 streams stay partitioned between HC calls; PLE and PP/last-HC retain their full
 layout. GLM reuses the partition/gather helpers only for each mHC pre-read;
-its full residual stays replicated between calls.
+its full residual stays replicated between calls. GLM index selection reuses
+existing DCP4 groups to exchange selected IDs once per input chunk.
 """
 
 from contextlib import contextmanager, nullcontext
@@ -40,18 +41,18 @@ class Partition:
             if local.shape[0] != self.local_rows:
                 import torch.nn.functional as F
 
-                # Only replicated HC work is padded. Gather trims these rows
+                # Only replicated row-local work is padded. Gather trims rows
                 # before attention, causal PLE, PP output or final logits.
                 pad = (0, 0) * (x.ndim - 1) + (0, self.local_rows - local.shape[0])
                 local = F.pad(local, pad)
             return local
         if x.shape[0] != self.local_rows:
-            raise ValueError("HC rows do not match the prefill token partition")
+            raise ValueError("Rows do not match the prefill token partition")
         return x
 
     def gather(self, x):
         if x.shape[0] != self.local_rows:
-            raise ValueError("HC gather requires one rank's token partition")
+            raise ValueError("Prefill gather requires one rank's token partition")
         group = self.group if self.group is not None else get_parallel().attn_tp_group
         comm = getattr(group, "pynccl_comm", None)
         with comm.change_state(enable=True) if comm is not None else nullcontext():
@@ -128,6 +129,31 @@ def quad_partition(rows):
         group = _quad_group()
         return Partition(rows, group.rank_in_group, group=group)
     return None
+
+
+def indexer_partition(rows):
+    """Share replicated GLM selection within an existing four-rank DCP group.
+
+    Keep small appends local: one selected-ID exchange costs more than their
+    scoring. Partition a whole input chunk, never each scorer launch. DCP's
+    consecutive groups must match the launcher's NVLink quads; query/index
+    cache and token-page ownership remain replicated inside those groups.
+    """
+    parallel = get_parallel()
+    if not (
+        rows >= 512
+        and parallel.tp_size == parallel.attn_tp_size == 8
+        and parallel.pp_size == 1
+        and parallel.attn_dcp_size == 4
+        and get_schedule().disable_overlap_schedule
+        and get_schedule().max_running_requests == 1
+    ):
+        return None
+    group = parallel.dcp_group
+    start = parallel.attn_tp_rank // 4 * 4
+    if group.ranks != parallel.attn_tp_group.ranks[start : start + 4]:
+        raise RuntimeError("GLM selector requires consecutive four-rank DCP groups")
+    return Partition(rows, group.rank_in_group, group=group)
 
 
 def _partition(self, input_ids, forward_batch):

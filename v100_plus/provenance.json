@@ -138,6 +138,12 @@
     "validation": "Production/prototype results bit-exact on15 captured real FP8 banks; independent FP64 and prior implementation within unchanged rtol=.001,atol=.0002; graph replay with changed inputs/scales and canaries, registered numerical/graph/cancellation tests, memcheck and synccheck."
   },
   "execution_schedules": {
+    "glm_quad_selector_prefill": {
+      "implementation": "v100_plus/sglang_v100_plus/glm_dsa.py; v100_plus/sglang_v100_plus/prefill.py",
+      "profile": "GLM pool4/head128, TP8/DCP4, max1 serialized eager prefill; target and own MTP",
+      "contract": "Publish complete replicated index keys before partitioning independent query rows. Existing consecutive four-rank DCP groups score disjoint slices of a whole input chunk and exchange final selected IDs once. Small appends below512rows keep local scoring. Preserve FP16 operands, full-K FP32 scores/head reduction, causal lengths, physical page IDs and unsorted selected-key multisets; no KV/state quantization, new communicator, history exchange or decode/verification dispatch change.",
+      "validation": "All11target index layers plus MTP:72within-quad comparisons prove byte-identical Q/weights/keys/scales/causal lengths/page maps and identical selected sets. Eight-rank real-bank boundary/padding and concurrent TP-reduction checks pass. Actual matched8K-file appends at200K/400K gain37.4%/52.7% prefill; verification-cycle execution is flat. Short three-category control, images and repeated-request reuse pass."
+    },
     "glm_paired_prefill": {
       "implementation": "v100_plus/sglang_v100_plus/paired_prefill.py",
       "profile": "GLM mHC4/4096, TP8/DCP4/EP1, single-session eager prefill, ordinary or EAGLE",

@@ -31,6 +31,8 @@ from sglang.srt.model_executor.forward_context import (
     get_token_to_kv_pool,
 )
 
+from .prefill import indexer_partition
+
 logger = logging.getLogger(__name__)
 
 
@@ -283,8 +285,23 @@ class SM70IndexerKPool(IndexerKPool):
                     128 if seq_len <= 8192 else 32,
                     score_rows,
                 )
-                for start in range(0, count, query_chunk):
-                    stop = min(start + query_chunk, count)
+                # All ranks still publish the complete index cache above.
+                # Only independent query scoring/top-k is divided within DCP;
+                # exchange final physical IDs once, after the whole chunk.
+                partition = indexer_partition(count)
+                first = (
+                    0
+                    if partition is None
+                    else min(count, partition.rank * partition.local_rows)
+                )
+                last = (
+                    count
+                    if partition is None
+                    else min(count, first + partition.local_rows)
+                )
+                selected_chunks = []
+                for start in range(first, last, query_chunk):
+                    stop = min(start + query_chunk, last)
                     lengths = torch.arange(
                         prefix + start + 1,
                         prefix + stop + 1,
@@ -319,9 +336,20 @@ class SM70IndexerKPool(IndexerKPool):
                             page_table=token_table[None, :].expand(stop - start, -1),
                             seq_lens=lengths,
                         )
-                    outputs.append(selected)
+                    selected_chunks.append(selected)
+                selected = torch.cat(selected_chunks)
+                if partition is not None:
+                    selected = F.pad(
+                        selected,
+                        (0, 0, 0, partition.local_rows - (last - first)),
+                        value=-1,
+                    )
+                    selected = partition.gather(selected)
+                outputs.append(selected)
             offset += count
-        return torch.cat(outputs) if return_indices and outputs else None
+        if not return_indices or not outputs:
+            return None
+        return outputs[0] if len(outputs) == 1 else torch.cat(outputs)
 
     def _forward_spec(
         self, x, q_lora, positions, forward_batch, layer_id, return_indices

@@ -590,6 +590,60 @@ class TestV100Prefill(CustomTestCase):
                     with self.assertRaisesRegex(RuntimeError, "complete TP8 world"):
                         prefill._partition(owner, torch.empty(257), batch)
 
+    def test_indexer_reuses_only_the_matching_dcp_quad(self):
+        """Physical selected IDs may cross replicated DCP ranks, never quads.
+
+        A TP8 gather or an interleaved DCP group would silently feed another
+        quad's page IDs to attention. Odd row counts must trim exchange padding.
+        """
+        fields = dict(
+            model_path="dummy",
+            tp_size=8,
+            dcp_size=4,
+            max_running_requests=1,
+            disable_overlap_schedule=True,
+        )
+        with get_context().override_server_args(**fields):
+            for rank in range(8):
+                quad = rank // 4
+                full = torch.arange(513 * 3).reshape(513, 3) + quad * 10000
+                padded = torch.nn.functional.pad(full, (0, 0, 0, 3))
+
+                class Group:
+                    ranks = list(range(quad * 4, quad * 4 + 4))
+                    rank_in_group = rank % 4
+
+                    def all_gather(group, value, dim):
+                        self.assertEqual(dim, 0)
+                        first = group.rank_in_group * 129
+                        torch.testing.assert_close(value, padded[first : first + 129])
+                        gathered = padded.clone()
+                        gathered[513:] = -777
+                        return gathered
+
+                group = Group()
+                parent = SimpleNamespace(ranks=list(range(8)))
+                with get_parallel().override(
+                    attn_tp_size=8,
+                    attn_tp_rank=rank,
+                    attn_tp_group=parent,
+                    dcp_group=group,
+                ):
+                    plan = prefill.indexer_partition(513)
+                    self.assertIs(plan.group, group)
+                    torch.testing.assert_close(plan.gather(plan.local(full)), full)
+                    self.assertIsNone(prefill.indexer_partition(511))
+                    group.ranks = [0, 2, 4, 6]
+                    with self.assertRaisesRegex(RuntimeError, "consecutive"):
+                        prefill.indexer_partition(513)
+                    for changed in (
+                        dict(attn_dcp_size=2),
+                        dict(attn_tp_size=4, attn_cp_size=2, attn_tp_rank=rank % 4),
+                        dict(pp_size=2),
+                    ):
+                        with get_parallel().override(**changed):
+                            self.assertIsNone(prefill.indexer_partition(513))
+
     def test_explicit_quad_gather_cannot_mix_other_quads_or_use_model_tp(self):
         """Distinct quad data detects an accidental world gather, including PLE."""
         from sglang.srt.layers.layer_boundary.residual import batch as residual_batch
