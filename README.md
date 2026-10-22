@@ -13,7 +13,7 @@ metadata and cache/state lifetimes. Advance `main` after correctness and model
 throughput checks. Qwen retains its existing backend during this work.
 Clone remotes: `origin` is this fork; `upstream` is `sgl-project/sglang`.
 
-Integrated upstream: [ab580b2e](https://github.com/sgl-project/sglang/commit/ab580b2e060059c0f8387b598a9f648dcec13f93), integrated 2026-10-19.
+Integrated upstream: [0d6b283d](https://github.com/sgl-project/sglang/commit/0d6b283d7e6ac79edc10b2ca788f309e972f527b), integrated 2026-10-22.
 The merge includes DSA index-cache relocation, speculative recurrent-checkpoint
 alignment, pipeline residual-handoff and MoE scaling correctness fixes. Shared-expert
 layouts are now immutable per-model configuration, scoped for target/draft use.
@@ -42,7 +42,7 @@ module-load OOM is handled by cold-load allocator reclamation, without changing
 checkpoint, arithmetic or workload limits. NVIDIA Qwen NVFP4 remains deferred;
 full GLM FP8 routed weights alone need roughly 283.5 GiB.
 
-FP4-Local support is developed on `dev`. Format references are
+FP4-Local support is included on `main` and `dev`. Format references are
 [Local Inference Lab vLLM](https://github.com/local-inference-lab/vllm/tree/8244d1c44348ae8a5bbfc9f1b607021652283ed4)
 and [FlashInfer's CSF32 specification](https://github.com/local-inference-lab/flashinfer/blob/35c0f234c4b82f4b3b30258132c8bf718e222309/docs/csf-scale-blocks.md).
 The loader includes indexed nested shards, normalizes block-scale shapes and

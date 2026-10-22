@@ -1351,7 +1351,7 @@ wheels = [
 
 [[package]]
 name = "openai"
-version = "2.6.1"
+version = "2.8.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -1363,9 +1363,9 @@ dependencies = [
     { name = "tqdm" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/c4/44/303deb97be7c1c9b53118b52825cbd1557aeeff510f3a52566b1fa66f6a2/openai-2.6.1.tar.gz", hash = "sha256:27ae704d190615fca0c0fc2b796a38f8b5879645a3a52c9c453b23f97141bb49", size = 593043, upload-time = "2025-10-24T13:29:52.79Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/04/0c/b9321e12f89e236f5e9a46346c30fb801818e22ba33b798a5aca84be895c/openai-2.8.0.tar.gz", hash = "sha256:4851908f6d6fcacbd47ba659c5ac084f7725b752b6bfa1e948b6fbfc111a6bad", size = 602412, upload-time = "2025-11-13T18:15:25.847Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/15/0e/331df43df633e6105ff9cf45e0ce57762bd126a45ac16b25a43f6738d8a2/openai-2.6.1-py3-none-any.whl", hash = "sha256:904e4b5254a8416746a2f05649594fa41b19d799843cd134dac86167e094edef", size = 1005551, upload-time = "2025-10-24T13:29:50.973Z" },
+    { url = "https://files.pythonhosted.org/packages/5b/e1/0a6560bab7fb7b5a88d35a505b859c6d969cb2fa2681b568eb5d95019dec/openai-2.8.0-py3-none-any.whl", hash = "sha256:ba975e347f6add2fe13529ccb94d54a578280e960765e5224c34b08d7e029ddf", size = 1022692, upload-time = "2025-11-13T18:15:23.621Z" },
 ]
 
 [[package]]
@@ -2088,7 +2088,7 @@ requires-dist = [
     { name = "nvidia-ml-py" },
     { name = "nvidia-modelopt", marker = "extra == 'diffusion'" },
     { name = "nvshmem4py-cu13" },
-    { name = "openai", specifier = "==2.6.1" },
+    { name = "openai", specifier = "==2.8.0" },
     { name = "openai-harmony", specifier = "==0.0.4" },
     { name = "opencv-python-headless", marker = "extra == 'diffusion'", specifier = "==4.10.0.84" },
     { name = "opentelemetry-api", marker = "extra == 'tracing'" },
@@ -2146,7 +2146,6 @@ requires-dist = [
     { name = "tilelang", specifier = "==0.1.12" },
     { name = "timm", specifier = "==1.0.16" },
     { name = "tokenizers", specifier = "==0.23.2" },
-    { name = "tokenspeed-mla", specifier = "==0.1.8" },
     { name = "torch", specifier = "==2.14.1" },
     { name = "torch-memory-saver", specifier = ">=0.0.9.post1" },
     { name = "torchaudio", specifier = "==2.11.0" },
@@ -2155,7 +2154,7 @@ requires-dist = [
     { name = "tqdm" },
     { name = "transformers", specifier = "==5.19.0" },
     { name = "trimesh", marker = "extra == 'diffusion'", specifier = ">=4.0.0" },
-    { name = "uvicorn" },
+    { name = "uvicorn", specifier = ">=0.51" },
     { name = "uvloop" },
     { name = "vsa", marker = "platform_machine != 'aarch64' and platform_machine != 'arm64' and extra == 'diffusion'", specifier = "==0.0.4" },
     { name = "watchfiles" },

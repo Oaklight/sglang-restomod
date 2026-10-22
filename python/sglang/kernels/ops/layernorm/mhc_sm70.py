@@ -14,7 +14,7 @@ import triton
 import triton.language as tl
 
 from sglang.kernels.jit.utils import cache_once, load_jit
-from sglang.kernels.ops.layernorm.mhc import _hc_combine_kernel
+from sglang.kernels.ops.layernorm.mhc import _mhc_combine_kernel
 
 
 @cache_once
@@ -253,7 +253,7 @@ def mhc_pre_sm70(
             num_warps=4,
             enable_fp_fusion=False,
         )
-        _hc_combine_kernel[(m, triton.cdiv(h, 256))](
+        _mhc_combine_kernel[(m, triton.cdiv(h, 256))](
             residual,
             pre,
             layer_input,
@@ -334,7 +334,7 @@ def mhc_pre_shard_sm70(
             num_warps=4,
             enable_fp_fusion=False,
         )
-        _hc_combine_kernel[(valid_rows, 16)](
+        _mhc_combine_kernel[(valid_rows, 16)](
             residual[start:stop],
             pre,
             layer_input,

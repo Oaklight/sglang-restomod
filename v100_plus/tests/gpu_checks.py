@@ -217,12 +217,12 @@ from sglang_v100_plus.kernels.attention import (
 )
 from sglang_v100_plus.runtime import round_verify_state
 
-from sglang.kernels.ops.attention.fla.fused_sigmoid_gating_recurrent import (
+from sglang.kernels.ops.attention.linear.fused_sigmoid_gating_recurrent import (
     fused_sigmoid_gating_delta_rule_update as recurrent,
 )
 
 HookRegistry.register(
-    "sglang.kernels.ops.attention.fla.fused_sigmoid_gating_recurrent.fused_sigmoid_gating_delta_rule_update_kernel.run",
+    "sglang.kernels.ops.attention.linear.fused_sigmoid_gating_recurrent.fused_sigmoid_gating_delta_rule_update_kernel.run",
     round_verify_state,
     HookType.AROUND,
 )
@@ -334,13 +334,13 @@ k = torch.randn_like(q)
 v = torch.randn(1, 4, 12, 128, device="cuda", dtype=torch.float16)
 a = torch.randn(4, 12, device="cuda", dtype=torch.float16)
 b = torch.randn_like(a)
-alog = torch.zeros(12, device="cuda", dtype=torch.float32)
+a_log = torch.zeros(12, device="cuda", dtype=torch.float32)
 bias = torch.zeros(12, device="cuda", dtype=torch.float16)
 state = torch.randn(1, 12, 128, 128, device="cuda", dtype=torch.float16) * 0.01
 idx = torch.zeros(1, device="cuda", dtype=torch.int32)
 snapshots = torch.empty(1, 4, 12, 128, 128, device="cuda", dtype=torch.float16)
 common = dict(
-    A_log=alog,
+    A_log=a_log,
     dt_bias=bias,
     softplus_beta=1.0,
     softplus_threshold=20.0,

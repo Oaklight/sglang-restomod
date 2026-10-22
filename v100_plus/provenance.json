@@ -45,7 +45,7 @@
   },
   "hashes_describe": "Original source content before compatibility edits; origin revision defaults to v100_fork unless specified.",
   "marlin_cutlass_revision": "f3fde58372d33e9a5650ba7b80fc48b3b49d40c8",
-  "current_upstream": "ab580b2e060059c0f8387b598a9f648dcec13f93",
+  "current_upstream": "0d6b283d7e6ac79edc10b2ca788f309e972f527b",
   "upstream_backports": {},
   "consolidated": {
     "v100_plus/sglang_v100_plus/kernels/gdn.py": [
@@ -154,7 +154,7 @@
       "reference_vllm": "https://github.com/local-inference-lab/vllm/tree/8244d1c44348ae8a5bbfc9f1b607021652283ed4",
       "csf32_specification": "https://github.com/local-inference-lab/flashinfer/blob/35c0f234c4b82f4b3b30258132c8bf718e222309/docs/csf-scale-blocks.md",
       "implementation": "Indexed nested-shard completion and block-scale normalization; lossless CPU CSF32 expansion before TP slicing; native SM70 MXFP8 group32 W8A16; fixed FP16 MLA / FP32 indexer projection boundaries; original quantized weights and global calibration preserved.",
-      "status": "Validated short-context TP8/DCP4 ordinary/MTP3, images and prefix reuse with native1048576 context allocation and FP16 KV/state. Own NVFP4 MTP required; fused draft source-module/scale mapping fixed in55be3330. Full1M execution and long-context quality remain unqualified."
+      "status": "Validated TP8/DCP4 ordinary/MTP3, images and prefix reuse with FP16 KV/state. Own NVFP4 MTP required. Full1M runtime completed on2026-10-22; current hosting/development target524288. Comprehensive long-context numerical/quality evaluation is separate."
     }
   }
 }

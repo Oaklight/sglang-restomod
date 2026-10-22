@@ -213,7 +213,12 @@ class TestDraftExtendCaptureWidth(CustomTestCase):
         from sglang.srt.model_executor.cuda_graph_config import (
             default_cuda_graph_config,
         )
-        from sglang.srt.runtime_context import get_context, get_exec, get_parallel
+        from sglang.srt.runtime_context import (
+            get_context,
+            get_exec,
+            get_parallel,
+            get_server_args,
+        )
         from sglang.srt.speculative.eagle_draft_extend_cuda_graph_runner import (
             EAGLEDraftExtendCudaGraphRunner,
         )
@@ -254,6 +259,7 @@ class TestDraftExtendCaptureWidth(CustomTestCase):
                 num_dp_ranks=2,
             ),
         ):
+            worker.draft_runner.server_args = get_server_args()
             with self.assertRaises(BeforeAllocation):
                 EAGLEDraftExtendCudaGraphRunner(worker)
         self.assertEqual(backend.capacity, (1, 4))

@@ -310,7 +310,7 @@ def test_sm70_tensorcore_graph_refreshes_explicit_length_bounds(heads, topk):
 @pytest.mark.parametrize("topk", [67, 2051, 4096])
 def test_sparse_length_scan_handles_ragged_width_and_empty_rows(topk):
     """The first backscan block may cross column zero, never its row boundary."""
-    from sglang.kernels.ops.kvcache.cache_ops import q8kv8_topk_length_from_indices
+    from sglang.kernels.ops.attention.metadata import q8kv8_topk_length_from_indices
 
     indices = torch.full((4, topk), -1, dtype=torch.int32, device="cuda")
     indices[1, 0] = 7
