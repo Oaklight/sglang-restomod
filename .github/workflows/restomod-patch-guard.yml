@@ -22,7 +22,7 @@ permissions:
   contents: read
 
 jobs:
-  check:
+  restomod-patch-guard:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

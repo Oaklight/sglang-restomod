@@ -102,3 +102,9 @@ with only the upstreamable change, and open the PR from there. Never push
 Upstream SGLang's own workflow tree is not carried here: `main` has no
 `.github/workflows` from upstream, and the reference branch is never checked
 out for Actions. This keeps a private repository's Actions usage bounded.
+
+## Branch rules
+
+See [BRANCHES.md](BRANCHES.md). While the repository is private on GitHub Free,
+rulesets are unavailable; the CI checks and the `upstream` convention apply.
+Once public (or with Pro), run `scripts/apply_rulesets.sh` once.
