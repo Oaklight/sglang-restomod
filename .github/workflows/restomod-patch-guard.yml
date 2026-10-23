@@ -16,6 +16,7 @@ on:
       - "scripts/**"
       - "sglang_restomod/**"
       - ".github/workflows/restomod-patch-guard.yml"
+  workflow_dispatch:
 
 permissions:
   contents: read
