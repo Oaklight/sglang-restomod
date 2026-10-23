@@ -166,7 +166,7 @@
       "reference_vllm": "https://github.com/local-inference-lab/vllm/tree/8244d1c44348ae8a5bbfc9f1b607021652283ed4",
       "csf32_specification": "https://github.com/local-inference-lab/flashinfer/blob/35c0f234c4b82f4b3b30258132c8bf718e222309/docs/csf-scale-blocks.md",
       "implementation": "Indexed nested-shard completion and block-scale normalization; lossless CPU CSF32 expansion before TP slicing; native SM70 MXFP8 group32 W8A16; fixed FP16 MLA / FP32 indexer projection boundaries; original quantized weights and global calibration preserved.",
-      "status": "Validated TP8/DCP4 ordinary/MTP3, images and prefix reuse with FP16 KV/state. Own NVFP4 MTP required. Full1M runtime completed on2026-10-22; current hosting/development target524288. Comprehensive long-context numerical/quality evaluation is separate. Own-head MTP4/5 are officially supported and execute; the current near8K/T0 screen keeps MTP3 fastest at89.1generation TPS. Wider sparse split scheduling improves MTP5 73.9->80.9generation TPS with flat prefill; image/prefix reuse and lab-sampled execution pass, without a new full-window fill."
+      "status": "Validated TP8/DCP4 ordinary/MTP3, images and prefix reuse with FP16 KV/state. Own NVFP4 MTP required. Full1M runtime completed on2026-10-22; current hosting/development target524288. Comprehensive long-context numerical/quality evaluation is separate. Own-head MTP4/5 are officially supported and execute; the current near8K/T0 screen keeps the compatible MTP3 reference fastest at89.1generation TPS. Wider sparse split scheduling improves MTP4 72.2->77.7 and MTP5 73.9->80.9generation TPS with flat prefill; image/prefix reuse and lab-sampled execution pass for both, without a new full-window fill."
     }
   }
 }

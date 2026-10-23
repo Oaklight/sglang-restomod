@@ -234,18 +234,21 @@ Higher MTP depths are supported: the [upstream GLM preset](https://github.com/sg
 uses five steps, one branch and six verification slots, repeatedly using the
 checkpoint's single MTP head. Current near8K/256-output/T0 results:
 
-| Tokens/s, category mean | MTP3 reference | MTP4 | Before: MTP5 | After: MTP5 |
-| --- | ---: | ---: | ---: | ---: |
-| Prefill | 2,732 | 2,740 | 2,741 | 2,735 |
-| Generation | 89.1 | 72.2 | 73.9 | 80.9 |
+| Tokens/s, category mean | Before | After |
+| --- | ---: | ---: |
+| Prefill, MTP4 | 2,740 | 2,741 |
+| Generation, MTP4 | 72.2 | 77.7 |
+| Prefill, MTP5 | 2,741 | 2,735 |
+| Generation, MTP5 | 73.9 | 80.9 |
 
 Widening existing native sparse split attention from four to eight query rows
-improves MTP5 generation9.5%, with gains in all three categories; complete cycles
-fall52.38→48.88ms. FP16 KV is preserved. Wider rows now use the existing FP16
+improves MTP4/MTP5 generation7.6%/9.5%, with gains in all three categories and
+effectively flat prefill. FP16 KV is preserved. Wider rows now use the existing FP16
 normalized-partial/FP32 LSE reduction, changing rounding relative to unsplit
 prefill. Fixed FP64/reference bounds, changing-input graphs, canaries and
 sanitizers pass; images, prefix reuse and lab-sampled execution pass. MTP3 keeps
-its one-through-four-row verification schedule and remains the default.
+its one-through-four-row verification schedule and remains the default; its
+compatible reference leads at2,732prefill/89.1generation tokens/s.
 Indexer/routed dispatch for wider verification still needs separate cost attribution.
 
 DFlash2 block8's FA0.2.6 screen added native windowed FA and packed FP8 target
