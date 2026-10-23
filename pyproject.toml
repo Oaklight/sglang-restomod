@@ -10,10 +10,11 @@ dependencies = ["sglang", "sglang-kernel", "pytest", "scikit-build-core", "cmake
 
 [project.entry-points."sglang.srt.plugins"]
 v100_plus = "sglang_v100_plus:register"
+restomod = "sglang_restomod:register"
 
 [tool.setuptools.packages.find]
-where = ["v100_plus"]
-include = ["sglang_v100_plus*"]
+where = ["v100_plus", "restomod"]
+include = ["sglang_v100_plus*", "sglang_restomod*"]
 
 [tool.uv]
 environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]

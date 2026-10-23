@@ -1,3 +1,7 @@
+> **sglang-restomod** — a maintained downstream of SGLang for V100/SM70.
+> See [RESTMOD.md](RESTMOD.md) for the branch model, upstream pin, and
+> patch policy. Upstream pin: `0d6b283d` (2026-10-22).
+
 # sglang-v100-plus
 
 [SGLang](https://github.com/sgl-project/sglang) adapted for **eight V100 SXM2 32 GB GPUs

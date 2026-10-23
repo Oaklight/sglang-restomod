@@ -1,0 +1,35 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Compile overlay and scripts
+        run: python -m compileall -q restomod scripts
+
+      - name: Validate manifests
+        run: |
+          python - <<'PY'
+          import json, pathlib
+          json.loads(pathlib.Path("v100_plus/core-patches.json").read_text())
+          json.loads(pathlib.Path("v100_plus/provenance.json").read_text())
+          print("manifests OK")
+          PY
+
+      - name: Pin consistency
+        run: python scripts/check_pin.py

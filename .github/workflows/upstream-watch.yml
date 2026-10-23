@@ -1,0 +1,105 @@
+name: upstream-watch
+
+on:
+  schedule:
+    # Mondays 03:17 UTC; off the :00 mark to avoid the cron herd.
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: upstream-watch
+  cancel-in-progress: false
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch upstream tags
+        run: |
+          git remote add upstream https://github.com/sgl-project/sglang.git 2>/dev/null || true
+          git fetch --tags --force upstream
+
+      - name: Read current pin
+        id: pin
+        run: |
+          python - <<'PY'
+          import os, pathlib, tomllib
+          pin = tomllib.loads(pathlib.Path("UPSTREAM_PIN.toml").read_text())["upstream"]
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"ref={pin['ref']}\n")
+          PY
+
+      - name: Find newest upstream tag
+        id: latest
+        run: |
+          tag=$(git tag --list 'v[0-9]*' --sort=-v:refname | head -1)
+          commit=$(git rev-list -n1 "${tag}^{commit}")
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+
+      - name: Compare with pin
+        id: cmp
+        run: |
+          if [ "${{ steps.latest.outputs.commit }}" = "${{ steps.pin.outputs.ref }}" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Merge upstream and open a bump PR
+        if: steps.cmp.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.latest.outputs.tag }}
+          COMMIT: ${{ steps.latest.outputs.commit }}
+        run: |
+          set -euo pipefail
+          git config user.name "restomod-bot"
+          git config user.email "restomod-bot@users.noreply.github.com"
+
+          branch="bump/upstream-${TAG}"
+          git checkout -B "$branch" origin/main
+
+          if ! git merge --no-ff "$COMMIT" > /tmp/merge.log 2>&1; then
+            conflicts=$(git diff --name-only --diff-filter=U | tr '\n' ' ')
+            git merge --abort || true
+            gh issue create \
+              --title "upstream bump ${TAG} needs a manual merge" \
+              --body "Upstream ${TAG} (${COMMIT}) conflicts with main.
+
+          Conflicted files: ${conflicts}
+
+          Resolve locally with:
+          \`\`\`bash
+          scripts/upstream_sync.sh ${TAG}
+          \`\`\`
+          then record any new core patches in \`v100_plus/core-patches.json\` and open a PR."
+            exit 0
+          fi
+
+          python scripts/upstream_bump.py --ref "$COMMIT" --tag "$TAG"
+          python scripts/check_pin.py
+          python v100_plus/check-core-diff.py --ref HEAD
+
+          git add UPSTREAM_PIN.toml v100_plus/provenance.json
+          git commit -m "chore(upstream): merge ${TAG} and bump pin"
+          git push -u origin "$branch" --force
+
+          gh pr create \
+            --base main \
+            --head "$branch" \
+            --title "chore(upstream): merge ${TAG}" \
+            --body "Merges upstream ${TAG} (\`${COMMIT}\`) and updates \`UPSTREAM_PIN.toml\`.
+
+          \`delta-guard\` must pass: record any new core patches in
+          \`v100_plus/core-patches.json\` before merging."

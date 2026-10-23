@@ -1,0 +1,40 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "restomod-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build release notes
+        run: |
+          python - <<'PY' > /tmp/notes.md
+          import json, pathlib, tomllib
+          pin = tomllib.loads(pathlib.Path("UPSTREAM_PIN.toml").read_text())["upstream"]
+          prov = json.loads(pathlib.Path("v100_plus/provenance.json").read_text())
+          label = pin.get("tag") or pin["ref"][:12]
+          print(f"Upstream pin: `{label}` (`{pin['ref']}`)")
+          print()
+          print(f"Recorded core patches: {len(prov.get('upstream_paths', {}))} files")
+          print()
+          print("Compatibility: see `COMPATIBILITY.md`.")
+          PY
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file /tmp/notes.md

@@ -1,0 +1,14 @@
+# The upstream commit this repository pins to.
+#
+# `upstream` is a read-only mirror branch at this commit.
+# `main` is this commit plus the restomod overlay and recorded core patches.
+# `scripts/upstream_bump.py` updates both this file and
+# `v100_plus/provenance.json`; keep them in sync.
+
+[upstream]
+repo = "sgl-project/sglang"
+kind = "commit"
+ref = "0d6b283d7e6ac79edc10b2ca788f309e972f527b"
+tag = ""
+pinned_at = "2026-10-23"
+baseline = "heislera763/sglang-v100-plus@595b5f01d260320966060f734efabe2e379ebdce"

@@ -1,0 +1,43 @@
+name: pin-sync
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pin-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Move upstream branch and tag to the pin
+        run: |
+          set -euo pipefail
+          git config user.name "restomod-bot"
+          git config user.email "restomod-bot@users.noreply.github.com"
+
+          python - <<'PY' > /tmp/pin
+          import pathlib, tomllib
+          pin = tomllib.loads(pathlib.Path("UPSTREAM_PIN.toml").read_text())["upstream"]
+          print(pin["ref"])
+          print(pin.get("tag", ""))
+          PY
+          ref=$(sed -n '1p' /tmp/pin)
+          tag=$(sed -n '2p' /tmp/pin)
+
+          git cat-file -e "${ref}^{commit}"
+          git push origin "${ref}:refs/heads/upstream" --force
+
+          label="${tag:-${ref:0:12}}"
+          git tag -f "upstream-${label}" "$ref"
+          git push origin "refs/tags/upstream-${label}" --force
