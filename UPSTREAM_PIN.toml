@@ -1,0 +1,15 @@
+# The upstream baseline this layer targets.
+#
+# `upstream` is a reference branch in this repository containing the pristine
+# SGLang tree at this commit. `main` does not merge it; it only carries the
+# layer, the patches, and the pin.
+#
+# `scripts/upstream_bump.py` updates this file and patches/manifest.json.
+
+[upstream]
+repo = "sgl-project/sglang"
+kind = "tag"
+ref = "v0.5.22"
+commit = "baa9befa381511cd4d56f83980951e5a45fffc6d"
+pypi_version = "0.5.22"
+pinned_at = "2026-10-23"

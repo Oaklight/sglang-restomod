@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sglang-restomod"
+version = "0.1.0"
+description = "A lightweight downstream layer for SGLang: pinned upstream plus selected V100/SM70 components."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = { text = "Apache-2.0" }
+dependencies = [
+  # The baseline. When patches exist, scripts/build.sh installs a patched
+  # source tree at the same version instead of this wheel.
+  "sglang==0.5.22",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.6", "build>=1.2"]
+
+[project.entry-points."sglang.srt.plugins"]
+restomod = "sglang_restomod:register"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["sglang_restomod*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]

@@ -1,0 +1,16 @@
+# Build and patch artifacts
+.build/
+build/
+dist/
+*.egg-info/
+*.whl
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# Local environment
+.env

@@ -1,0 +1,126 @@
+name: restomod-upstream-watch
+
+on:
+  schedule:
+    # Mondays 03:17 UTC.
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: restomod-upstream-watch
+  cancel-in-progress: false
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read current pin
+        id: pin
+        run: |
+          python - <<'PY'
+          import os, pathlib, tomllib
+          pin = tomllib.loads(pathlib.Path("UPSTREAM_PIN.toml").read_text())["upstream"]
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"kind={pin['kind']}\n")
+              out.write(f"ref={pin['ref']}\n")
+              out.write(f"commit={pin['commit']}\n")
+          PY
+
+      - name: Find newest upstream tag
+        id: latest
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.pin.outputs.kind }}" != "tag" ]; then
+            echo "pin is not a tag; manual check required" >&2
+            echo "tag=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          latest=$(
+            git ls-remote --tags --refs \
+              https://github.com/sgl-project/sglang.git 'v*' \
+              | awk '{print $2}' | sed 's#refs/tags/##' \
+              | sort -V | tail -1
+          )
+          echo "tag=$latest" >> "$GITHUB_OUTPUT"
+
+      - name: Compare versions
+        id: cmp
+        run: |
+          pin="${{ steps.pin.outputs.ref }}"
+          latest="${{ steps.latest.outputs.tag }}"
+          if [ -z "$latest" ] || [ "$latest" = "$pin" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          elif [ "$(printf '%s\n%s\n' "$pin" "$latest" | sort -V | tail -1)" = "$latest" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open a pin bump PR
+        if: steps.cmp.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.latest.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git config user.name "restomod-bot"
+          git config user.email "restomod-bot@users.noreply.github.com"
+
+          git fetch --depth 1 --force \
+            https://github.com/sgl-project/sglang.git \
+            "refs/tags/${TAG}:refs/tags/${TAG}"
+          COMMIT="$(git rev-parse "${TAG}^{commit}")"
+
+          branch="bump/upstream-${TAG}"
+          git checkout -B "$branch" origin/main
+          python scripts/upstream_bump.py --ref "$TAG" --commit "$COMMIT"
+
+          # Check the patch queue against the new source and retire accepted
+          # patches that upstream now contains.
+          scripts/fetch_upstream.sh
+          set +e
+          python scripts/retire_patches.py > /tmp/retire.log 2>&1
+          retire_rc=$?
+          python scripts/check_patches.py --retire-report > /tmp/patch.log 2>&1
+          patch_rc=$?
+          set -e
+
+          git add -A
+          git commit -m "chore(upstream): bump pin to ${TAG}"
+
+          body="$(cat <<EOF
+          Bumps the pin to upstream **${TAG}** (\`${COMMIT}\`).
+
+          Patch queue:
+          - retire script exit: ${retire_rc}
+          - patch check exit: ${patch_rc}
+
+          \`\`\`
+          $(tail -40 /tmp/retire.log)
+          $(tail -40 /tmp/patch.log)
+          \`\`\`
+
+          A non-zero patch check means a patch needs rebasing before this PR can
+          merge. Accepted patches that already reverse-apply were removed.
+          EOF
+          )"
+
+          git push -u origin "$branch" --force
+          pr=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$branch" --json number --jq '.[0].number // empty')
+          if [ -n "$pr" ]; then
+            gh pr comment "$pr" --body "$body"
+          else
+            gh pr create --base main --head "$branch" \
+              --title "chore(upstream): bump pin to ${TAG}" \
+              --body "$body"
+          fi
