@@ -53,6 +53,11 @@ UPSTREAM_PIN.toml       the baseline
 See [RESTMOD.md](RESTMOD.md) for the component-selection and patch-retirement
 rules, and [patches/README.md](patches/README.md) for the patch lifecycle.
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Coding-agent instructions are in
+[AGENTS.md](AGENTS.md).
+
 ## License
 
 Apache-2.0. SGLang and any selected component keep their own licenses; see

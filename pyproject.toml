@@ -9,6 +9,12 @@ description = "A lightweight downstream layer for SGLang: pinned upstream plus s
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 license = { text = "Apache-2.0" }
+keywords = ["sglang", "v100", "sm70", "inference", "serving"]
+classifiers = [
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
   # The baseline. When patches exist, scripts/build.sh installs a patched
   # source tree at the same version instead of this wheel.
@@ -17,6 +23,10 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.6", "build>=1.2"]
+
+[project.urls]
+Repository = "https://github.com/Oaklight/sglang-restomod"
+Issues = "https://github.com/Oaklight/sglang-restomod/issues"
 
 [project.entry-points."sglang.srt.plugins"]
 restomod = "sglang_restomod:register"

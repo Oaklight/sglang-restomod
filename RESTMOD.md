@@ -93,11 +93,37 @@ with only the upstreamable change, and open the PR from there. Never push
 
 | Workflow | Purpose |
 |---|---|
-| `restomod-ci` | compile, pin consistency, manifest validation |
+| `restomod-ci` | compile, pin/manifest checks, build + twine check |
 | `restomod-patch-guard` | fetch the pin, apply/check patches, enforce retirement |
 | `restomod-upstream-watch` | detect new tags, open bump PRs, retire redundant patches |
 | `restomod-pin-sync` | move the reference `upstream` branch |
-| `restomod-release` | build and publish the layer on `restomod-v*` tags |
+| `restomod-release` | GitHub release on `restomod-v*` tags |
+| `restomod-publish` | TestPyPI on dispatch; PyPI on `restomod-v*` tags |
+
+## Publishing
+
+Trusted Publishing (OIDC); no API tokens are stored.
+
+Register a pending publisher in both PyPI and TestPyPI:
+
+| Field | Value |
+|---|---|
+| PyPI project name | `sglang-restomod` |
+| Owner | `Oaklight` |
+| Repository | `sglang-restomod` |
+| Workflow name | `restomod-publish.yml` |
+| Environment | `testpypi` for TestPyPI, `pypi` for PyPI |
+
+- **TestPyPI**: Actions → `restomod-publish` → Run workflow → `testpypi`.
+  `skip-existing` makes re-runs safe; bump `version` in `pyproject.toml` to
+  upload a new build.
+- **PyPI**: bump `version`, commit, tag `restomod-vX.Y.Z`, push the tag.
+  `restomod-release` creates the GitHub release; `restomod-publish` uploads
+  the wheel and sdist.
+- The `testpypi` and `pypi` GitHub environments are already created; they hold
+  no secrets.
+- If the registry project name differs, change `name` in `pyproject.toml` and
+  the publisher settings together.
 
 Upstream SGLang's own workflow tree is not carried here: `main` has no
 `.github/workflows` from upstream, and the reference branch is never checked
