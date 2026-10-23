@@ -3,23 +3,19 @@ name: restomod-publish
 on:
   workflow_dispatch:
     inputs:
+      version:
+        description: "Version to publish (e.g. 0.0.0a0)"
+        required: true
+        type: string
       target:
         description: "Publish target"
         required: true
-        default: testpypi
+        default: both
         type: choice
         options:
+          - both
           - testpypi
           - pypi
-          - both
-      version:
-        description: "Optional PEP 440 version override (test publishes). Empty uses pyproject.toml."
-        required: false
-        default: ""
-        type: string
-  push:
-    tags:
-      - "restomod-v*"
 
 permissions:
   contents: read
@@ -27,7 +23,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -35,48 +31,32 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Apply version override
-        if: github.event_name == 'workflow_dispatch' && inputs.version != ''
+      - name: Verify version matches __init__.py
         env:
-          VERSION: ${{ inputs.version }}
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          python - <<'PY'
-          import os
-          import pathlib
-          import re
+          PKG_VER=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' sglang_restomod/__init__.py)
+          echo "Package version: $PKG_VER"
+          echo "Requested version: $INPUT_VERSION"
+          [ "$PKG_VER" = "$INPUT_VERSION" ] || \
+            (echo "::error::Version mismatch: __init__.py has $PKG_VER but release requested $INPUT_VERSION"; exit 1)
 
-          path = pathlib.Path("pyproject.toml")
-          text = path.read_text()
-          new, count = re.subn(
-              r'^version = ".*"$',
-              f'version = "{os.environ["VERSION"]}"',
-              text,
-              count=1,
-              flags=re.M,
-          )
-          if count != 1:
-              raise SystemExit("could not find the project version")
-          path.write_text(new)
-          print("version:", os.environ["VERSION"])
-          PY
-
-      - name: Build
+      - name: Build wheel + sdist
         run: |
-          python -m pip install --upgrade build
+          python -m pip install --upgrade pip build
           python -m build
 
       - uses: actions/upload-artifact@v4
         with:
           name: dist
-          path: dist/
+          path: dist/*
+          retention-days: 7
 
-  publish-testpypi:
-    if: >
-      github.event_name == 'workflow_dispatch' &&
-      (inputs.target == 'testpypi' || inputs.target == 'both')
+  testpypi:
+    if: inputs.target == 'both' || inputs.target == 'testpypi'
     needs: build
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     environment: testpypi
     permissions:
       id-token: write
@@ -95,23 +75,67 @@ jobs:
       - name: Smoke-install from TestPyPI
         run: |
           python -m venv /tmp/tp
-          /tmp/tp/bin/pip install \
-            --pre \
-            --index-url https://test.pypi.org/simple/ \
-            --no-deps sglang-restomod
-          /tmp/tp/bin/python -c "import sglang_restomod; print(sglang_restomod.__file__)"
+          for attempt in $(seq 1 30); do
+            if /tmp/tp/bin/pip install --pre \
+              --index-url https://test.pypi.org/simple/ \
+              --no-deps "sglang-restomod==${{ inputs.version }}"; then
+              /tmp/tp/bin/python -c "import sglang_restomod; print(sglang_restomod.__version__)"
+              exit 0
+            fi
+            echo "attempt ${attempt}/30: waiting for TestPyPI index"
+            sleep 10
+          done
+          echo "::error::sglang-restomod==${{ inputs.version }} not installable from TestPyPI"
+          exit 1
 
-  publish-pypi:
-    if: >
-      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/restomod-v')) ||
-      (github.event_name == 'workflow_dispatch' && (inputs.target == 'pypi' || inputs.target == 'both'))
+  pypi:
+    if: inputs.target == 'both' || inputs.target == 'pypi'
     needs: build
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     environment: pypi
     permissions:
       id-token: write
+      contents: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Create the release tag
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          VERSION="$INPUT_VERSION"
+          TAG="restomod-v$VERSION"
+          ver_of() { sed -n 's/^__version__ = "\(.*\)"/\1/p'; }
+          INIT=sglang_restomod/__init__.py
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "Tag $TAG already exists - back-release mode."
+            TAG_COMMIT=$(git rev-parse "$TAG^{commit}")
+            HEAD_COMMIT=$(git rev-parse HEAD)
+            [ "$TAG_COMMIT" = "$HEAD_COMMIT" ] || \
+              (echo "::error::Tag $TAG points to $TAG_COMMIT, not $HEAD_COMMIT; dispatch from the tag for a back-release"; exit 1)
+            PKG_VER=$(git show "$TAG:$INIT" | ver_of)
+            echo "Version at $TAG: $PKG_VER"
+            [ "$PKG_VER" = "$VERSION" ] || \
+              (echo "::error::Version mismatch: $TAG has $PKG_VER but release requested $VERSION"; exit 1)
+          else
+            echo "Tag $TAG does not exist - fresh release mode."
+            PKG_VER=$(ver_of < "$INIT")
+            echo "Version in working tree: $PKG_VER"
+            [ "$PKG_VER" = "$VERSION" ] || \
+              (echo "::error::Version mismatch: __init__.py has $PKG_VER but release requested $VERSION"; exit 1)
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git tag "$TAG"
+            git push origin "$TAG"
+          fi
+
       - uses: actions/download-artifact@v4
         with:
           name: dist
@@ -119,3 +143,21 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          TAG="restomod-v$INPUT_VERSION"
+          REPO="${{ github.repository }}"
+          PRE=""
+          case "$INPUT_VERSION" in
+            *a*|*b*|*rc*|*dev*) PRE="--prerelease" ;;
+          esac
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --repo "$REPO" --clobber
+          else
+            gh release create "$TAG" dist/* --repo "$REPO" \
+              --title "$TAG" --generate-notes $PRE
+          fi

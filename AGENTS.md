@@ -31,6 +31,7 @@ Read first: `README.md`, `RESTMOD.md`, `BRANCHES.md`, `patches/README.md`.
 ## Checks before proposing a change
 
 ```bash
+cmp README.md README_en.md
 python scripts/check_pin.py
 python scripts/check_patches.py --skip-apply
 # when patches exist:
@@ -40,6 +41,14 @@ scripts/apply_patches.sh
 python -m compileall -q sglang_restomod scripts
 python -m build && twine check dist/*
 ```
+
+## Versioning and README
+
+- `__version__` in `sglang_restomod/__init__.py` is the only version source.
+  `pyproject.toml` reads it with `[tool.setuptools.dynamic]`; never add a static
+  version.
+- `README.md` and `README_en.md` must stay byte-identical; CI checks with
+  `cmp`. `README_zh.md` is the Chinese translation.
 
 ## Component selection
 

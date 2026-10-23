@@ -28,6 +28,9 @@ jobs:
       - name: Compile
         run: python -m compileall -q sglang_restomod scripts
 
+      - name: README parity
+        run: cmp README.md README_en.md
+
       - name: Pin and manifest consistency
         run: |
           python scripts/check_pin.py

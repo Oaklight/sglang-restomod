@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sglang-restomod"
-version = "0.1.0"
+dynamic = ["version"]
 description = "A lightweight downstream layer for SGLang: pinned upstream plus selected V100/SM70 components."
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
@@ -30,6 +30,9 @@ Issues = "https://github.com/Oaklight/sglang-restomod/issues"
 
 [project.entry-points."sglang.srt.plugins"]
 restomod = "sglang_restomod:register"
+
+[tool.setuptools.dynamic]
+version = { attr = "sglang_restomod.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["."]

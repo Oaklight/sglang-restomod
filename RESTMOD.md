@@ -83,8 +83,8 @@ patch earlier would silently remove a fix that the pinned source does not have.
 
 ## Contributing upstream
 
-This repository is private, so it cannot be the head of a PR against the public
-upstream. Create a public launchpad fork when needed
+This repository is not a GitHub fork of SGLang, so it cannot be the head of a PR
+against the public upstream. Create a public launchpad fork when needed
 (`gh repo fork sgl-project/sglang --clone=false`), push a clean topic branch
 with only the upstreamable change, and open the PR from there. Never push
 `main` or `sglang_restomod/` to the launchpad.
@@ -97,8 +97,7 @@ with only the upstreamable change, and open the PR from there. Never push
 | `restomod-patch-guard` | fetch the pin, apply/check patches, enforce retirement |
 | `restomod-upstream-watch` | detect new tags, open bump PRs, retire redundant patches |
 | `restomod-pin-sync` | move the reference `upstream` branch |
-| `restomod-release` | GitHub release on `restomod-v*` tags |
-| `restomod-publish` | TestPyPI on dispatch; PyPI on `restomod-v*` tags |
+| `restomod-publish` | version-checked TestPyPI/PyPI publish; creates the tag and GitHub Release |
 
 ## Publishing
 
@@ -114,13 +113,13 @@ Register a pending publisher in both PyPI and TestPyPI:
 | Workflow name | `restomod-publish.yml` |
 | Environment | `testpypi` for TestPyPI, `pypi` for PyPI |
 
-- **TestPyPI**: Actions → `restomod-publish` → Run workflow → `testpypi`.
-  `skip-existing` makes re-runs safe. Set the optional `version` input to
-  publish a test version without a commit, for example `0.0.0a0`.
-- **PyPI**: bump `version`, commit, tag `restomod-vX.Y.Z`, push the tag.
-  `restomod-release` creates the GitHub release; `restomod-publish` uploads
-  the wheel and sdist. The manual `target=pypi` or `target=both` path with a
-  `version` override is for test uploads only.
+The version source is `__version__` in `sglang_restomod/__init__.py`;
+`pyproject.toml` reads it dynamically. The workflow verifies the requested
+`version` input against it and refuses to publish on mismatch.
+
+- **TestPyPI**: `target=testpypi` (or `both`); `skip-existing` makes re-runs safe.
+- **PyPI**: `target=pypi` (or `both`); the job creates `restomod-v<version>`,
+  uploads the wheel and sdist, and creates the GitHub Release.
 - Example test publish to both channels:
 
   ```bash
@@ -138,6 +137,5 @@ out for Actions. This keeps a private repository's Actions usage bounded.
 
 ## Branch rules
 
-See [BRANCHES.md](BRANCHES.md). While the repository is private on GitHub Free,
-rulesets are unavailable; the CI checks and the `upstream` convention apply.
-Once public (or with Pro), run `scripts/apply_rulesets.sh` once.
+See [BRANCHES.md](BRANCHES.md). Rulesets are active; rerun
+`scripts/apply_rulesets.sh` if they need to be recreated.
