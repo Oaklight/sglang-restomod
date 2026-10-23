@@ -104,6 +104,14 @@ jobs:
         with:
           python-version: "3.12"
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+
       - name: Create the release tag
         env:
           INPUT_VERSION: ${{ inputs.version }}
@@ -113,7 +121,7 @@ jobs:
           ver_of() { sed -n 's/^__version__ = "\(.*\)"/\1/p'; }
           INIT=sglang_restomod/__init__.py
           if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
-            echo "Tag $TAG already exists - back-release mode."
+            echo "Tag $TAG already exists - verifying it."
             TAG_COMMIT=$(git rev-parse "$TAG^{commit}")
             HEAD_COMMIT=$(git rev-parse HEAD)
             [ "$TAG_COMMIT" = "$HEAD_COMMIT" ] || \
@@ -123,7 +131,7 @@ jobs:
             [ "$PKG_VER" = "$VERSION" ] || \
               (echo "::error::Version mismatch: $TAG has $PKG_VER but release requested $VERSION"; exit 1)
           else
-            echo "Tag $TAG does not exist - fresh release mode."
+            echo "Creating $TAG."
             PKG_VER=$(ver_of < "$INIT")
             echo "Version in working tree: $PKG_VER"
             [ "$PKG_VER" = "$VERSION" ] || \
@@ -133,14 +141,6 @@ jobs:
             git tag "$TAG"
             git push origin "$TAG"
           fi
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: dist
-          path: dist/
-
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
 
       - name: Create or update GitHub Release
         env:
