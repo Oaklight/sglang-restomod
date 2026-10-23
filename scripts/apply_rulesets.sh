@@ -64,6 +64,10 @@ upsert "main-protection" '{
   ]
 }'
 
+# Personal repositories cannot use the GitHub Actions integration as a ruleset
+# bypass actor (API 422). Keep `upstream` deletion-protected; bot-only
+# force-push protection would need a write deploy key added as a DeployKey
+# bypass actor. See BRANCHES.md for the upgrade path.
 upsert "upstream-pin" '{
   "name": "upstream-pin",
   "target": "branch",
@@ -72,12 +76,9 @@ upsert "upstream-pin" '{
     "ref_name": { "include": ["refs/heads/upstream"], "exclude": [] }
   },
   "rules": [
-    { "type": "deletion" },
-    { "type": "non_fast_forward" },
-    { "type": "update" }
+    { "type": "deletion" }
   ],
   "bypass_actors": [
-    { "actor_id": 15368, "actor_type": "Integration", "bypass_mode": "always" },
     { "actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always" }
   ]
 }'
@@ -106,11 +107,9 @@ upsert "upstream-tags" '{
     "ref_name": { "include": ["refs/tags/upstream-v*"], "exclude": [] }
   },
   "rules": [
-    { "type": "deletion" },
-    { "type": "update" }
+    { "type": "deletion" }
   ],
   "bypass_actors": [
-    { "actor_id": 15368, "actor_type": "Integration", "bypass_mode": "always" },
     { "actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always" }
   ]
 }'
