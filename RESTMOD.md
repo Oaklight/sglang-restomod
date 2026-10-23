@@ -97,7 +97,8 @@ with only the upstreamable change, and open the PR from there. Never push
 | `restomod-patch-guard` | fetch the pin, apply/check patches, enforce retirement |
 | `restomod-upstream-watch` | detect new tags, open bump PRs, retire redundant patches |
 | `restomod-pin-sync` | move the reference `upstream` branch |
-| `restomod-publish` | version-checked TestPyPI/PyPI publish; creates the tag and GitHub Release |
+| `test-release` | version-checked TestPyPI publish |
+| `release` | version-checked PyPI publish; creates the tag and GitHub Release |
 
 ## Publishing
 
@@ -110,24 +111,25 @@ Register a pending publisher in both PyPI and TestPyPI:
 | PyPI project name | `sglang-restomod` |
 | Owner | `Oaklight` |
 | Repository | `sglang-restomod` |
-| Workflow name | `restomod-publish.yml` |
-| Environment | `testpypi` for TestPyPI, `pypi` for PyPI |
+| Workflow name | `test-release.yml` (TestPyPI), `release.yml` (PyPI) |
+| Environment | `(Any)` — leave blank |
 
 The version source is `__version__` in `sglang_restomod/__init__.py`;
 `pyproject.toml` reads it dynamically. The workflow verifies the requested
 `version` input against it and refuses to publish on mismatch.
 
-- **TestPyPI**: `target=testpypi` (or `both`); `skip-existing` makes re-runs safe.
-- **PyPI**: `target=pypi` (or `both`); the job creates `restomod-v<version>`,
-  uploads the wheel and sdist, and creates the GitHub Release.
-- Example test publish to both channels:
+- **TestPyPI**: workflow `test-release`, input `version`; `skip-existing`
+  makes re-runs safe.
+- **PyPI**: workflow `release`, input `version`; it publishes the wheel and
+  sdist, creates `restomod-v<version>`, and creates the GitHub Release.
+- Example for both channels:
 
   ```bash
-  gh workflow run restomod-publish --ref main \
-    -f target=both -f version=0.0.0a0
+  gh workflow run test-release --ref main -f version=0.0.0a0
+  gh workflow run release --ref main -f version=0.0.0a0
   ```
-- The `testpypi` and `pypi` GitHub environments are already created; they hold
-  no secrets.
+- The workflows do not set a GitHub environment; both publishers are configured
+  with Environment `(Any)`.
 - If the registry project name differs, change `name` in `pyproject.toml` and
   the publisher settings together.
 

@@ -1,31 +1,27 @@
-name: restomod-publish
+name: Release
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to publish (e.g. 0.0.0a0)"
+        description: "Version to release (e.g. 0.0.0a0)"
         required: true
         type: string
-      target:
-        description: "Publish target"
-        required: true
-        default: both
-        type: choice
-        options:
-          - both
-          - testpypi
-          - pypi
 
 permissions:
   contents: read
 
 jobs:
-  build:
+  build-publish:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      id-token: write
+      contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
@@ -46,71 +42,10 @@ jobs:
           python -m pip install --upgrade pip build
           python -m build
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: dist
-          path: dist/*
-          retention-days: 7
-
-  testpypi:
-    if: inputs.target == 'both' || inputs.target == 'testpypi'
-    needs: build
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      id-token: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: dist
-          path: dist/
-
-      - name: Publish to TestPyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          repository-url: https://test.pypi.org/legacy/
-          skip-existing: true
-
-      - name: Smoke-install from TestPyPI
-        run: |
-          python -m venv /tmp/tp
-          for attempt in $(seq 1 30); do
-            if /tmp/tp/bin/pip install --pre \
-              --index-url https://test.pypi.org/simple/ \
-              --no-deps "sglang-restomod==${{ inputs.version }}"; then
-              /tmp/tp/bin/python -c "import sglang_restomod; print(sglang_restomod.__version__)"
-              exit 0
-            fi
-            echo "attempt ${attempt}/30: waiting for TestPyPI index"
-            sleep 10
-          done
-          echo "::error::sglang-restomod==${{ inputs.version }} not installable from TestPyPI"
-          exit 1
-
-  pypi:
-    if: inputs.target == 'both' || inputs.target == 'pypi'
-    needs: build
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      id-token: write
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: dist
-          path: dist/
-
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true
 
       - name: Create the release tag
         env:
@@ -141,6 +76,23 @@ jobs:
             git tag "$TAG"
             git push origin "$TAG"
           fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/*
+          retention-days: 7
+
+  github-release:
+    needs: build-publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
 
       - name: Create or update GitHub Release
         env:

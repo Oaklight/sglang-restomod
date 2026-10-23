@@ -1,0 +1,68 @@
+name: Test Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to test-release (e.g. 0.0.0a0)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Verify version matches __init__.py
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          PKG_VER=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' sglang_restomod/__init__.py)
+          echo "Package version: $PKG_VER"
+          echo "Requested version: $INPUT_VERSION"
+          [ "$PKG_VER" = "$INPUT_VERSION" ] || \
+            (echo "::error::Version mismatch: __init__.py has $PKG_VER but release requested $INPUT_VERSION"; exit 1)
+
+      - name: Build wheel + sdist
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+
+      - name: Publish to TestPyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          skip-existing: true
+
+      - name: Smoke-install from TestPyPI
+        run: |
+          python -m venv /tmp/tp
+          for attempt in $(seq 1 30); do
+            if /tmp/tp/bin/pip install --pre \
+              --index-url https://test.pypi.org/simple/ \
+              --no-deps "sglang-restomod==${{ inputs.version }}"; then
+              /tmp/tp/bin/python -c "import sglang_restomod; print(sglang_restomod.__version__)"
+              exit 0
+            fi
+            echo "attempt ${attempt}/30: waiting for TestPyPI index"
+            sleep 10
+          done
+          echo "::error::sglang-restomod==${{ inputs.version }} not installable from TestPyPI"
+          exit 1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/*
+          retention-days: 7
