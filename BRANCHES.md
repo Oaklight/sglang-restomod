@@ -29,38 +29,46 @@ scripts/apply_rulesets.sh
 
 ### `upstream`
 
-`upstream` is a read-only pin; only the pin-sync bot may move it.
+`upstream` is a read-only pin in practice; `restomod-pin-sync` is its only
+writer.
 
-- block deletion;
-- block non-fast-forward pushes for humans;
-- restrict updates to the GitHub Actions integration and repository admins
-  (bypass actors), so `restomod-pin-sync` can force-update the branch;
-- the branch always points at `UPSTREAM_PIN.toml`'s `commit`.
+- deletion is blocked;
+- force-push/update restriction is **not** applied on this personal repository:
+  GitHub does not allow the Actions integration as a ruleset bypass actor
+  (HTTP 422). Until a deploy-key bypass is configured, treat "only pin-sync
+  moves `upstream`" as a convention, not an enforced rule.
+
+Upgrade path for enforced bot-only force-push protection:
+
+1. create an ed25519 deploy key with write access and add it to the repository;
+2. store the private key as `PIN_SYNC_SSH_KEY`;
+3. configure `restomod-pin-sync` to push over SSH with that key;
+4. add the deploy key as a `DeployKey` bypass actor and re-add
+   `non_fast_forward` + `update` to the `upstream-pin` ruleset.
 
 ### Tags
 
 - `restomod-v*`: immutable (no update, no deletion); releases are cut from
   `main`.
-- `upstream-v*`: movable only by `restomod-pin-sync` (GitHub Actions
-  integration bypass), so a pin bump can retag.
+- `upstream-v*`: deletion-protected; `restomod-pin-sync` may retag it. Update
+  protection is omitted for the same personal-repo reason as `upstream`.
 
 ## Bypass actors
-
-The ruleset script uses these actor IDs:
 
 | Actor | ID | Type |
 |---|---|---|
 | Repository admin role | 5 | `RepositoryRole` |
-| GitHub Actions | 15368 | `Integration` |
 
-If a future GitHub change makes the Actions bypass ineffective, the pin-sync
-workflow will fail loudly; switch it to a deploy key or a fine-grained PAT and
-update the bypass list rather than removing the rule.
+The GitHub Actions integration (15368) is not a usable bypass actor on a
+personal repository; it is mentioned only as the intended actor for the
+deploy-key upgrade.
 
 ## Verifying after applying
 
-1. `gh api repos/$OWNER/$REPO/rulesets` lists three active rulesets.
-2. Open a trivial PR: `main` requires `restomod-ci` and
-   `restomod-patch-guard`.
-3. Run `restomod-pin-sync` manually: it must still be able to move `upstream`.
-4. Try a force-push to `upstream` as a human: it must be rejected.
+1. `gh api repos/$OWNER/$REPO/rulesets` lists four active rulesets:
+   `main-protection`, `upstream-pin`, `release-tags`, `upstream-tags`.
+2. Open a PR: `main` requires `restomod-ci` and `restomod-patch-guard`.
+3. Run `restomod-pin-sync` manually: it must still move `upstream` and retag
+   `upstream-v*`.
+4. A human force-push to `upstream` is currently allowed by convention; after
+   the deploy-key upgrade it must be rejected.

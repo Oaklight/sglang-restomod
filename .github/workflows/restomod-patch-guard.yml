@@ -2,20 +2,8 @@ name: restomod-patch-guard
 
 on:
   pull_request:
-    paths:
-      - "patches/**"
-      - "UPSTREAM_PIN.toml"
-      - "scripts/**"
-      - "sglang_restomod/**"
-      - ".github/workflows/restomod-patch-guard.yml"
   push:
     branches: [main]
-    paths:
-      - "patches/**"
-      - "UPSTREAM_PIN.toml"
-      - "scripts/**"
-      - "sglang_restomod/**"
-      - ".github/workflows/restomod-patch-guard.yml"
   workflow_dispatch:
 
 permissions:
