@@ -1,4 +1,12 @@
+<p align="center">
+  <a href="README_en.md">English</a> | <a href="README_zh.md">中文</a>
+</p>
+
 # sglang-restomod
+
+[![PyPI version](https://img.shields.io/pypi/v/sglang-restomod?color=green)](https://pypi.org/project/sglang-restomod/)
+[![CI](https://github.com/Oaklight/sglang-restomod/actions/workflows/restomod-ci.yml/badge.svg)](https://github.com/Oaklight/sglang-restomod/actions/workflows/restomod-ci.yml)
+[![License](https://img.shields.io/badge/License-Apache--2.0-green.svg)](LICENSE)
 
 A **lightweight downstream layer** for [SGLang](https://github.com/sgl-project/sglang).
 
@@ -21,8 +29,16 @@ on its own.
 ## Quick start
 
 ```bash
-pip install -e .
+pip install sglang-restomod
 SGLANG_PLUGINS=restomod python -m sglang.launch_server --help
+```
+
+For development:
+
+```bash
+uv venv --python 3.12
+source .venv/bin/activate
+pip install -e . --no-deps
 ```
 
 With patches present, build from the pinned source instead:

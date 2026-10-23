@@ -93,12 +93,15 @@ Keep upstream-only commits free of restomod-specific code.
 
 ## Release and publishing
 
-- Bump `version` in `pyproject.toml`.
-- Commit and tag `restomod-vX.Y.Z`, then push the tag.
-- `restomod-release` creates the GitHub release.
-- `restomod-publish` publishes to PyPI via Trusted Publishing.
-- TestPyPI is published manually from the Actions tab (`restomod-publish`,
-  target `testpypi`).
+- `__version__` in `sglang_restomod/__init__.py` is the only version source;
+  `pyproject.toml` reads it dynamically. Bump it in the PR that prepares the
+  release.
+- TestPyPI: Actions → `restomod-publish` → `target=testpypi`, `version=<x>`.
+- PyPI: Actions → `restomod-publish` → `target=pypi` (or `both`). The workflow
+  creates `restomod-v<version>`, publishes to PyPI, and creates the GitHub
+  Release.
+- The workflow verifies the requested version against `__init__.py`; it never
+  overrides it. `target=both` publishes the same artifact to both channels.
 
 ## License
 
