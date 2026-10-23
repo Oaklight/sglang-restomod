@@ -8,6 +8,63 @@ from sglang.srt.models.dflash import DFlashGroupedConv, _grouped_conv
 from .dispatch import reject_fallback
 
 
+def initialize_attention(original, self, model_runner, *args, **kwargs):
+    result = original(self, model_runner, *args, **kwargs)
+    self._v100_dflash = (
+        model_runner.is_draft_worker
+        and model_runner.model_config.hf_config.architectures[0] == "DFlash2DraftModel"
+    )
+    if self._v100_dflash:
+        if (self.num_head, self.num_kv_head, self.dcp_size) != (4, 1, 1):
+            raise ValueError(
+                "V100 DFlash2 window attention requires TP8 without draft DCP"
+            )
+        self._v100_dflash_workspaces = {}
+    return result
+
+
+def forward_attention(original, self, layer, *args, **kwargs):
+    if not self._v100_dflash:
+        return original(self, layer, *args, **kwargs)
+    from sglang.kernels.ops.attention.v100 import window_attention_v100
+
+    q, k, v, out, kc, vc, qo, ki, ids, mask, causal, mi, mx, ks, vs, scale = args
+    if (
+        q.shape != (8, 4, 128)
+        or qo.numel() != 2
+        or mask is not None
+        or causal
+        or ks != 1.0
+        or vs != 1.0
+        or kwargs.get("logit_cap", 0) != 0
+        or not 0 < kwargs.get("sliding_window_size", -1) <= 2048
+        or kwargs.get("sinks") is not None
+        or kwargs.get("score_mod") is not None
+        or kwargs.get("aux_tensors") is not None
+        or kwargs.get("xai_temperature_len", -1) > 0
+    ):
+        raise ValueError(
+            "Unsupported V100 DFlash2 bidirectional window geometry/mask: "
+            f"q={tuple(q.shape)}, causal={causal}, mask={mask is not None}, "
+            f"left_window={kwargs.get('sliding_window_size', -1)}"
+        )
+    stream = int(torch.cuda.current_stream(q.device).cuda_stream)
+    workspace = self._v100_dflash_workspaces.setdefault(stream, {})
+    return window_attention_v100(
+        q,
+        k,
+        v,
+        kc,
+        vc,
+        ids,
+        ki,
+        scale,
+        left_window=kwargs["sliding_window_size"],
+        workspace=workspace,
+        out=out,
+    )
+
+
 class SM70DFlashGroupedConv(DFlashGroupedConv):
     def finish(self, hidden_states, coefficients):
         # Real GLM features overflow FP16 at the first output convolution.

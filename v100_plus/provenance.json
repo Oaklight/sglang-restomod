@@ -124,18 +124,18 @@
   },
   "attention_backend": {
     "repository": "https://github.com/heislera763/flash-attention-v100",
-    "revision": "531e92bd705b034705318a4641c9d6130cdc52a4",
+    "revision": "d18d90d84970b52dd7aaad21ccf510b0bcea80b7",
     "cutlass_revision": "62750a2b75c802660e4894434dc55e839f322277",
-    "package": "sglang-fa-sm70 0.2.5",
+    "package": "sglang-fa-sm70 0.2.6",
     "source": "csrc/sparse_mla",
-    "contracts": "FP16 KV/state, FP32 working accumulation; FP16 snapshot carry during verification; nonintrusive bounded FP32 prefill checkpoint copied into FP16 radix state; exact paired-query selected-key multiset, capacity-bounded device support preparation, up to 4096 selected columns; optional base-2 FP32 LSE for FP16 partial-attention DCP with FP32 correction/reduction; native H8/H16/H32/H64 sparse attention; resource-bounded H32/H64 prefill staging, native H64 head tiling and direct-Q decode for DCP4/DCP8"
+    "contracts": "FP16 KV/state, FP32 working accumulation; FP16 snapshot carry during verification; nonintrusive bounded FP32 prefill checkpoint copied into FP16 radix state; exact paired-query selected-key multiset, capacity-bounded device support preparation, up to 4096 selected columns; optional base-2 FP32 LSE for FP16 partial-attention DCP with FP32 correction/reduction; native H8/H16/H32/H64 sparse attention; resource-bounded H32/H64 prefill staging, native H64 head tiling and direct-Q decode for DCP4/DCP8; native DFlash2 Q[8,4,128]/one-KV-head local noncausal GQA with the caller-resolved per-query left bound, device-counted FP16 prefix/current-KV gathering and FP32 split-K partials/normalizers"
   },
   "dense_fp8_decode": {
     "implementation": "python/sglang/kernels/ops/gemm/sm70_fp8_gemv.py",
     "native_source": "python/sglang/kernels/jit/csrc/gemm/sm70_fp8_gemv.cuh",
-    "dispatch": "SM70 only: PK<=256 uses one full-K Triton tile; four-row group32 projections with logical N>=2048,K>=1024 use vector CUDA; other shapes retain the existing SM70 Triton contraction.",
+    "dispatch": "SM70 only, one through eight rows: PK<=256 uses one full-K Triton tile; group32 K>=1024 uses vector CUDA for four rows with logical N>=2048 and five to eight rows with N>=512. Other shapes retain the explicit SM70 Triton contraction. Existing one-through-four-row policy is unchanged.",
     "contract": "Original packed Marlin weight layout and group32/group128 FP16 scales; exact FP16 reconstructed operands and output; full-K FP32 working sums/partials; caller-owned capacity-bounded scratch, including padded logical widths and two-byte-offset scale views. No new quantization, checkpoint format, tuning flags or persistent expanded weights.",
-    "validation": "Production/prototype results bit-exact on15 captured real FP8 banks; independent FP64 and prior implementation within unchanged rtol=.001,atol=.0002; graph replay with changed inputs/scales and canaries, registered numerical/graph/cancellation tests, memcheck and synccheck."
+    "validation": "Production/prototype results bit-exact on15 captured real FP8 banks; independent FP64 and prior implementation within unchanged rtol=.001,atol=.0002; graph replay with changed inputs/scales and canaries, registered numerical/graph/cancellation tests, memcheck and synccheck. Five/eight-row coverage adds group32/group128, padded/offset scales, changed graph inputs/scales, output canaries, FP32 cancellation and vector-path memcheck; four captured eight-row bank checks are bit-exact to two four-row calls and within the same FP64 bounds."
   },
   "execution_schedules": {
     "glm_quad_selector_prefill": {
@@ -151,6 +151,12 @@
       "internal_chunk_tokens": 2048,
       "contract": "Same-layer KDA state and DSA key publication precede the next chunk; owned metadata/mHC/forward flags, one compute stream and a per-pair communication stream; FP16 KV/state boundaries and global TP sums preserved. Active paired forwards use replicated mHC PRE with the existing exact fused full-row cast/mean, avoiding two local gathers per PRE; other prefill layouts keep their partition choice.",
       "validation": "Bit-exact whole-model outputs and KDA/conv state on all eight ranks with fixed selected-key order; exact full/sharded mHC results on both captured stage banks, full-range changed-input graph/canary and memcheck checks; live-indexer three-category throughput, image input,15.8K continuation, prefix reuse and CPU ownership/compile regressions."
+    },
+    "glm_dflash_window": {
+      "implementation": "v100_plus/sglang_v100_plus/dflash.py; python/sglang/kernels/ops/attention/v100.py; native dependency csrc/sparse_mla/window_sm70.cu",
+      "profile": "FP4-Local TP8/DCP4 target, replicated TP8/DCP1 DFlash2 FP16 draft, block8, max1, prefix capacity2048; model window2048 resolves to inclusive left bound2047",
+      "contract": "Triton backend retains draft metadata and cache writes; native Volta FA computes attention, preserving each query left bound and noncausal right support. Thirty-three key splits times four heads expose132 CTAs; bounded caller/stream-owned scratch and FP32 reduction, no expanded persistent KV or CPU count reads. Unsupported geometry/masks fail explicitly. Target packed-FP8 projection coverage extends through eight rows without changing checkpoint weights.",
+      "validation": "Native/FP64 and original Triton comparisons at unchanged rtol=.001,atol=.0002 on baseline-calibrated inputs; actual backend/config window semantics, changed-count/input CUDA graphs, boundary IDs/strides, poisoned scratch, canaries, memcheck and synccheck. Uninstrumented three-category near8K/256-output/T0 model: mean2358->2359 prefill and26.2->64.3 generation tokens/s,141.36->55.57ms complete cycles. Images and repeated-prefix reuse pass. Two of three greedy texts change with reduction order; not bit-exact model parity. Full-window DFlash qualification and lab-sampled performance remain separate."
     }
   },
   "checkpoint_formats": {

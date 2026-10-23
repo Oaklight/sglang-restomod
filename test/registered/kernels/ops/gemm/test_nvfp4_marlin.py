@@ -95,7 +95,7 @@ def test_sm70_mxfp8_padded_dense_bias_and_graph(sm70_runtime, n, k, scale_offset
     bias = torch.randn(n, device="cuda", dtype=torch.float16) * 0.01
     # The public GEMV accepts a contiguous two-byte-offset scale view. The
     # separate Marlin path for medium batches requires 16-byte-aligned scales.
-    row_counts = (1, 2, 3, 4) if scale_offset else (1, 2, 3, 4, 33, 257)
+    row_counts = (1, 2, 3, 4, 8) if scale_offset else (1, 2, 3, 4, 5, 8, 33, 257)
     for rows in row_counts:
         x = torch.randn(rows, k, device="cuda", dtype=torch.float16) * 0.1
         method.apply(layer, x, bias)
@@ -162,13 +162,13 @@ def test_sm70_block_fp8_graph_and_canaries(sm70_runtime, n, k):
         quant_config=SimpleNamespace(is_checkpoint_fp8_serialized=True),
     )
     prepare_fp8_dense(None, method, layer)
-    for rows in (1, 2, 3, 4, 128, 257):
+    for rows in (1, 2, 3, 4, 5, 8, 128, 257):
         x = torch.randn(rows, k, device="cuda", dtype=torch.float16) * 0.1
         guarded_out = torch.full(
             (rows * n + 32,), 37, device="cuda", dtype=torch.float16
         )
         out = guarded_out[16:-16].view(rows, n)
-        small = rows <= 4
+        small = rows <= 8
         scratch_shape = (rows, k // 128, n) if small else (k, n)
         scratch_size = rows * (k // 128) * n if small else k * n
         guarded_partials = torch.full(
@@ -229,7 +229,7 @@ def test_sm70_fp8_full_k_cancellation(sm70_runtime, k):
     layer.weight.data.copy_(weights.to(torch.float8_e4m3fn))
     layer.weight_scale_inv.data.fill_(127)  # UE8M0 2**0
     method.process_weights_after_loading(layer)
-    for rows in (1, 4, 128, 257):
+    for rows in (1, 4, 8, 128, 257):
         x = torch.full((rows, k), 32, device="cuda", dtype=torch.float16)
         actual = method.apply(layer, x)
         # The positive half is32*64*(K/2), beyond FP16 for both full-K and

@@ -74,7 +74,7 @@ in software; it does not imply native arithmetic in those formats.
 | GLM KDA / mHC | Native CUDA full-K FP32 recurrence, FP16 state and per-step verification carry. KDA prefill prepares normalized Q/K and gates once; a Tensor Core chunk formulation is future work. Paired prefill uses exact fused full-row mHC preparation and avoids the local gathers; other profiles retain quad partitions. Its learned FP32 projection stays replicated to preserve reduction order. |
 | Storage | Unquantized FP16 attention KV for both models; Qwen FP16 QSA index, GLM's separate model-native FP8 indexer. KV-cache quantization is excluded from the project recipes. FP16 recurrent state is retained. |
 | Cold module loading | Return idle Torch allocator blocks to CUDA when first-use Triton loads have little headroom; leave live tensors unchanged. Skip capture/custom arenas; steady kernel replay has no callback. |
-| Vision / DFlash2 | GLM uses the FA port’s native FP16 D64 varlen attention; Qwen retains SDPA vision. [DFlash2](https://huggingface.co/incoai/GLM-5.3-Flash-DFlash2/tree/bf582e4eacc1810f76656d1811693ff6c6737d2a) uses FP16 draft linears/KV and FP32 convolution/residual/norm for range safety. Replicated draft attention stays outside target DCP. Its current NVIDIA-target screen lost to MTP3; hosting keeps the checkpoint’s own MTP. |
+| Vision / DFlash2 | GLM uses native FP16 D64 varlen vision attention; Qwen retains SDPA vision. [DFlash2](https://huggingface.co/incoai/GLM-5.3-Flash-DFlash2/tree/bf582e4eacc1810f76656d1811693ff6c6737d2a) uses FP16 draft linears/KV and FP32 convolution/residual/norm for range safety. Its TP8/block8 draft uses native SM70 local GQA with FP32 split-K reduction; replicated draft storage stays outside target DCP. Eight-row target projections reuse packed FP8 weights. The Triton draft-backend option supplies metadata/cache management; arithmetic dispatches to native FA. Own MTP3 remains faster in the current screen. |
 
 
 Strict dispatch verifies supported routes; it does not make every operation
@@ -87,7 +87,7 @@ Unsupported conflicting attention/backend/dtype choices fail before loading.
 ## Build and launches
 
 Python3.12, `uv`, CUDA12.9. Setup builds pinned SM70 kernels, Marlin and
-[sglang-fa-sm70 0.2.5](https://github.com/heislera763/flash-attention-v100/tree/531e92bd705b034705318a4641c9d6130cdc52a4).
+[sglang-fa-sm70 0.2.6](https://github.com/heislera763/flash-attention-v100/tree/d18d90d84970b52dd7aaad21ccf510b0bcea80b7).
 Use a fresh shell. Set device order from actual topology, keeping each NVLink quad
 consecutive; enumeration is machine-specific. Use the pinned checkpoint revisions above.
 
@@ -231,15 +231,30 @@ effect from the final comparison. Its cause is unproven. No routine reverse pair
 or extra cold model starts were added. MTP depth tuning remains separate: moving
 beyond four verification rows also changes projection/attention dispatch.
 
-The current DFlash2 block8 screen averaged **2,358 prefill /26.2 generation tokens/s**
-against the compatible MTP3 control’s **2,732 /89.1** across the same coding,
-writing and document-analysis prompts (near8K input,256 output,T0). DFlash emitted
-3.72tokens/cycle versus3.28, but complete cycles took141ms versus36.7ms.
-The draft uses generic Triton attention and FP16 cuBLAS linears; eight-row target
-verification misses fast paths tuned for one to four rows. These are dispatch
-observations, not measured attribution: the post-timing profile failed, and
-DFlash image/reuse/full-window qualification was not completed. This screen
-retains only the replicated-draft DCP correction and its regression test.
+DFlash2 block8 now uses native windowed FA and packed FP8 target projections
+through eight rows. Same FP4-Local target/TP8/DCP4/524K, FP16 draft/KV/state,
+near8K inputs and256 outputs at T0; the compatible baseline is reused:
+
+| Tokens/s, DFlash2 | Before | After |
+| --- | ---: | ---: |
+| Prefill, coding | 2,349 | 2,352 |
+| Generation, coding | 34.0 | 84.6 |
+| Prefill, writing | 2,359 | 2,360 |
+| Generation, writing | 22.8 | 52.3 |
+| Prefill, document analysis | 2,366 | 2,364 |
+| Generation, document analysis | 21.8 | 56.1 |
+| Prefill, mean | 2,358 | 2,359 |
+| Generation, mean | 26.2 | 64.3 |
+
+Generation improves2.46×; complete cycles fall141→55.6ms while output/cycle
+changes3.72→3.59. Native profiling identified a generic four-CTA, FP32-FFMA
+draft-attention kernel taking about15.1ms per layer. The replacement uses
+132 Tensor Core CTAs with bounded device-counted KV gathering and preserves
+each query’s resolved left window. Fixed numerical bounds, graph/canary and
+sanitizer checks pass; images and repeated-prefix reuse pass. Floating reduction
+order changes: two of three greedy texts differ, so this is not bit-exact model
+parity. Prefill remains unchanged; DFlash is outside paired prefill. Own MTP3
+still leads this short suite at **2,732 prefill /89.1 generation tokens/s**.
 
 
 Prefill counts only newly processed tokens divided by native prefill time;
@@ -277,11 +292,10 @@ cases; kernel namespaces/core-patch inventory and affected checks remain auditab
 Useful checks: [core patch census](v100_plus/check-core-diff.py),
 [indexer kernels](test/registered/kernels/ops/attention/test_sm70_indexer.py),
 [partition contracts](test/registered/unit/plugins/test_v100_prefill.py),
-[canonical FA tests](https://github.com/heislera763/flash-attention-v100/blob/531e92bd705b034705318a4641c9d6130cdc52a4/csrc/sparse_mla/tests/test_attention.py).
+[canonical FA tests](https://github.com/heislera763/flash-attention-v100/blob/d18d90d84970b52dd7aaad21ccf510b0bcea80b7/csrc/sparse_mla/tests/test_attention.py).
 Current524K image/reuse passes do not imply a new full-window accuracy campaign.
-Qwen YaRN/image/video and DFlash2 have historical experimental coverage; their
-current unquantized-KV/NVIDIA-target qualification and broader long-video work
-remain separate tasks.
+Qwen YaRN/image/video requalification, broader long-video work and DFlash2
+full-window qualification remain separate tasks.
 
 [Apache-2.0](LICENSE). Credit: SGLang, original V100 fork, Marlin/vLLM and model authors;
 NCCL declarations retain their [license](v100_plus/nccl/LICENSE.txt).

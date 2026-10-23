@@ -83,6 +83,7 @@ class TestReplicatedDraftDCP(CustomTestCase):
                 patch(
                     "sglang.srt.layers.attention.triton_backend.is_arch_support_pdl",
                     return_value=False,
+                    create=True,
                 ),
             ):
                 backend = TritonAttnBackend(runner)

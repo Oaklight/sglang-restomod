@@ -9,6 +9,41 @@ register_cpu_ci(est_time=5, stage="base-a")
 
 
 class TestV100Profile(CustomTestCase):
+    def test_dflash_window_rejects_unsupported_masks_before_cuda(self):
+        """A causal/masked block cannot silently use common bidirectional support."""
+        import torch
+        from sglang_v100_plus.dflash import forward_attention
+
+        q = torch.empty(8, 4, 128, dtype=torch.float16)
+        ptr = torch.tensor([0, 8], dtype=torch.int32)
+        backend = SimpleNamespace(_v100_dflash=True)
+        args = [
+            q,
+            None,
+            None,
+            None,
+            None,
+            None,
+            ptr,
+            ptr,
+            None,
+            None,
+            False,
+            None,
+            8,
+            1.0,
+            1.0,
+            128**-0.5,
+        ]
+        for field, value in ((9, torch.ones(64)), (10, True), (13, 0.5)):
+            with self.subTest(field=field):
+                invalid = args.copy()
+                invalid[field] = value
+                with self.assertRaisesRegex(ValueError, "geometry/mask"):
+                    forward_attention(
+                        None, backend, None, *invalid, sliding_window_size=2047
+                    )
+
     def _view(self, **overrides):
         values = dict(
             attention_backend="v100_plus",

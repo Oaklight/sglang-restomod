@@ -6,6 +6,7 @@ import pytest
 import torch
 
 from sglang.test.ci.ci_register import register_cuda_ci
+from sglang.test.test_utils import CustomTestCase
 
 register_cuda_ci(est_time=15, stage="jit-kernel-unit", runner_config="1-gpu-large")
 pytestmark = pytest.mark.skipif(
@@ -275,6 +276,212 @@ def test_kda_prefill_prefix_checkpoint_preserves_live_recurrence(heads):
         assert torch.all(actual_track[1] == 123.0)
         torch.testing.assert_close(actual_state[1], initial[1], rtol=0, atol=0)
         torch.testing.assert_close(actual_state[3], initial[3], rtol=0, atol=0)
+
+
+class TestWindowAttention(CustomTestCase):
+    def test_real_triton_entry_preserves_encoder_sliding_window(self):
+        """ENCODER_ONLY removes causality, but retains a query-dependent left mask."""
+        from types import MethodType
+
+        from sglang_v100_plus.dflash import forward_attention
+        from transformers import Qwen3Config
+
+        from sglang.srt.layers.attention.triton_backend import TritonAttnBackend
+        from sglang.srt.model_executor.forward_batch_info import ForwardMode
+        from sglang.srt.models.dflash import _get_dflash_layer_attention_params
+
+        torch.manual_seed(531)
+        q = torch.randn(8, 4, 128, device="cuda", dtype=torch.float16) * 0.5
+        k = torch.randn(8, 1, 128, device="cuda", dtype=torch.float16) * 0.5
+        v = torch.randn_like(k)
+        kc, vc = [
+            torch.randn(2311, 1, 128, device="cuda", dtype=torch.float16)
+            for _ in range(2)
+        ]
+        ids = torch.randperm(2311, device="cuda", dtype=torch.int32)[:2048]
+        ptr = torch.tensor([0, 2048], device="cuda", dtype=torch.int32)
+        backend = TritonAttnBackend.__new__(TritonAttnBackend)
+        backend.use_dense_fp8_chunked_prefill = False
+        backend.use_mla = backend.enable_deterministic = False
+        backend.use_verify_shared_kv = backend.use_verify_splitkv = False
+        backend.dcp_size = 1
+        backend.page_size = 256
+        backend._v100_dflash = True
+        backend._v100_dflash_workspaces = {}
+        backend.dllm_attention = None
+        backend.token_to_kv_pool = SimpleNamespace(
+            get_key_buffer=lambda _: kc,
+            get_value_buffer=lambda _: vc,
+        )
+        backend.forward_metadata = SimpleNamespace(
+            window_kv_indptr=ptr,
+            window_kv_indices=ids,
+            window_kv_offsets=torch.zeros(1, device="cuda", dtype=torch.int32),
+            qo_indptr=ptr.new_tensor([0, 8]),
+            custom_mask=None,
+            mask_indptr=None,
+            max_extend_len=8,
+        )
+        backend._forward_extend_kernel = MethodType(
+            lambda self, layer, *args, **kwargs: forward_attention(
+                None, self, layer, *args, **kwargs
+            ),
+            backend,
+        )
+        config = Qwen3Config(
+            num_hidden_layers=1,
+            layer_types=["sliding_attention"],
+            sliding_window=2048,
+            use_sliding_window=True,
+            is_causal=False,
+        )
+        left_window, attn_type = _get_dflash_layer_attention_params(config, 0)
+        self.assertEqual(left_window, 2047)
+        layer = SimpleNamespace(
+            qk_head_dim=128,
+            v_head_dim=128,
+            tp_q_head_num=4,
+            layer_id=0,
+            logit_capping_method="tanh",
+            logit_cap=0,
+            is_cross_attention=False,
+            attn_type=attn_type,
+            sliding_window_size=left_window,
+            k_scale=None,
+            v_scale=None,
+            xai_temperature_len=-1,
+            scaling=128**-0.5,
+        )
+        batch = SimpleNamespace(
+            _attn_output=None,
+            mha_one_shot=False,
+            forward_mode=ForwardMode.TARGET_VERIFY,
+            extend_seq_lens_cpu=torch.tensor([8]),
+        )
+        actual = backend.forward_extend(
+            q.reshape(8, 512), k, v, layer, batch, save_kv_cache=False
+        )
+        keys = torch.cat((kc[ids.long()], k)).cpu().double().view(-1, 128)
+        values = torch.cat((vc[ids.long()], v)).cpu().double().view(-1, 128)
+        scores = q.cpu().double().reshape(32, 128) @ keys.T * 128**-0.5
+        lower = 2048 + torch.arange(8).repeat_interleave(4) - left_window
+        scores.masked_fill_(
+            torch.arange(len(keys))[None, :] < lower[:, None], -torch.inf
+        )
+        expected = scores.softmax(-1) @ values
+        torch.testing.assert_close(
+            actual.cpu().double().view(32, 128), expected, rtol=0.001, atol=0.0002
+        )
+
+    def test_changed_window_graph_matches_fp64_and_triton(self):
+        """Native FA must preserve per-query windows, page IDs and FP16 KV.
+
+        Poisoned tail/split scratch catches padding reads; changed graph counts
+        and permuted/duplicate IDs catch frozen metadata or accidental causality.
+        Q/K/V and cache views deliberately have different physical row strides.
+        """
+        from sglang.kernels.ops.attention.extend_attention import extend_attention_fwd
+        from sglang.kernels.ops.attention.v100 import window_attention_v100
+
+        torch.manual_seed(531)
+        for id_dtype in (torch.int32, torch.int64):
+            bank = torch.randn(8, 6, 128, device="cuda", dtype=torch.float16)
+            q, k, v = bank[:, :4], bank[:, 4:5], bank[:, 5:]
+            cache = torch.randn(2311, 1, 256, device="cuda", dtype=torch.float16)
+            kc, vc = cache[:, :, :128], cache[:, :, 128:]
+            ids = torch.arange(2065, device="cuda", dtype=id_dtype)
+            ptr = torch.tensor([0, 2048], device="cuda", dtype=torch.int32)
+            qo = torch.tensor([0, 8], device="cuda", dtype=torch.int32)
+            guard = torch.full((32 * 128 + 32,), 37, device="cuda", dtype=torch.float16)
+            out = guard[16:-16].view(8, 4, 128)
+            workspace = {}
+            scale = 128**-0.5
+
+            def run():
+                return window_attention_v100(
+                    q,
+                    k,
+                    v,
+                    kc,
+                    vc,
+                    ids,
+                    ptr,
+                    scale,
+                    left_window=2048,
+                    workspace=workspace,
+                    out=out,
+                )
+
+            run()
+            graph = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(graph):
+                run()
+            for i, prefix in enumerate(
+                (0, 1, 7, 16, 31, 32, 63, 64, 65, 2039, 2040, 2048)
+            ):
+                with self.subTest(id_dtype=id_dtype, prefix=prefix):
+                    # Calibrated against the original FP16-probability path.
+                    # Large random Q/K also exceed this FP64 bound in Triton;
+                    # amplify V under uniform scores to test range separately.
+                    bank.normal_(std=0.5)
+                    if i == 0:
+                        v.mul_(3)
+                        q.zero_()
+                    cache.normal_()
+                    ids.copy_((torch.arange(2065, device="cuda") * 97 + i * 19) % 2311)
+                    ids[::11] = 17
+                    start = 0 if i % 2 else 17
+                    ptr.copy_(ptr.new_tensor([start, start + prefix]))
+                    # No poison may leak from an inactive key tile or split.
+                    for scratch in workspace["window"]:
+                        if scratch.is_floating_point():
+                            scratch.fill_(float("nan"))
+                    graph.replay()
+                    saved = out.clone()
+                    selected = ids[start : start + prefix].long()
+                    keys = torch.cat((kc[selected], k)).cpu().double().view(-1, 128)
+                    values = torch.cat((vc[selected], v)).cpu().double().view(-1, 128)
+                    scores = (q.cpu().double().reshape(32, 128) @ keys.T) * scale
+                    query_positions = prefix + torch.arange(8).repeat_interleave(4)
+                    visible = (
+                        torch.arange(len(keys))[None, :]
+                        >= query_positions[:, None] - 2048
+                    )
+                    expected = (
+                        scores.masked_fill(~visible, -torch.inf).softmax(-1) @ values
+                    )
+                    torch.testing.assert_close(
+                        saved.cpu().double().reshape(32, 128),
+                        expected,
+                        rtol=0.001,
+                        atol=0.0002,
+                    )
+                    reference = torch.empty_like(out)
+                    extend_attention_fwd(
+                        q,
+                        k,
+                        v,
+                        reference,
+                        kc,
+                        vc,
+                        qo,
+                        ptr,
+                        ids,
+                        None,
+                        False,
+                        None,
+                        8,
+                        1.0,
+                        1.0,
+                        scale,
+                        sliding_window_size=2048,
+                    )
+                    torch.testing.assert_close(
+                        saved, reference, rtol=0.001, atol=0.0002
+                    )
+                    torch.testing.assert_close(saved, run(), rtol=0, atol=0)
+                    self.assertTrue(bool(torch.all(guard[:16] == 37)))
+                    self.assertTrue(bool(torch.all(guard[-16:] == 37)))
 
 
 if __name__ == "__main__":

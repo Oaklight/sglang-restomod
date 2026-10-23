@@ -76,6 +76,7 @@ del _mod, _fn
 for _name in (
     "sparse_attention_v100",
     "dense_attention_v100",
+    "window_attention_v100",
     "recurrent_attention_v100",
 ):
     register_kernel(

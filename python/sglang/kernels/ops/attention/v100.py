@@ -114,6 +114,59 @@ def dense_attention_v100(q, k, v, offsets, max_length, scale, out=None, lse=None
     return out
 
 
+def window_attention_v100(
+    q,
+    k,
+    v,
+    k_cache,
+    v_cache,
+    indices,
+    indptr,
+    scale,
+    *,
+    left_window,
+    workspace=None,
+    out=None,
+):
+    """Bidirectional eight-token GQA block over an FP16 2048-token prefix.
+
+    Q[8,4,128] shares one KV head. Prefix IDs/counts remain device-resident;
+    current K/V follow the prefix, with the caller's resolved per-query left bound
+    and no right/causal bound inside the block. Native Volta Tensor Cores and
+    split-K FP32 partials/normalizers. Scratch is capacity-bounded and owned
+    by the caller; the full persistent KV cache is never materialized.
+    """
+    scratch = None if workspace is None else workspace.get("window")
+    if scratch is None:
+        scratch = (
+            torch.empty((32, 128), device=q.device, dtype=torch.float16),
+            torch.empty((2, 2056, 128), device=q.device, dtype=torch.float16),
+            torch.empty(2, device=q.device, dtype=torch.int32),
+            torch.empty((33, 32, 128), device=q.device, dtype=torch.float32),
+            torch.empty((33, 32), device=q.device, dtype=torch.float32),
+            torch.empty(32, device=q.device, dtype=torch.float32),
+        )
+        if workspace is not None:
+            workspace["window"] = scratch
+    if out is None:
+        out = torch.empty(q.shape, device=q.device, dtype=q.dtype)
+    _ops().window_out(
+        q,
+        k,
+        v,
+        k_cache,
+        v_cache,
+        indices,
+        indptr,
+        *scratch[:-1],
+        out,
+        scratch[-1],
+        float(scale),
+        int(left_window),
+    )
+    return out
+
+
 def recurrent_attention_v100(
     q,
     k,

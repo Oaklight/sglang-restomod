@@ -91,7 +91,7 @@ def _fp8_reduce(
 
 
 def sm70_fp8_gemv(x, weight, scales, output, partials):
-    """Apply packed E4M3/FP16-scale weights to one through four FP16 rows.
+    """Apply packed E4M3/FP16-scale weights to one through eight FP16 rows.
 
     Weight shape is [PK/16,4*PN], scales [PK/group,PN], with group32 or128.
     Logical input/output widths may be smaller than the padded physical widths.
@@ -110,7 +110,7 @@ def sm70_fp8_gemv(x, weight, scales, output, partials):
         or scales.dtype != torch.float16
         or output.dtype != torch.float16
         or partials.dtype != torch.float32
-        or not 1 <= rows <= 4
+        or not 1 <= rows <= 8
         or group not in (32, 128)
         or pk != groups * group
         or pk % 128
@@ -150,10 +150,14 @@ def sm70_fp8_gemv(x, weight, scales, output, partials):
             enable_fp_fusion=False,
         )
         return output
-    if rows == 4 and group == 32 and n >= 2048 and k >= 1024:
-        # Four-row verification benefits from decoding each word once and
-        # retaining its scale across a group. Tiny/skinny projections keep
-        # the existing SM70 tile, which is faster for their lower reuse.
+    if (
+        group == 32
+        and k >= 1024
+        and ((rows == 4 and n >= 2048) or (5 <= rows <= 8 and n >= 512))
+    ):
+        # Reuse each decoded word/scale across the verification rows. Keep
+        # measured four-row dispatch intact; larger blocks amortize vector
+        # preparation even for 512-column projections.
         _vector_module(rows, group).run(x, weight, scales, partials, output)
     else:
         _fp8_partial[(pn // 64, pk // 128)](

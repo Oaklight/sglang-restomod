@@ -37,7 +37,7 @@ __global__ void vector_partial(
     uint32_t pk,
     uint32_t macro) {
   constexpr int BN = 64, KL = 8, NW = BN / 4;
-  static_assert(Rows >= 1 && Rows <= 4 && (Group == 32 || Group == 128));
+  static_assert(Rows >= 1 && Rows <= 8 && (Group == 32 || Group == 128));
   const uint32_t word_lane = threadIdx.x % NW;
   const uint32_t k_lane = threadIdx.x / NW;
   const uint32_t tiles = macro / 64;

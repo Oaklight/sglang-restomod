@@ -33,7 +33,9 @@ def install():
     from .dflash import (
         SM70DFlashGroupedConv,
         candidate_topk,
+        forward_attention,
         forward_draft,
+        initialize_attention,
         initialize_draft,
     )
     from .fp8 import (
@@ -99,6 +101,16 @@ def install():
             raise ValueError("The enabled SM70 profile requires float16 model weights")
 
     hooks = [
+        (
+            "sglang.srt.layers.attention.triton_backend.TritonAttnBackend.__init__",
+            initialize_attention,
+            HookType.AROUND,
+        ),
+        (
+            "sglang.srt.layers.attention.triton_backend.TritonAttnBackend._forward_extend_kernel",
+            forward_attention,
+            HookType.AROUND,
+        ),
         (
             "sglang.srt.managers.schedule_batch.ScheduleBatch._mamba_radix_cache_v2_req_prepare_for_extend",
             prepare_cache_checkpoint,

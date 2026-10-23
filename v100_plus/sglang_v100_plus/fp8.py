@@ -194,7 +194,7 @@ def apply_fp8_dense(original, method, layer, x, bias=None):
         )
     pn, pk = getattr(layer, "_sm70_fp8_physical_shape", (n, k))
     # Decode/verification reuse the unpacked values across their small batch.
-    if 1 <= a.shape[0] <= 4:
+    if 1 <= a.shape[0] <= 8:
         from sglang.kernels.ops.gemm.sm70_fp8_gemv import sm70_fp8_gemv
         from sglang.srt.runtime_context import get_buffer
 
