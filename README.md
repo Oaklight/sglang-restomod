@@ -87,7 +87,7 @@ Unsupported conflicting attention/backend/dtype choices fail before loading.
 ## Build and launches
 
 Python3.12, `uv`, CUDA12.9. Setup builds pinned SM70 kernels, Marlin and
-[sglang-fa-sm70 0.2.6](https://github.com/heislera763/flash-attention-v100/tree/d18d90d84970b52dd7aaad21ccf510b0bcea80b7).
+[sglang-fa-sm70 0.2.7](https://github.com/heislera763/flash-attention-v100/tree/4688df196ec3d71cb5099b37b6f4e538aedf53fe).
 Use a fresh shell. Set device order from actual topology, keeping each NVLink quad
 consecutive; enumeration is machine-specific. Use the pinned checkpoint revisions above.
 
@@ -228,11 +228,29 @@ gains have less model impact. The new history-aware cutoff helps short deep appe
 This cutoff-only gain is5.6%; MTP3/decode kernels are unchanged. A first request
 after idle was slower regardless of variant; an explicit warmup excluded that
 effect from the final comparison. Its cause is unproven. No routine reverse pairs
-or extra cold model starts were added. MTP depth tuning remains separate: moving
-beyond four verification rows also changes projection/attention dispatch.
+or extra cold model starts were added.
 
-DFlash2 block8 now uses native windowed FA and packed FP8 target projections
-through eight rows. Same FP4-Local target/TP8/DCP4/524K, FP16 draft/KV/state,
+Higher MTP depths are supported: the [upstream GLM preset](https://github.com/sgl-project/sglang/blob/0d6b283d7e6ac79edc10b2ca788f309e972f527b/docs/src/snippets/configs/zai-org/glm-5.3-flash.jsx)
+uses five steps, one branch and six verification slots, repeatedly using the
+checkpoint's single MTP head. Current near8K/256-output/T0 results:
+
+| Tokens/s, category mean | MTP3 reference | MTP4 | Before: MTP5 | After: MTP5 |
+| --- | ---: | ---: | ---: | ---: |
+| Prefill | 2,732 | 2,740 | 2,741 | 2,735 |
+| Generation | 89.1 | 72.2 | 73.9 | 80.9 |
+
+Widening existing native sparse split attention from four to eight query rows
+improves MTP5 generation9.5%, with gains in all three categories; complete cycles
+fall52.38→48.88ms. FP16 KV is preserved. Wider rows now use the existing FP16
+normalized-partial/FP32 LSE reduction, changing rounding relative to unsplit
+prefill. Fixed FP64/reference bounds, changing-input graphs, canaries and
+sanitizers pass; images, prefix reuse and lab-sampled execution pass. MTP3 keeps
+its one-through-four-row verification schedule and remains the default.
+Indexer/routed dispatch for wider verification still needs separate cost attribution.
+
+DFlash2 block8's FA0.2.6 screen added native windowed FA and packed FP8 target
+projections through eight rows; it predates the wider target split schedule and
+has not been rerun. Same FP4-Local target/TP8/DCP4/524K, FP16 draft/KV/state,
 near8K inputs and256 outputs at T0; the compatible baseline is reused:
 
 | Tokens/s, DFlash2 | Before | After |
@@ -292,7 +310,7 @@ cases; kernel namespaces/core-patch inventory and affected checks remain auditab
 Useful checks: [core patch census](v100_plus/check-core-diff.py),
 [indexer kernels](test/registered/kernels/ops/attention/test_sm70_indexer.py),
 [partition contracts](test/registered/unit/plugins/test_v100_prefill.py),
-[canonical FA tests](https://github.com/heislera763/flash-attention-v100/blob/d18d90d84970b52dd7aaad21ccf510b0bcea80b7/csrc/sparse_mla/tests/test_attention.py).
+[canonical FA tests](https://github.com/heislera763/flash-attention-v100/blob/4688df196ec3d71cb5099b37b6f4e538aedf53fe/csrc/sparse_mla/tests/test_attention.py).
 Current524K image/reuse passes do not imply a new full-window accuracy campaign.
 Qwen YaRN/image/video requalification, broader long-video work and DFlash2
 full-window qualification remain separate tasks.

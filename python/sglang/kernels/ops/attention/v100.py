@@ -27,7 +27,7 @@ def sparse_attention_v100(
 ):
     """Selected physical keys, FP16 latent512; prefill or bounded split decode.
 
-    Negative/out-of-pool IDs are masked. Rows1..4 use split work; all other
+    Negative/out-of-pool IDs are masked. Rows1..8 use split work; all other
     sizes use the same engine without splitting. Scratch is call-owned unless
     a backend supplies its own per-stream dictionary. Shapes use host metadata.
     Optional LSE is FP32/base-2 per query/head, with -inf for empty support;
@@ -55,7 +55,7 @@ def sparse_attention_v100(
     rows, heads, dim = q.shape
     if q.data_ptr() % 16:
         q = q.clone(memory_format=torch.contiguous_format)
-    if not 1 <= rows <= 4:
+    if not 1 <= rows <= 8:
         q = q.contiguous()
         if return_lse:
             return ops.prefill_lse(q, kv, ids, lengths, float(scale))

@@ -124,11 +124,11 @@
   },
   "attention_backend": {
     "repository": "https://github.com/heislera763/flash-attention-v100",
-    "revision": "d18d90d84970b52dd7aaad21ccf510b0bcea80b7",
+    "revision": "4688df196ec3d71cb5099b37b6f4e538aedf53fe",
     "cutlass_revision": "62750a2b75c802660e4894434dc55e839f322277",
-    "package": "sglang-fa-sm70 0.2.6",
+    "package": "sglang-fa-sm70 0.2.7",
     "source": "csrc/sparse_mla",
-    "contracts": "FP16 KV/state, FP32 working accumulation; FP16 snapshot carry during verification; nonintrusive bounded FP32 prefill checkpoint copied into FP16 radix state; exact paired-query selected-key multiset, capacity-bounded device support preparation, up to 4096 selected columns; optional base-2 FP32 LSE for FP16 partial-attention DCP with FP32 correction/reduction; native H8/H16/H32/H64 sparse attention; resource-bounded H32/H64 prefill staging, native H64 head tiling and direct-Q decode for DCP4/DCP8; native DFlash2 Q[8,4,128]/one-KV-head local noncausal GQA with the caller-resolved per-query left bound, device-counted FP16 prefix/current-KV gathering and FP32 split-K partials/normalizers"
+    "contracts": "FP16 KV/state, FP32 working accumulation; FP16 snapshot carry during verification; nonintrusive bounded FP32 prefill checkpoint copied into FP16 radix state; exact paired-query selected-key multiset, capacity-bounded device support preparation, up to 4096 selected columns; optional base-2 FP32 LSE for FP16 partial-attention DCP with FP32 correction/reduction; native H8/H16/H32/H64 sparse attention; resource-bounded H32/H64 prefill staging, native H64 head tiling and direct-Q decode for DCP4/DCP8; native DFlash2 Q[8,4,128]/one-KV-head local noncausal GQA with the caller-resolved per-query left bound, device-counted FP16 prefix/current-KV gathering and FP32 split-K partials/normalizers; sparse split scheduling through eight query rows with the existing FP16 normalized-partial/FP32 LSE reduction; one-through-four-row schedules unchanged. Wider rows change rounding relative to unsplit prefill; not bit-exact model parity"
   },
   "dense_fp8_decode": {
     "implementation": "python/sglang/kernels/ops/gemm/sm70_fp8_gemv.py",
@@ -166,7 +166,7 @@
       "reference_vllm": "https://github.com/local-inference-lab/vllm/tree/8244d1c44348ae8a5bbfc9f1b607021652283ed4",
       "csf32_specification": "https://github.com/local-inference-lab/flashinfer/blob/35c0f234c4b82f4b3b30258132c8bf718e222309/docs/csf-scale-blocks.md",
       "implementation": "Indexed nested-shard completion and block-scale normalization; lossless CPU CSF32 expansion before TP slicing; native SM70 MXFP8 group32 W8A16; fixed FP16 MLA / FP32 indexer projection boundaries; original quantized weights and global calibration preserved.",
-      "status": "Validated TP8/DCP4 ordinary/MTP3, images and prefix reuse with FP16 KV/state. Own NVFP4 MTP required. Full1M runtime completed on2026-10-22; current hosting/development target524288. Comprehensive long-context numerical/quality evaluation is separate."
+      "status": "Validated TP8/DCP4 ordinary/MTP3, images and prefix reuse with FP16 KV/state. Own NVFP4 MTP required. Full1M runtime completed on2026-10-22; current hosting/development target524288. Comprehensive long-context numerical/quality evaluation is separate. Own-head MTP4/5 are officially supported and execute; the current near8K/T0 screen keeps MTP3 fastest at89.1generation TPS. Wider sparse split scheduling improves MTP5 73.9->80.9generation TPS with flat prefill; image/prefix reuse and lab-sampled execution pass, without a new full-window fill."
     }
   }
 }

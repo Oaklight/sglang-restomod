@@ -484,6 +484,91 @@ class TestWindowAttention(CustomTestCase):
                     self.assertTrue(bool(torch.all(guard[-16:] == 37)))
 
 
+class TestSparseVerificationRows(CustomTestCase):
+    def test_wider_graph_keeps_split_workspace_and_query_support(self):
+        """Five/eight-row verification must retain bounded split scheduling.
+
+        A shape cutoff previously sent these rows through paired prefill and
+        ignored the caller split hint/workspace. Changing graph support must
+        reuse the same bounded buffers and preserve each query's selected IDs.
+        """
+        from math import log
+
+        from sglang.kernels.ops.attention.v100 import sparse_attention_v100
+
+        torch.manual_seed(531)
+        for rows in (5, 6, 8):
+            with self.subTest(rows=rows):
+                bank = torch.randn(rows, 33, 512, device="cuda", dtype=torch.float16)
+                q = bank[:, :32]
+                kv = torch.randn(257, 512, device="cuda", dtype=torch.float16) * 0.25
+                ids = torch.zeros(rows, 129, device="cuda", dtype=torch.int32)
+                lengths = torch.full((rows,), 129, device="cuda", dtype=torch.int32)
+                workspace = {}
+
+                def run():
+                    return sparse_attention_v100(
+                        q,
+                        kv,
+                        ids,
+                        512**-0.5,
+                        lengths,
+                        workspace=workspace,
+                        kv_splits=7,
+                        return_lse=True,
+                    )
+
+                run()
+                self.assertIn("sparse", workspace)
+                storage = workspace["sparse"]
+                self.assertLessEqual(storage[0].numel(), rows * 7 * 32)
+                self.assertLessEqual(storage[1].numel(), rows * 7 * 32 * 512)
+                self.assertEqual(storage[0].dtype, torch.float32)
+                self.assertEqual(storage[1].dtype, torch.float16)
+                graph = torch.cuda.CUDAGraph()
+                with torch.cuda.graph(graph):
+                    actual, actual_lse = run()
+                for replay in range(2):
+                    q.normal_(std=0.25)
+                    kv.normal_(std=0.25)
+                    ids.random_(-2, 260)
+                    ids[:, ::7] = 17
+                    lengths.copy_(
+                        torch.tensor(
+                            [
+                                (0, 1, 65, 129, 132, -1, 32, 64)[(i + replay) % 8]
+                                for i in range(rows)
+                            ],
+                            device="cuda",
+                            dtype=torch.int32,
+                        )
+                    )
+                    graph.replay()
+                    self.assertIs(workspace["sparse"][0], storage[0])
+                    self.assertIs(workspace["sparse"][1], storage[1])
+                    for row in range(rows):
+                        selected = ids[
+                            row, : max(0, min(129, int(lengths[row])))
+                        ].long()
+                        selected = selected[(selected >= 0) & (selected < len(kv))]
+                        if not len(selected):
+                            self.assertEqual(torch.count_nonzero(actual[row]).item(), 0)
+                            self.assertTrue(bool(torch.isneginf(actual_lse[row]).all()))
+                            continue
+                        values = kv[selected].double()
+                        scores = q[row].double() @ values.T * 512**-0.5
+                        expected = scores.softmax(-1) @ values
+                        torch.testing.assert_close(
+                            actual[row].double(), expected, rtol=0.001, atol=0.0002
+                        )
+                        torch.testing.assert_close(
+                            actual_lse[row].double(),
+                            scores.logsumexp(-1) / log(2),
+                            rtol=1e-5,
+                            atol=1e-5,
+                        )
+
+
 if __name__ == "__main__":
     import sys
 
