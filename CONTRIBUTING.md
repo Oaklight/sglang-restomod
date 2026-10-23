@@ -96,12 +96,11 @@ Keep upstream-only commits free of restomod-specific code.
 - `__version__` in `sglang_restomod/__init__.py` is the only version source;
   `pyproject.toml` reads it dynamically. Bump it in the PR that prepares the
   release.
-- TestPyPI: Actions → `restomod-publish` → `target=testpypi`, `version=<x>`.
-- PyPI: Actions → `restomod-publish` → `target=pypi` (or `both`). The workflow
-  creates `restomod-v<version>`, publishes to PyPI, and creates the GitHub
-  Release.
-- The workflow verifies the requested version against `__init__.py`; it never
-  overrides it. `target=both` publishes the same artifact to both channels.
+- TestPyPI: Actions → `test-release` → `version=<x>`.
+- PyPI: Actions → `release` → `version=<x>`. It publishes to PyPI, creates
+  `restomod-v<version>`, and creates the GitHub Release.
+- Both workflows verify the requested version against `__init__.py`; they never
+  override it.
 
 ## License
 
