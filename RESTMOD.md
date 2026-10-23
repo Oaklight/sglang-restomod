@@ -115,11 +115,18 @@ Register a pending publisher in both PyPI and TestPyPI:
 | Environment | `testpypi` for TestPyPI, `pypi` for PyPI |
 
 - **TestPyPI**: Actions → `restomod-publish` → Run workflow → `testpypi`.
-  `skip-existing` makes re-runs safe; bump `version` in `pyproject.toml` to
-  upload a new build.
+  `skip-existing` makes re-runs safe. Set the optional `version` input to
+  publish a test version without a commit, for example `0.0.0a0`.
 - **PyPI**: bump `version`, commit, tag `restomod-vX.Y.Z`, push the tag.
   `restomod-release` creates the GitHub release; `restomod-publish` uploads
-  the wheel and sdist.
+  the wheel and sdist. The manual `target=pypi` or `target=both` path with a
+  `version` override is for test uploads only.
+- Example test publish to both channels:
+
+  ```bash
+  gh workflow run restomod-publish --ref main \
+    -f target=both -f version=0.0.0a0
+  ```
 - The `testpypi` and `pypi` GitHub environments are already created; they hold
   no secrets.
 - If the registry project name differs, change `name` in `pyproject.toml` and
