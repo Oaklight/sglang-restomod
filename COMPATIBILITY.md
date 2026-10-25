@@ -15,6 +15,7 @@ after a recorded run.
 
 Notes:
 
+- Quantization dispatch and FP8 specifics: `docs/quantization-dispatch.md`.
 - Upstream SGLang supports sm75 and newer; it does not target sm70. V100 needs
   selected components from this layer.
 - A validated row records: hardware, upstream pin, component versions, model,
