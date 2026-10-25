@@ -53,7 +53,8 @@ upsert "main-protection" '{
       "parameters": {
         "required_status_checks": [
           { "context": "restomod-ci" },
-          { "context": "restomod-patch-guard" }
+          { "context": "restomod-patch-guard" },
+          { "context": "gpu-receipt" }
         ],
         "strict_required_status_checks_policy": true
       }
