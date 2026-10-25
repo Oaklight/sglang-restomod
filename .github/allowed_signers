@@ -1,0 +1,3 @@
+# Operator key for the GPU receipt gate. The private half stays on the
+# operator host (cloud.usa3, /root/.ssh/outboard) and never leaves it.
+operator ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKe8k1Jf3XTmXQtZ+WIGXJjcCNHTPhSJtt0bUsGyycKT outboard operator
