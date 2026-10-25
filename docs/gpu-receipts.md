@@ -56,12 +56,20 @@ tree, not a branch):
 git clone https://github.com/Oaklight/sglang-restomod.git
 cd sglang-restomod
 git checkout <full-sha>
-mkdir -p evidence
-# Run the benchmark/recipe under review; keep every log in evidence/.
-<command> > evidence/run.log 2>&1
+
+# Standard bundle: commit/tree, GPU inventory, clocks, topology, runtime,
+# versions; add a cold-prefix benchmark when an endpoint is already serving.
+scripts/gpu_suite.sh --out evidence \
+  --bench-host 127.0.0.1:11435 --model qwen38next-nvfp4 \
+  --model-dir /path/to/checkpoint --contexts 8192,32768
+
+# Manual fallback: keep every log in evidence/ and pack it yourself.
 $OOB pack --evidence-dir evidence --out /tmp/evidence.tgz
-sha256sum /tmp/evidence.tgz > /tmp/evidence.tgz.sha256
 ```
+
+The script records `dirty_files`; sign with `--allow-dirty` only when that
+number is deliberate, because the receipt binds the commit's tree, not the
+worktree.
 
 Copy `/tmp/evidence.tgz` to the operator host, and upload it to an HTTPS
 location the verifier can reach (a release asset, an internal static host, or
