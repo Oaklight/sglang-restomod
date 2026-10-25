@@ -24,6 +24,13 @@ Notes:
   yet available through this layer's components.
 - With the CUDA graph metadata fix in the fork, the same run reaches 30-35
   tok/s decode: [graph run](docs/runs/2026-10-25-qwen3.8-27b-fp8-cuda-graph-lambda12.md).
+- The `fp8_moe` component (block-FP8 expert GEMM) was validated numerically
+  on 2026-10-25 and loads the full Flash-Next checkpoint on 8x V100 (17.29 GB
+  per rank, TP8/EP8). End-to-end generation is blocked in the QSA decode path,
+  whose SM70 kernels only cover a `(6, 256)` query-head layout: at TP8 the
+  model has 3 query heads and falls back to a FlashAttention build that the
+  V100 image does not ship. See the
+  [expert GEMM run](docs/runs/2026-10-25-qwen3.8-flash-next-fp8-sm70-moe-lambda4.md).
 - `fp8_e5m2` KV is **not validated**: with the default fast decode kernel it
   returns corrupted output, and without that kernel it does not improve
   throughput. See the [E5M2 run](docs/runs/2026-10-25-qwen3.8-27b-fp8-e5m2-kv-lambda12.md)

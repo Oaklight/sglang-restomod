@@ -15,7 +15,7 @@ not only the quant method name.
 
 | Checkpoint format | Dense kernel | MoE kernel | Status |
 |---|---|---|---|
-| `fp8`, `weight_block_size=[128,128]`, dynamic activations | `sm70_turbomind_fp8` (W8A16) | none yet, tracked in #19 | Dense validated on 27B-FP8 (#17) |
+| `fp8`, `weight_block_size=[128,128]`, dynamic activations | `sm70_turbomind_fp8` (W8A16) | `SM70Fp8MoEMethod` (TurboMind block-FP8 expert GEMM) | Dense validated on 27B-FP8 (#17); experts bound and wired (#20) |
 | `modelopt_fp4` (NVFP4) | Marlin v100 (W4A16) | SM70 NVFP4 MoE decode | Flash-Next NVFP4 measured 85-100 tok/s |
 | `compressed-tensors` WNA16 (INT4 W4A16) | Marlin v100 after the capability patch | `moe_wna16` / Marlin MoE | 27B W4A16 measured 8.6 tok/s |
 | unquantized FP16 | cuBLAS | `SM70FP16MoEMethod` | Baseline fallback |
@@ -32,11 +32,14 @@ choice.
    W8A16 kernel. Any other block size falls back to the Marlin FP8 path.
    `SGLANG_SM70_FP8_BACKEND=auto|turbomind|marlin` pins or forbids the choice;
    `turbomind` raises instead of silently falling back.
-2. **FP8 MoE.** `Fp8MoEMethod` must dispatch to the SM70 block-FP8 expert
-   kernel. Until that kernel is bound (#19) and wired (#20), the current
-   behaviour is a generic-runner fallthrough, which is neither correct nor
-   attributable; the target contract is an explicit error rather than silent
-   dequantization.
+2. **FP8 MoE.** On SM70 the `fp8_moe` component replaces `Fp8MoEMethod`
+   with `SM70Fp8MoEMethod` for FusedMoE layers whose checkpoint block is
+   exactly `[128,128]`. It keeps the TurboMind W8A16 expert GEMM bound in #19
+   and raises for activations or scaling it does not implement, rather than
+   falling through to a Triton FP8 kernel that does not exist on sm70. The
+   prefix's `is_layer_skipped` decision is preserved: a skipped layer still
+   gets the unquantized method. `SGLANG_SM70_FP8_MOE=auto|on|off` selects the
+   behaviour; see the FP8 section below.
 3. **NVFP4.** `modelopt_fp4` selects Marlin v100 for dense layers on SM70
    (`--fp4-gemm-backend marlin`). The SM70 NVFP4 MoE decode kernel is used when
    the checkpoint layout matches; otherwise the Marlin MoE path applies.
@@ -82,7 +85,7 @@ Environment:
 | Variable | Values | Effect |
 |---|---|---|
 | `SGLANG_SM70_FP8_BACKEND` | `auto`, `turbomind`, `marlin` | Dense kernel choice; `turbomind` raises instead of falling back |
-| `SGLANG_SM70_FP8_MOE` | `auto`, `on`, `off` (planned, #20) | Expert kernel choice |
+| `SGLANG_SM70_FP8_MOE` | `auto` (default), `on`, `off` | Route block-FP8 experts to the TurboMind kernel; `off` keeps the upstream method, `on` fails if the binding cannot load |
 | `SGLANG_SM70_FP16_MOE` | `1`, `0` | `SM70FP16MoEMethod` for unquantized FP16 experts |
 | `SGLANG_V100_DECODE_CUDA` | `1`, `0` | E5M2 partial decode kernel; leave off until #51 is fixed |
 
@@ -90,6 +93,11 @@ Known limits:
 
 - The shared expert and router stay BF16 and run without tensor cores; whether
   to requantize them is #33.
+- The TurboMind permute helper does not honor the `-1` expert-parallel drop
+  sentinel (it buckets negative ids into the last expert), so the method
+  compacts the routed slots itself before the expert GEMM. Expert parallelism
+  therefore keeps its per-expert intermediate size intact, which is what a
+  block of 128 requires.
 - CUDA graph capture needs the fork patch
   `patches/sglang-sxm2/graph-metadata.patch`; without it capture fails on
   `swa_out_cache_loc`. See the graph run record.
@@ -114,11 +122,13 @@ Every cell below needs a run and a receipt before it is called validated.
 | Model | FP8 | NVFP4 | INT4 W4A16 |
 |---|---|---|---|
 | Qwen3.8-27B | validated (#17); 30-35 tok/s with the graph fix (#31) | open (#24) | measured, not competitive |
-| Qwen3.8-Flash-Next | blocked on #19 | measured (85-100 tok/s) | n/a |
+| Qwen3.8-Flash-Next | expert GEMM validated (#20); end-to-end blocked on the QSA decode head layout | measured (85-100 tok/s) | n/a |
 
 ## Open gaps
 
-- Block-FP8 W8A16 MoE kernel and its binding (#19).
+- Block-FP8 W8A16 MoE kernel and its binding (#19): bound and wired into
+  `SM70Fp8MoEMethod` (#20), validated numerically. The remaining Flash-Next
+  blocker is the QSA decode head layout, not the expert GEMM.
 - 1Cat NVFP4 dense kernel extraction (#37) for the 27B memory path.
 - Shared expert and router stay BF16 in the FP8 checkpoint; whether to requantize
   them is #33.
