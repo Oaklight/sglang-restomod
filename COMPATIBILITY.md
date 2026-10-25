@@ -21,3 +21,7 @@ Notes:
   topology, context, date.
 - The 2026-10-25 row is a fork run recorded for evidence; the same path is not
   yet available through this layer's components.
+- `fp8_e5m2` KV is **not validated**: with the default fast decode kernel it
+  returns corrupted output, and without that kernel it does not improve
+  throughput. See the [E5M2 run](docs/runs/2026-10-25-qwen3.8-27b-fp8-e5m2-kv-lambda12.md)
+  and #51.
