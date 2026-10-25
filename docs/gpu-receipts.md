@@ -99,6 +99,9 @@ with `commit`, `receipt`, and `evidence-url`. The workflow accepts a comment
 only from a trusted author (`trusted-authors: Oaklight`), and only when the
 body contains the `<!-- receipt:v1 -->` marker.
 
+A manual dispatch may set `require-evidence=false` for a digest-only dry run.
+Pull request and comment events always require the archive.
+
 ## Policy
 
 - Pull requests that touch `sglang_restomod/`, `patches/`, or `recipes/`

@@ -28,6 +28,10 @@ on:
         description: HTTPS URL of the evidence .tar.gz; empty uses the receipt's claim
         required: false
         default: ""
+      require-evidence:
+        description: Require the evidence archive; false accepts the signed digest only
+        required: false
+        default: "true"
 
 permissions:
   contents: read
@@ -101,3 +105,6 @@ jobs:
       trusted-authors: Oaklight
       receipt: ${{ inputs.receipt }}
       evidence-url: ${{ inputs.evidence-url }}
+      # PR and comment events always require evidence; a manual dispatch may
+      # opt out for a digest-only dry run.
+      require-evidence: ${{ github.event_name != 'workflow_dispatch' || inputs.require-evidence == 'true' }}
