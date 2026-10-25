@@ -95,12 +95,14 @@ def main() -> int:
                             errors.append(message)
                     elif forward != 0:
                         errors.append(
-                            f"{patch.name}: accepted but neither forward nor reverse applies; rebase it"
+                            f"{patch.name}: accepted but neither forward nor reverse "
+                            "applies; rebase it"
                         )
                 else:
                     if reverse == 0 and forward != 0:
                         warnings.append(
-                            f"{patch.name}: reverse-applies but is marked {status!r}; is it already upstream?"
+                            f"{patch.name}: reverse-applies but is marked {status!r}; "
+                            "is it already upstream?"
                         )
                     elif forward != 0:
                         errors.append(

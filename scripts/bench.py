@@ -7,8 +7,13 @@ i.e. TTFT/prefill is excluded from the decode rate.
 
 Prompts are built with the model's own tokenizer at exact token counts.
 """
+import argparse
+import json
 import os
-import argparse, json, sys, threading, time, urllib.request
+import sys
+import threading
+import time
+import urllib.request
 
 MODEL_DIR = os.environ.get("QLAB_MODEL_DIR", "")
 API_KEY = os.environ.get("VLLM_API_KEY", "")
