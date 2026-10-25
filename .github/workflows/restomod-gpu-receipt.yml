@@ -1,0 +1,110 @@
+name: restomod-gpu-receipt
+
+# Verifies a receipt signed on the GPU host, where GitHub cannot run the job.
+# The operator runs the suite, packs evidence, signs one statement, and posts
+# it as a PR comment or dispatches this workflow with it.
+#
+# The check name "gpu-receipt" is public API: branch protection matches it.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: PR number used for the summary comment; 0 disables it
+        required: false
+        default: "0"
+      commit:
+        description: Commit SHA the receipt names
+        required: true
+      receipt:
+        description: Signed receipt block, pasted in full
+        required: true
+        type: string
+      evidence-url:
+        description: HTTPS URL of the evidence .tar.gz; empty uses the receipt's claim
+        required: false
+        default: ""
+      require-evidence:
+        description: Require the evidence archive; false accepts the signed digest only
+        required: false
+        default: "true"
+
+permissions:
+  contents: read
+  checks: write
+  pull-requests: write
+
+jobs:
+  policy:
+    # A receipt arrives as a PR comment, so re-run on a comment that carries one.
+    if: >
+      github.event_name == 'pull_request' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'issue_comment' &&
+       github.event.issue.pull_request != null &&
+       contains(github.event.comment.body, '<!-- receipt:v1 -->'))
+    runs-on: ubuntu-latest
+    outputs:
+      pr: ${{ steps.context.outputs.pr }}
+      commit: ${{ steps.context.outputs.commit }}
+      requires: ${{ steps.paths.outputs.requires }}
+    steps:
+      - name: Resolve the PR and its head commit
+        id: context
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number || inputs.pr }}
+          INPUT_COMMIT: ${{ inputs.commit }}
+        run: |
+          pr="$PR_NUMBER"
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            commit="$INPUT_COMMIT"
+          else
+            commit="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr" --jq .head.sha)"
+          fi
+          echo "pr=$pr" >> "$GITHUB_OUTPUT"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+
+      - name: Decide whether this change needs a GPU receipt
+        id: paths
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          PR: ${{ steps.context.outputs.pr }}
+        run: |
+          if [ "$EVENT" != "pull_request" ]; then
+            # A comment or a dispatch is an explicit request to verify.
+            echo "requires=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files?per_page=100" \
+               --jq '.[].filename' | grep -qE '^(sglang_restomod/|patches/|recipes/)'; then
+            echo "requires=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "requires=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  verified:
+    needs: policy
+    permissions:
+      contents: read
+      checks: write
+      pull-requests: write
+    uses: Oaklight/out-of-band/.github/workflows/verify.yml@354998f9db40b1835bfcdb17279a6301ca6c6678 # v0.5.0
+    with:
+      pr: ${{ needs.policy.outputs.pr }}
+      commit: ${{ needs.policy.outputs.commit }}
+      job: gpu-bench
+      required: ${{ needs.policy.outputs.requires == 'true' }}
+      check-name: gpu-receipt
+      trusted-authors: Oaklight
+      receipt: ${{ inputs.receipt }}
+      evidence-url: ${{ inputs.evidence-url }}
+      # PR and comment events always require evidence; a manual dispatch may
+      # opt out for a digest-only dry run.
+      require-evidence: ${{ github.event_name != 'workflow_dispatch' || inputs.require-evidence == 'true' }}
