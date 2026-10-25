@@ -29,7 +29,8 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-_SO_ENV = "SGLANG_SM70_TURBOMIND_SO"
+_SO_ENV = "SM70_TURBOMIND_SO"
+_SO_ENV_ALIAS = "SGLANG_SM70_TURBOMIND_SO"
 _CACHE_ENV = "SGLANG_RESTOMOD_EXT_CACHE"
 
 _LOCK = threading.Lock()
@@ -62,7 +63,12 @@ def ensure_loaded(so_path: str | None = None) -> str:
     with _LOCK:
         if _LOADED:
             return _SO_PATH or ""
-        path = so_path or os.environ.get(_SO_ENV) or _default_so_path()
+        path = (
+            so_path
+            or os.environ.get(_SO_ENV)
+            or os.environ.get(_SO_ENV_ALIAS)
+            or _default_so_path()
+        )
         if not Path(path).is_file():
             raise FileNotFoundError(f"SM70 TurboMind library not found: {path}")
         os.environ[_SO_ENV] = path
@@ -176,5 +182,8 @@ def apply(out, sorted_input, expert_offsets, experts: Experts, *, gated_silu=Tru
 
 
 def register() -> None:
-    """Component entry point. Loading stays lazy on first use."""
-    logger.debug("sglang-restomod: fp8_moe component registered")
+    """Component entry point. Weight preparation stays lazy; only the quant
+    method selection is installed here (a device check plus a file probe)."""
+    from .method import register as _install
+
+    _install()
