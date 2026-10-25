@@ -42,6 +42,19 @@ done
 OOB="${OOB:-oob}"
 PYTHON="${PYTHON:-python3}"
 GPUS="${GPUS:-0}"
+
+command -v git >/dev/null 2>&1 || {
+  echo "error: git is required; the runtime image may not ship it" >&2
+  exit 2
+}
+git rev-parse --git-dir >/dev/null 2>&1 || {
+  echo "error: run this script from a git checkout" >&2
+  exit 2
+}
+
+# Measure dirt before creating the output directory. Otherwise a default
+# in-repo --out marks the run dirty and every receipt needs --allow-dirty.
+DIRTY="$(git status --porcelain | wc -l)"
 mkdir -p "$OUT"
 
 # Bind the evidence to the exact commit and tree, not the branch.
@@ -50,7 +63,7 @@ mkdir -p "$OUT"
   echo "commit=$(git rev-parse HEAD)"
   echo "tree=$(git rev-parse HEAD^{tree})"
   echo "branch=$(git rev-parse --abbrev-ref HEAD)"
-  echo "dirty_files=$(git status --porcelain | wc -l)"
+  echo "dirty_files=$DIRTY"
   echo "host=$(hostname)"
   echo "date=$(date -Is)"
   uname -a
@@ -97,6 +110,6 @@ fi
 PACK="${OUT%/}.tgz"
 "$OOB" pack --evidence-dir "$OUT" --out "$PACK"
 echo "evidence: $PACK"
-if [[ "$(git status --porcelain | wc -l)" != "0" ]]; then
-  echo "warning: worktree is dirty; sign with --allow-dirty or clean it first" >&2
+if [[ "$DIRTY" != "0" ]]; then
+  echo "warning: worktree is dirty ($DIRTY files); sign with --allow-dirty or clean it first" >&2
 fi
