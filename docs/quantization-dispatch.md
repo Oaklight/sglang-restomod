@@ -21,9 +21,9 @@ not only the quant method name.
 | unquantized FP16 | cuBLAS | `SM70FP16MoEMethod` | Baseline fallback |
 
 KV dtype is orthogonal: the attention backend accepts fp16, and the tilelang
-FA-V100 decode kernels have an E5M2 bridge (fp8_e4m3 is unverified). The current
-fast partial-decode path only engages for FP8/E5M2 KV, which is why fp16 KV logs
-`SM70 CUDA decode partial disabled: kv_dtype(fp8=False,e5m2=False)`.
+FA-V100 decode kernels have an E5M2 bridge. E5M2 is **not usable yet**: the
+partial-decode kernel it enables corrupts output (#51). fp16 is the validated
+choice.
 
 ## Selection rules
 
@@ -64,8 +64,42 @@ fast partial-decode path only engages for FP8/E5M2 KV, which is why fp16 KV logs
 | NVFP4 | Memory footprint | W4A16 on V100; no official Qwen checkpoint |
 | INT4 W4A16 | Compatibility | Works, but the dense path is not competitive |
 
-FP8 did not beat INT4 on decode (10.3 vs 8.6 tok/s), so neither format is the
-current bottleneck. The dense decode path is; see #30 and #31.
+Weight format was not the decode bottleneck: after the CUDA graph metadata fix
+the same FP8 run reached 30-35 tok/s (#31). Format work is still needed on the
+MoE path, where no SM70 kernel exists.
+
+## FP8 specifics
+
+Both target checkpoints are block FP8:
+
+| Model | Block | Excluded from quantization |
+|---|---|---|
+| Qwen3.8-27B-FP8 | `[128,128]` | visual blocks, `lm_head`, embeddings, norms |
+| Qwen3.8-Flash-Next-FP8 | `[128,128]` | `lm_head`, embeddings, hyper-connections, every `linear_attn` projection, `mlp.gate`, shared expert |
+
+Environment:
+
+| Variable | Values | Effect |
+|---|---|---|
+| `SGLANG_SM70_FP8_BACKEND` | `auto`, `turbomind`, `marlin` | Dense kernel choice; `turbomind` raises instead of falling back |
+| `SGLANG_SM70_FP8_MOE` | `auto`, `on`, `off` (planned, #20) | Expert kernel choice |
+| `SGLANG_SM70_FP16_MOE` | `1`, `0` | `SM70FP16MoEMethod` for unquantized FP16 experts |
+| `SGLANG_V100_DECODE_CUDA` | `1`, `0` | E5M2 partial decode kernel; leave off until #51 is fixed |
+
+Known limits:
+
+- The shared expert and router stay BF16 and run without tensor cores; whether
+  to requantize them is #33.
+- CUDA graph capture needs the fork patch
+  `patches/sglang-sxm2/graph-metadata.patch`; without it capture fails on
+  `swa_out_cache_loc`. See the graph run record.
+- E5M2 KV corrupts output with the default partial kernel (#51).
+- Flash-Next PLE is offloaded to host memory by default; it is not a weight
+  format concern.
+
+Receipts: see `docs/gpu-receipts.md`. The two recorded runs are
+`docs/runs/2026-10-25-qwen3.8-27b-fp8-lambda12.md` and
+`docs/runs/2026-10-25-qwen3.8-27b-fp8-cuda-graph-lambda12.md`.
 
 ## Registration
 
@@ -79,7 +113,7 @@ Every cell below needs a run and a receipt before it is called validated.
 
 | Model | FP8 | NVFP4 | INT4 W4A16 |
 |---|---|---|---|
-| Qwen3.8-27B | validated (#17) | open (#24) | measured, not competitive |
+| Qwen3.8-27B | validated (#17); 30-35 tok/s with the graph fix (#31) | open (#24) | measured, not competitive |
 | Qwen3.8-Flash-Next | blocked on #19 | measured (85-100 tok/s) | n/a |
 
 ## Open gaps
