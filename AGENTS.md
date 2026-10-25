@@ -60,6 +60,27 @@ For a new component (for example a V100 attention backend):
 - add a test or a recipe;
 - update `COMPATIBILITY.md` only after a recorded run.
 
+## Components
+
+A component is a module under `sglang_restomod/` with a `register()` entry
+point, selected by name:
+
+```sh
+SGLANG_RESTOMOD_COMPONENTS=fp8_moe,attention_v100 SGLANG_PLUGINS=restomod ...
+```
+
+Rules:
+
+1. Import is cheap. No torch, no sglang, no kernel loading at module import;
+   `register()` must not do heavy work either. Load on first use.
+2. Every component ships `PROVENANCE.md` (repo, commit, license, selected
+   files), a CPU-runnable unit test, and a GPU-marked test when it needs
+   hardware.
+3. GPU tests carry `@pytest.mark.gpu` and are excluded from `restomod-ci`;
+   run them with `scripts/test_gpu.sh` on the GPU host.
+4. Unset or empty `SGLANG_RESTOMOD_COMPONENTS` means baseline: the plugin
+   loads and does nothing.
+
 ## Branches and PRs
 
 - `main`: the layer; protected by PR plus `restomod-ci` and

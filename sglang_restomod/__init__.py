@@ -24,6 +24,13 @@ logger = logging.getLogger(__name__)
 def register() -> None:
     """Entry point for the ``sglang.srt.plugins`` group.
 
-    This is intentionally a no-op until the first selected component lands.
+    Loads only the components named in ``SGLANG_RESTOMOD_COMPONENTS``. With the
+    variable unset the plugin stays inert, which is the baseline behaviour.
     """
-    logger.info("sglang-restomod plugin loaded")
+    from .plugins import load_enabled
+
+    loaded = load_enabled()
+    if loaded:
+        logger.info("sglang-restomod plugin loaded (components: %s)", ", ".join(loaded))
+    else:
+        logger.info("sglang-restomod plugin loaded (no components selected)")
