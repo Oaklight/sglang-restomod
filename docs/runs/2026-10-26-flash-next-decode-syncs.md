@@ -38,8 +38,9 @@ The compaction path stays for prefill above `COMPACT_THRESHOLD = 64` tokens,
 where its two host reads amortise over a large forward and the wasted rows
 would not.
 
-Numerics are unchanged (`dense rel=0.00099`, `ep rel=0.00072`,
-`empty_nonzero=0`).
+Numerics are unchanged within run-to-run variance of the scatter
+(`dense rel=0.00099-0.00112`, `ep rel=0.00072`, `empty_nonzero=0`; the expert
+GEMM accumulates through `index_add`, so the last bits are not deterministic).
 
 ## What is left
 
