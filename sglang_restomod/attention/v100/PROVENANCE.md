@@ -35,5 +35,10 @@ upstream, because the upstream pin does not contain this backend at all.
 
 ## Status
 
-Scaffold only. No backend code is imported yet; selecting the component logs a
-no-op registration. E5.1 fills in the files and the plugin registration point.
+The graph metadata delegation is component code (`graph_metadata.py`). It is
+injected at import time through `FlashAttnV100Backend` and skips itself when
+the engine already defines the method, so a patched engine and a stock one
+behave the same.
+
+The rest of the backend (decode/extend delegation, E5M2 KV detection) is still
+read from the engine checkout; extracting it is the remaining part of E5.1.
