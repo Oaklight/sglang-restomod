@@ -193,6 +193,8 @@ class SM70Fp8MoEMethod(Fp8MoEMethod):
         layer.sm70_gate_up = torch.empty(slots, i, dtype=torch.float16, device=device)
         layer.sm70_sorted_output = torch.empty(slots, h, dtype=torch.float16, device=device)
         layer.sm70_offsets = torch.empty(e + 1, dtype=torch.int32, device=device)
+        layer.sm70_counts = torch.zeros(e, dtype=torch.int32, device=device)
+        layer.sm70_ones = torch.ones(slots, dtype=torch.int32, device=device)
 
     def _workspace(self, layer, tokens: int):
         k = layer.sm70_top_k
@@ -204,6 +206,7 @@ class SM70Fp8MoEMethod(Fp8MoEMethod):
                 layer.sm70_gate_up[:slots],
                 layer.sm70_sorted_output[:slots],
                 layer.sm70_offsets,
+                layer.sm70_ones[:slots],
             )
         # Prefill workspaces are transient; retaining them per layer exhausts VRAM.
         dev = layer.w13_tm_weight.device
@@ -214,6 +217,7 @@ class SM70Fp8MoEMethod(Fp8MoEMethod):
             torch.empty(slots, i, dtype=torch.float16, device=dev),
             torch.empty(slots, h, dtype=torch.float16, device=dev),
             torch.empty(e + 1, dtype=torch.int32, device=dev),
+            torch.ones(slots, dtype=torch.int32, device=dev),
         )
 
     def apply(self, layer, dispatch_output):
@@ -222,7 +226,7 @@ class SM70Fp8MoEMethod(Fp8MoEMethod):
         x = dispatch_output.hidden_states
         topk = dispatch_output.topk_output
         tokens = x.shape[0]
-        output, permuted, gate_up, sorted_output, offsets = self._workspace(layer, tokens)
+        output, permuted, gate_up, sorted_output, offsets, ones = self._workspace(layer, tokens)
         output.zero_()
         if tokens == 0:
             return StandardCombineInput(hidden_states=output)
@@ -237,6 +241,15 @@ class SM70Fp8MoEMethod(Fp8MoEMethod):
         # clamped onto expert 0 with a zero weight - a few wasted rows at
         # decode, but every shape stays static. Prefill keeps the compaction
         # path so the wasted rows stay bounded there.
+        if os.environ.get("SGLANG_RESTOMOD_DEBUG"):
+            logger.info(
+                "apply: tokens=%s k=%s ep=%s local=%s capturing=%s",
+                tokens,
+                k,
+                ep,
+                layer.sm70_num_experts,
+                torch.cuda.is_current_stream_capturing(),
+            )
         if ep and tokens > COMPACT_THRESHOLD:
             valid = ids >= 0
             token_index, slot_index = valid.nonzero(as_tuple=True)
@@ -248,7 +261,7 @@ class SM70Fp8MoEMethod(Fp8MoEMethod):
         else:
             # Masked clamp on both paths: a dropped route must contribute
             # zero, and an id of -1 must never reach bincount.
-            flat_ids = ids.clamp_min(0).reshape(-1)
+            flat_ids = ids.clamp(0, layer.sm70_num_experts - 1).reshape(-1)
             flat_weights = (weights * (ids >= 0)).reshape(-1)
             token_index = torch.arange(tokens, device=ids.device).repeat_interleave(k)
             rows = tokens * k
@@ -258,9 +271,14 @@ class SM70Fp8MoEMethod(Fp8MoEMethod):
         flat_weights = flat_weights[order].to(torch.float16)
         sorted_ids = flat_ids[order]
 
-        counts = torch.bincount(sorted_ids.long(), minlength=layer.sm70_num_experts)
-        offsets[0] = 0
-        offsets[1:] = counts.cumsum(0).to(torch.int32)
+        # bincount is rejected inside CUDA graph capture; a scatter-add over a
+        # zeroed counter is a plain kernel and captures cleanly.
+        ones = ones[:rows]
+        counts = layer.sm70_counts
+        counts.zero_()
+        counts.scatter_add_(0, sorted_ids, ones)
+        offsets[:1].zero_()
+        offsets[1:].copy_(counts.cumsum(0))
 
         sorted_x = permuted[:rows]
         torch.index_select(x, 0, token_index, out=sorted_x)
