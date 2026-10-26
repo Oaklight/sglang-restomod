@@ -21,7 +21,19 @@
 
 ## 状态
 
-目前只有基线：`sglang==0.5.22`、空 patch 队列、no-op 插件。V100 支持会随组件逐个加入；在那之前这一层本身不做任何事。
+目前有两个组件，都通过 `SGLANG_RESTOMOD_COMPONENTS` 显式启用：
+
+| 组件 | 作用 |
+|---|---|
+| `fp8_moe` | sm70 上的 block-FP8 expert GEMM。SGLang 随包提供的 SM70 TurboMind 库导出了 `fp8_moe_gemm_sm70_out`，但从未向 torch 注册；本组件用一个小的 `dlopen`/`dlsym` shim 解析该符号并暴露类型化接口。官方 block-FP8 MoE 权重能在 V100 上跑，靠的就是它。 |
+| `attention_v100` | 在 V100 attention backend 上实现 `init_forward_metadata_out_graph`。graph runner 会调用它，而基类留成了 no-op；没有它，decode 的 CUDA graph 根本捕获不起来。 |
+
+```bash
+SGLANG_RESTOMOD_COMPONENTS=fp8_moe,attention_v100
+```
+
+不设置这个变量时插件保持惰性。patch 队列仍为空（`patches/manifest.json`），
+所以这一层不修改上游文件，全部通过插件入口生效。
 
 ## 快速开始
 
