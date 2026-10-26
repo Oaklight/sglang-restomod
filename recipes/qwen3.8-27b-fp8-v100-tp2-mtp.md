@@ -50,13 +50,45 @@ The launcher also passes `--reasoning-parser auto --tool-call-parser auto
 
 ## Measured
 
+Decode tok/s, graph on, same harness for every row:
+
 | Context | MTP off | MTP on | Accept len |
 |---|---|---|---|
-| 380 tok | 34.70 | **67.6-78.8 tok/s** | 2.61-3.05 |
-| 2.7k tok | 33.67 | **66.9-74.5 tok/s** | 3.12-3.46 |
-| 8.2k tok | — | **41.8-44.5 tok/s** | 3.28-3.46 |
+| 380 tok | 34.70 | **67.6-78.8** | 2.61-3.05 |
+| 2.7k tok | 33.67 | **66.9-74.5** | 3.12-3.46 |
+| 8.2k tok | 34.4 | **45.7** | 3.05 |
+| 12.7k tok | 33.5 | 34.8 | 2.91 |
+| 17.0k tok | **32.8** | 30.7 | 3.05 |
+| 25.6k tok | **31.4** | 23.3 | 3.05 |
+| 32.4k tok | **30.4** | 20.5 | 3.20 |
 
 Prefill, warm process: 1,680-1,708 tok/s at 2k, 1,331-1,364 at 8k.
+
+## Pick the spec setting by context
+
+MTP crosses over between 12.7k and 17k: **leave it on up to ~12k, turn it off
+above ~16k**. At 32k it costs 33% (20.5 versus 30.4 tok/s).
+
+The accept length is flat across that range (2.91-3.20), so this is not an
+acceptance effect. Each MTP step runs one target forward over `1 + draft`
+positions, which pays the attention and the weight read once per verify instead
+of once per accepted token; as KV length grows the verify step's cost grows with
+it while the accepted tokens per verify stay the same, so the win shrinks and
+then inverts.
+
+Two launches, same flags otherwise:
+
+```
+# <= ~12k: draft chain on
+--speculative-algorithm NEXTN
+--speculative-num-steps 3 --speculative-eagle-topk 1 --speculative-num-draft-tokens 4
+
+# > ~16k: drop the four --speculative-* flags entirely
+```
+
+Do not use `--kv-cache-dtype fp8_e5m2` with MTP: it is corrupt (#51) and, because
+MTP bypasses the decode partial that is the only reason to choose it, it is also
+slower. Measured at 32k with MTP on: 4.9 tok/s versus 20.5 for fp16.
 
 ## Notes
 
@@ -69,5 +101,6 @@ Prefill, warm process: 1,680-1,708 tok/s at 2k, 1,331-1,364 at 8k.
 - The first request after startup is much slower while prefill kernels JIT. A
   benchmark has to warm up or it quotes the warmup.
 
-Run record: [docs/runs/2026-10-26-qwen3.8-27b-mtp-lambda12.md](../docs/runs/2026-10-26-qwen3.8-27b-mtp-lambda12.md).
+Run records: [docs/runs/2026-10-26-qwen3.8-27b-mtp-lambda12.md](../docs/runs/2026-10-26-qwen3.8-27b-mtp-lambda12.md),
+[docs/runs/2026-10-26-qwen3.8-27b-kv-dtype-mtp-crossover.md](../docs/runs/2026-10-26-qwen3.8-27b-kv-dtype-mtp-crossover.md).
 Launcher: `scripts/serve_sglang_27b_v100.sh` in the lab repository.
