@@ -26,16 +26,26 @@
 
 ## Environment
 
+Complete list, as the launcher sets them. The Mamba dtypes are not optional:
+the GDN layers fail or drift without them.
+
 ```
 SGLANG_PLUGINS=restomod
 SGLANG_RESTOMOD_COMPONENTS=fp8_moe
+TORCH_CUDA_ARCH_LIST=7.0
+FLASHINFER_DISABLE_VERSION_CHECK=1
+SGLANG_CUSTOM_ALLREDUCE_ALGO=1stage
+SGLANG_MAMBA_CONV_DTYPE=float16
+SGLANG_MAMBA_SSM_DTYPE=float16
 SGLANG_SM70_FORCE_FP16=1
 SGLANG_SM70_DENSE_GEMV=1
 SGLANG_SM70_QWEN_FUSIONS=1
 SGLANG_SM70_QSA_DENSE_PREFILL_MAX_TOKENS=8192
-SGLANG_CUSTOM_ALLREDUCE_ALGO=1stage
 SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK=1
 ```
+
+`SGLANG_CUSTOM_ALLREDUCE_ALGO` also accepts `2stage`; measured at 87.9 vs 86.5
+tok/s on a short prompt and 80.7 vs 84.0 at 4.8k, i.e. no difference.
 
 ## Measured
 

@@ -27,14 +27,26 @@
 
 ## Environment
 
+Complete list, as the launcher sets them. The Mamba dtypes are not optional:
+the GDN layers fail or drift without them.
+
 ```
+TORCH_CUDA_ARCH_LIST=7.0
+FLASHINFER_DISABLE_VERSION_CHECK=1
+SGLANG_CUSTOM_ALLREDUCE_ALGO=1stage
+SGLANG_MAMBA_CONV_DTYPE=float16
+SGLANG_MAMBA_SSM_DTYPE=float16
 SGLANG_SM70_FORCE_FP16=1
 SGLANG_SM70_DENSE_GEMV=1
 SGLANG_SM70_QWEN_FUSIONS=1
 SGLANG_SM70_QSA_DENSE_PREFILL_MAX_TOKENS=8192
-SGLANG_CUSTOM_ALLREDUCE_ALGO=1stage
+SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION=0
+SGLANG_NUMA_BIND_V2=0
 SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK=1
 ```
+
+The launcher also passes `--reasoning-parser auto --tool-call-parser auto
+--sleep-on-idle`, which are serving preferences rather than performance flags.
 
 ## Measured
 
