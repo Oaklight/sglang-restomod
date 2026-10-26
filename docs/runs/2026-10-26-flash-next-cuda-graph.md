@@ -47,3 +47,34 @@ instead of hidden behind launch overhead.
    the current token count — persistent and transient paths must not be mixed.
 3. Prefer kernels over host-side value reductions for shape bookkeeping
    (`scatter_add_` over `bincount`, `copy_` over scalar assignment).
+
+## Per-token breakdown once the graph is in place
+
+Measured with the torch profiler over one 48-token request, normalised by
+token (23.7 ms of kernel time against a 27 ms wall):
+
+| ms/token | calls | kernel |
+|---|---|---|
+| 3.54 | 100 | NCCL all-reduce (`RING_LL`) |
+| 2.44 | 96 | TurboMind dense GEMM (two variants) |
+| 2.29 | 194 | `sm70_hc::up_kernel` / `down_kernel` |
+| 1.62 | 96 | TurboMind GEMV (two variants) |
+| 0.67 | 36 | GDN packed decode |
+| ~2.1 | ~470 | gathers, copies, elementwise |
+
+Two corrections to the earlier reading:
+
+- **The all-reduce is not pathological.** A standalone 8-rank benchmark puts a
+  `[1, 2560]` fp16 all-reduce at 37.9 µs; 100 calls per token therefore cost
+  ~3.8 ms, which is what the profile shows. The 48 ms figure from the
+  un-graphed run was wait time between launches, not kernel time.
+- **The cost is spread across many small kernels.** A 10-row expert GEMM costs
+  79 µs against a ~6 µs memory floor, and grows only ~3.7 µs per additional
+  routed expert, so the kernel is launch/setup bound rather than reading
+  unrouted weights.
+
+The applied-side gathers (`index_select`, `index_add`, the mask multiply, the
+`zero_`) are a few hundred of those calls; TurboMind's own
+`moe_permute_with_scratch` cannot be used because it does not honour the `-1`
+drop sentinel, so the next step is a small fused permute/scale/unpermute kernel
+of our own.
