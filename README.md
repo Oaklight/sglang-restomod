@@ -22,9 +22,20 @@ tests. The repository is not a fork of SGLang or of any V100 project.
 
 ## Status
 
-Baseline only: `sglang==0.5.22`, an empty patch queue, and a no-op plugin. V100
-support will arrive as selected components; until then this layer does nothing
-on its own.
+Two components ship, both opt-in via `SGLANG_RESTOMOD_COMPONENTS`:
+
+| component | what it does |
+|---|---|
+| `fp8_moe` | block-FP8 expert GEMM on sm70. The TurboMind library SGLang ships for SM70 exports `fp8_moe_gemm_sm70_out` but never registers it with torch; this resolves the symbol with a small `dlopen`/`dlsym` shim and exposes a typed surface. This is what makes the official block-FP8 MoE checkpoints runnable on V100. |
+| `attention_v100` | implements `init_forward_metadata_out_graph` on the V100 attention backend, which the graph runner calls and the base class leaves as a no-op. Without it a decode CUDA graph cannot capture. |
+
+```bash
+SGLANG_RESTOMOD_COMPONENTS=fp8_moe,attention_v100
+```
+
+With the variable unset the plugin stays inert. The patch queue is still empty
+(`patches/manifest.json`), so nothing here edits upstream files; it all arrives
+through the plugin entry point.
 
 ## Quick start
 
