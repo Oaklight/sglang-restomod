@@ -33,6 +33,9 @@ _SO_NAME = "_sm70_turbomind_v100.so"
 
 _LOGGED_CONFIGS: set[tuple[int, int, int, int]] = set()
 
+# Above this token count the compaction path pays for its host reads.
+COMPACT_THRESHOLD = 64
+
 
 def _mode() -> str:
     return os.environ.get(ENV_MODE, "auto").strip().lower()
@@ -123,7 +126,6 @@ class SM70Fp8MoEMethod(Fp8MoEMethod):
 
         e13 = prepare_experts(w13, s13.float(), interleave_gated_silu=True)
         e2 = prepare_experts(w2, s2.float(), interleave_gated_silu=False)
-
 
         layer.w13_tm_weight = Parameter(e13.tm_weight, requires_grad=False)
         layer.w13_tm_scales = Parameter(e13.tm_scales, requires_grad=False)
@@ -227,21 +229,29 @@ class SM70Fp8MoEMethod(Fp8MoEMethod):
 
         ids = topk.topk_ids
         weights = topk.topk_weights
-        valid = ids >= 0
-        if bool(valid.all()):
-            flat_ids = ids.reshape(-1)
-            token_index = torch.arange(tokens, device=ids.device).repeat_interleave(
-                layer.sm70_top_k
-            )
-            flat_weights = weights.reshape(-1)
-        else:
-            # EP: keep only the routes this rank owns.
+        k = layer.sm70_top_k
+        ep = self.moe_runner_config.num_experts != layer.sm70_num_experts
+        # Decode never reads a value back from the device: every host read is a
+        # pipeline stall behind the previous layer's all-reduce, and it also
+        # makes the call ungraphable. Dropped expert-parallel routes are
+        # clamped onto expert 0 with a zero weight - a few wasted rows at
+        # decode, but every shape stays static. Prefill keeps the compaction
+        # path so the wasted rows stay bounded there.
+        if ep and tokens > COMPACT_THRESHOLD:
+            valid = ids >= 0
             token_index, slot_index = valid.nonzero(as_tuple=True)
             flat_ids = ids[token_index, slot_index]
             flat_weights = weights[token_index, slot_index]
-        rows = flat_ids.numel()
-        if rows == 0:
-            return StandardCombineInput(hidden_states=output)
+            rows = flat_ids.numel()
+            if rows == 0:
+                return StandardCombineInput(hidden_states=output)
+        else:
+            # Masked clamp on both paths: a dropped route must contribute
+            # zero, and an id of -1 must never reach bincount.
+            flat_ids = ids.clamp_min(0).reshape(-1)
+            flat_weights = (weights * (ids >= 0)).reshape(-1)
+            token_index = torch.arange(tokens, device=ids.device).repeat_interleave(k)
+            rows = tokens * k
 
         order = torch.argsort(flat_ids, stable=True)
         token_index = token_index[order]
