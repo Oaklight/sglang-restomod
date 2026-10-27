@@ -66,29 +66,37 @@ Prefill, warm process: 1,680-1,708 tok/s at 2k, 1,331-1,364 at 8k.
 
 ## Pick the spec setting by context
 
-MTP crosses over between 12.7k and 17k: **leave it on up to ~12k, turn it off
-above ~16k**. At 32k it costs 33% (20.5 versus 30.4 tok/s).
+**MTP is now the right setting at every context**, once the draft rows are
+served through the 1-row split-KV decoder
+(`patches/sglang-sxm2/draft-extend-native.patch` in the lab repository, enabled
+with `SGLANG_V100_DRAFT_NATIVE=1`).
 
-The accept length is flat across that range (2.91-3.20), so this is not an
-acceptance effect. Each MTP step runs one target forward over `1 + draft`
-positions, which pays the attention and the weight read once per verify instead
-of once per accepted token; as KV length grows the verify step's cost grows with
-it while the accepted tokens per verify stay the same, so the win shrinks and
-then inverts.
+| context | no MTP | MTP, draft-extend kernel | MTP, per-row decoder |
+|---:|---:|---:|---:|
+| 2k | 34.5 | 59.2 / 63.3 | 66.4 / 71.9 |
+| 8k | 34.1 | 38.1 / 43.3 | 56.2 / 67.5 |
+| 16k | 33.7 | 25.3 / 37.6 | 55.3 / 58.8 |
+| 24k | 33.3 | 21.4 / 20.6 | 51.0 / 54.3 |
+| 32k | 32.8 | 15.4 / 16.3 | 47.7 / 49.8 |
 
-Two launches, same flags otherwise:
+The old crossover was the draft-extend kernel, not MTP: it re-read the prefix
+once per draft row, so its cost grew with context while the accepted tokens per
+verify stayed flat. 1Cat vLLM, measured on the same checkpoint and contexts,
+never showed the collapse (51.6 tok/s at 2k, 41-46 at 32k), which is what
+identified it as a bug in our stack.
 
 ```
-# <= ~12k: draft chain on
+# every context: draft chain on, and the per-row decoder
+SGLANG_V100_DRAFT_NATIVE=1
 --speculative-algorithm NEXTN
 --speculative-num-steps 3 --speculative-eagle-topk 1 --speculative-num-draft-tokens 4
-
-# > ~16k: drop the four --speculative-* flags entirely
 ```
 
-Do not use `--kv-cache-dtype fp8_e5m2` with MTP: it is corrupt (#51) and, because
-MTP bypasses the decode partial that is the only reason to choose it, it is also
-slower. Measured at 32k with MTP on: 4.9 tok/s versus 20.5 for fp16.
+The per-row decoder needs **fp16 KV**. It calls the CUDA decode partial, and
+with an e5m2 cache that partial corrupts short contexts (#51), so do not pair
+`--kv-cache-dtype fp8_e5m2` with this setting. e5m2 is the wrong choice here
+anyway: with MTP it measured 4.9 tok/s at 32k against 20.5 for fp16, and without
+MTP the fp16 partial is the faster decode path.
 
 ## Notes
 
