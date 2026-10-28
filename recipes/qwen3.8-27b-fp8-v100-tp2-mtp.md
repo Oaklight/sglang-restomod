@@ -5,10 +5,10 @@
 | Model | `Qwen3.8-27B-FP8` (block FP8, hybrid dense + GDN) |
 | Hardware | 2x Tesla V100-SXM2-32GB (sm70) |
 | Topology | TP2, no EP |
-| Context | 32,768 |
-| Engine | `dg1kjd/sglang-sxm2` @ `73abfe1` + `sm70-fixes.patch` + `graph-metadata.patch` |
+| Context | 32,768 to 262,144 (measured at both) |
+| Engine | `dg1kjd/sglang-sxm2` @ `73abfe1` + the ten lab patches (`patches/sglang-sxm2/`) |
 | Components | none (the dense path needs no restomod component) |
-| Date | 2026-10-26 |
+| Date | 2026-10-27 (long context, e5m2, HiCache) |
 
 ## Flags
 
@@ -16,11 +16,13 @@
 --dtype float16 --quantization fp8
 --attention-backend tilelang_fa_v100
 --linear-attn-prefill-backend tilelang --linear-attn-decode-backend triton
---kv-cache-dtype auto                 # fp16; e5m2 is not validated, see #51
---tp-size 2 --context-length 32768
+--kv-cache-dtype fp8_e5m2             # validated since #51/#79; required for 256k
+--tp-size 2 --context-length 262144   # max_position_embeddings
 --mem-fraction-static 0.85 --max-running-requests 4
 --chunked-prefill-size 4096 --max-prefill-tokens 8192
 --disable-prefill-cuda-graph          # decode graph stays on
+# MTP only up to ~48k: see "Pick the spec setting by context" below.
+# SGLANG_27B_SPEC=auto in the launcher does exactly this.
 --speculative-algorithm NEXTN
 --speculative-num-steps 3 --speculative-eagle-topk 1 --speculative-num-draft-tokens 4
 ```
@@ -50,6 +52,12 @@ The launcher also passes `--reasoning-parser auto --tool-call-parser auto
 
 ## Measured
 
+**Superseded for anything above ~12k by the table in "Pick the spec setting by
+context".** These rows were taken before the draft-row fix, when the
+draft-extend kernel still re-read the prefix per draft row; the MTP-on column
+collapses from 12.7k up because of that kernel, not because of MTP. Kept for
+history and for the short-context figures.
+
 Decode tok/s, graph on, same harness for every row:
 
 | Context | MTP off | MTP on | Accept len |
@@ -66,37 +74,79 @@ Prefill, warm process: 1,680-1,708 tok/s at 2k, 1,331-1,364 at 8k.
 
 ## Pick the spec setting by context
 
-**MTP is now the right setting at every context**, once the draft rows are
-served through the 1-row split-KV decoder
-(`patches/sglang-sxm2/draft-extend-native.patch` in the lab repository, enabled
-with `SGLANG_V100_DRAFT_NATIVE=1`).
+**MTP wins below ~48k and loses above it.** The draft-row fix
+(`draft-extend-native.patch`, `SGLANG_V100_DRAFT_NATIVE=1`) removed the old
+collapse, but it did not remove the per-row prefix read: every verify row and
+every draft row still streams the whole prefix, so the step cost keeps growing
+with context while the tokens per step stay at ~2.9.
 
-| context | no MTP | MTP, draft-extend kernel | MTP, per-row decoder |
-|---:|---:|---:|---:|
-| 2k | 34.5 | 59.2 / 63.3 | 66.4 / 71.9 |
-| 8k | 34.1 | 38.1 / 43.3 | 56.2 / 67.5 |
-| 16k | 33.7 | 25.3 / 37.6 | 55.3 / 58.8 |
-| 24k | 33.3 | 21.4 / 20.6 | 51.0 / 54.3 |
-| 32k | 32.8 | 15.4 / 16.3 | 47.7 / 49.8 |
+Measured 2026-10-27 on lambda4 and lambda12, 2x V100, e5m2, graph on, greedy,
+64 output tokens, 2 reps. The 128k arm was run on both hosts and agrees to
+0.1%:
 
-The old crossover was the draft-extend kernel, not MTP: it re-read the prefix
-once per draft row, so its cost grew with context while the accepted tokens per
-verify stayed flat. 1Cat vLLM, measured on the same checkpoint and contexts,
-never showed the collapse (51.6 tok/s at 2k, 41-46 at 32k), which is what
-identified it as a bug in our stack.
+| context | MTP decode tok/s | no-MTP decode tok/s | MTP prefill | no-MTP prefill |
+|---|---:|---:|---:|---:|
+| 32k | 46.9 / 47.5 | 30.4 (fp16 arm) | 1,447-1,466 | - |
+| 48k | 37.06 / 34.75 | 31.44 / 31.01 | 1,299 / 1,291 | 1,570 / 1,566 |
+| 64k | 30.4 / 30.4 | 30.53 / 30.13 | 1,135 / 1,133 | 1,437 / 1,436 |
+| 128k | 17.54 / 17.52 | 26.57 / 26.58 | 791 / 789 | 1,088 / 1,085 |
+| 256k | - | 9.51 / 9.51 | - | 482 / 482 |
+
+MTP also costs 17-27% of the prefill from 48k up, because the draft model
+processes the same prompt tokens.
 
 ```
-# every context: draft chain on, and the per-row decoder
-SGLANG_V100_DRAFT_NATIVE=1
---speculative-algorithm NEXTN
---speculative-num-steps 3 --speculative-eagle-topk 1 --speculative-num-draft-tokens 4
+# <= 49152: MTP on; above: off. The launcher knob does this for you.
+SGLANG_27B_SPEC=auto
 ```
 
-The per-row decoder needs **fp16 KV**. It calls the CUDA decode partial, and
-with an e5m2 cache that partial corrupts short contexts (#51), so do not pair
-`--kv-cache-dtype fp8_e5m2` with this setting. e5m2 is the wrong choice here
-anyway: with MTP it measured 4.9 tok/s at 32k against 20.5 for fp16, and without
-MTP the fp16 partial is the faster decode path.
+If you set the flags by hand, keep `--speculative-*` off above 49152 and drop
+`SGLANG_V100_DRAFT_NATIVE` with them. A purely decode-bound job at 48-64k can
+still run MTP for a ~0-15% decode gain, at the prefill cost above.
+
+## Long context
+
+256k fits on 2x V100-32GB with e5m2 KV: the pool holds 395,600 tokens, so the
+old 32,768 ceiling was the launch flag, not memory. e5m2 is not optional at the
+top end — the fp16 pool is 198,816 tokens and cannot hold a 262,144-token
+request.
+
+| context | prefill tok/s | TTFT | decode tok/s |
+|---|---:|---:|---:|
+| 1k | 1,811 | 0.55 s | 77.1 / 85.3 (MTP) |
+| 8k | 1,866 | 4.30 s | 56.5 / 81.3 (MTP) |
+| 32k | 1,447-1,466 | 21.9 s | 46.9 / 47.5 (MTP) |
+| 64k | 1,437 | 43.7 s | 30.5 |
+| 128k | 1,088 | 116-117 s | 26.6 |
+| 256k | 482 | 530 s | 9.51 |
+
+Prefill falls roughly as 1/N and decode roughly halves per doubling of context.
+The remaining cost is the per-row KV read on the dense layers; the fix is a
+kernel that reads each KV tile once for all draft/verify rows (restomod #80).
+
+## Host KV tier
+
+`SGLANG_27B_HICACHE_GB=N` (`--enable-hierarchical-cache --hicache-size N`) is
+worth turning on whenever the working set does not fit the GPU pool. 16
+distinct 30,720-token documents (492k tokens) against the 397k-token pool:
+
+| arm | round-2 TTFT |
+|---|---|
+| off | 17.3 s (16/16 re-prefill) |
+| on, 32 GB/rank | **0.20 s (16/16 hit)** |
+
+The tier is 1,029,904 tokens (16.87 GB) of host KV per rank plus 15.14 GB of
+host Mamba state, 2.6x the device pool. The disk tier
+(`--hicache-storage-backend file`) needs `libssl-dev` in the image; the host
+tier does not.
+
+## e5m2 vs fp16
+
+e5m2 is the default now. #51 was two uninitialised reads in the decode partial,
+not a numerics problem; #79 put the e5m2 EAGLE target verify on the native
+grouped decoder, and at 32k with MTP it measures 47.4 tok/s against fp16's
+49.9 / 41.6 under the same sampling, with ~2x the prefill (1,447 vs 704). The
+"per-row decoder needs fp16 KV" rule is gone.
 
 ## Notes
 
