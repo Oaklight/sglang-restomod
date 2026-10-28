@@ -36,7 +36,11 @@ Notes:
   model: `--speculative-algorithm NEXTN`. On Flash-Next the draft token count
   cannot exceed 4, because QSA's pending index-key ring holds one compress
   group; the 27B has no such ring.
-- `fp8_e5m2` KV is **not validated**: with the default fast decode kernel it
-  returns corrupted output, and without that kernel it does not improve
-  throughput. See the [E5M2 run](docs/runs/2026-10-25-qwen3.8-27b-fp8-e5m2-kv-lambda12.md)
-  and #51.
+- `fp8_e5m2` and `fp8_e4m3` KV are **validated**, and e4m3 is the recommended
+  one. The corruption recorded on 2026-10-25 was two uninitialised reads in the
+  decode partial (#51), not the format; after that fix and #79, e5m2 carries the
+  MTP target verify and reaches 256k. e4m3 is the same size and speed with a
+  smaller perturbation of the model's own next-token distribution — see the
+  recipe's "KV dtype" section. The
+  [E5M2 run](docs/runs/2026-10-25-qwen3.8-27b-fp8-e5m2-kv-lambda12.md) is the
+  record of the pre-fix failure.
