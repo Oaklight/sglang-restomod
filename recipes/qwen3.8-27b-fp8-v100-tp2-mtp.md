@@ -138,7 +138,7 @@ distinct 30,720-token documents (492k tokens) against the 397k-token pool:
 The tier is 1,029,904 tokens (16.87 GB) of host KV per rank plus 15.14 GB of
 host Mamba state, 2.6x the device pool.
 
-### The disk tier is bounded by the host tier
+### The disk tier: `write_back` plus `wait_complete`
 
 `--hicache-storage-backend file` needs the native hash extension, which
 JIT-builds against OpenSSL. The CUDA image ships only the runtime
@@ -148,17 +148,31 @@ headers and the library from the interpreter's conda prefix and links by path,
 so the image's runtime library satisfies the recorded `NEEDED`. No `libssl-dev`
 is required.
 
-With it, set `--hicache-storage-prefetch-policy wait_complete`. The default
-(`timeout`) gives up after 1.0 s + 0.25 ms per page, and the hybrid
-all-or-nothing check then discards the partial read because the Mamba pool
-cannot cover it: in a 24-document test (737k tokens, 8 GB host tier) all 36
-prefetches were discarded and nothing hit.
+Two settings decide whether the disk tier does anything at all. 24 distinct
+30,720-token documents (737k tokens) against a 397k-token device pool and an
+**8 GB** host tier (8.4 documents), two passes in order:
 
-Even with `wait_complete`, the disk only feeds hits that fit in the host tier.
-In the same test the host pool held 8.4 documents: documents 0-7 came back in
-4.0-4.5 s instead of 17.3 s (4.1x TTFT), and from document 8 every request
-re-prefilled. Size `--hicache-size` for the working set you actually want to
-serve from storage; a disk tier under a too-small host tier buys nothing.
+| arm | round 1 | round 2 |
+|---|---|---|
+| `timeout` (default), `write_through` | 17.2-17.7 s | 17.5-18.3 s |
+| `wait_complete`, `write_through` | 4.0-4.5 s (docs 0-7), 17.6-19.6 s (docs 8-23) | 17.5-17.8 s |
+| `wait_complete`, **`write_back`** | 15/24 at 1.0-1.1 s, 4 at ~9.5 s, 5 at 17.8 s | **24/24 at 1.0-1.1 s** |
+
+- `--hicache-storage-prefetch-policy wait_complete`. The default `timeout` gives
+  up after 1.0 s + 0.25 ms per page, and the hybrid all-or-nothing check then
+  discards the partial read because the Mamba pool cannot cover it: all 36
+  prefetches were discarded and nothing hit.
+- `--hicache-write-policy write_back`. Under `write_through` the prefetch asks
+  for the whole document but `evict_host()` frees nothing, so it falls back to
+  the ~2,900 free tokens and that is discarded too. Under `write_back` the
+  allocation succeeds outright and the pool reclaims for the prefetch.
+
+That combination serves a working set **twice the host tier** from disk at 1.0-1.1 s
+TTFT against 17.3 s to re-prefill: 16x. Replicated with 16 documents on a host
+whose page cache holds the 40 GB corpus: 16/16 at 0.19-0.62 s. A restored prefix
+also decodes at the same rate as a freshly prefilled one (32.62-32.67 vs
+32.05-32.61 tok/s at 32k, no MTP) and greedy output is byte-identical, so the
+win is not paid for during generation and does not change what the model says.
 
 ## e5m2 vs fp16
 
