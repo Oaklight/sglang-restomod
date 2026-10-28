@@ -136,9 +136,29 @@ distinct 30,720-token documents (492k tokens) against the 397k-token pool:
 | on, 32 GB/rank | **0.20 s (16/16 hit)** |
 
 The tier is 1,029,904 tokens (16.87 GB) of host KV per rank plus 15.14 GB of
-host Mamba state, 2.6x the device pool. The disk tier
-(`--hicache-storage-backend file`) needs `libssl-dev` in the image; the host
-tier does not.
+host Mamba state, 2.6x the device pool.
+
+### The disk tier is bounded by the host tier
+
+`--hicache-storage-backend file` needs the native hash extension, which
+JIT-builds against OpenSSL. The CUDA image ships only the runtime
+(`libcrypto.so.3`), so the build fails out of the box;
+`patches/sglang-sxm2/hicache-openssl-fallback.patch` in the lab repo takes the
+headers and the library from the interpreter's conda prefix and links by path,
+so the image's runtime library satisfies the recorded `NEEDED`. No `libssl-dev`
+is required.
+
+With it, set `--hicache-storage-prefetch-policy wait_complete`. The default
+(`timeout`) gives up after 1.0 s + 0.25 ms per page, and the hybrid
+all-or-nothing check then discards the partial read because the Mamba pool
+cannot cover it: in a 24-document test (737k tokens, 8 GB host tier) all 36
+prefetches were discarded and nothing hit.
+
+Even with `wait_complete`, the disk only feeds hits that fit in the host tier.
+In the same test the host pool held 8.4 documents: documents 0-7 came back in
+4.0-4.5 s instead of 17.3 s (4.1x TTFT), and from document 8 every request
+re-prefilled. Size `--hicache-size` for the working set you actually want to
+serve from storage; a disk tier under a too-small host tier buys nothing.
 
 ## e5m2 vs fp16
 
