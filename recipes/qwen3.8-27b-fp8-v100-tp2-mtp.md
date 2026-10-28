@@ -8,7 +8,7 @@
 | Context | 32,768 to 262,144 (measured at both) |
 | Engine | `dg1kjd/sglang-sxm2` @ `73abfe1` + the ten lab patches (`patches/sglang-sxm2/`) |
 | Components | none (the dense path needs no restomod component) |
-| Date | 2026-10-27 (long context, e5m2, HiCache) |
+| Date | 2026-10-28 (KV dtype: e4m3; long context, HiCache) |
 
 ## Flags
 
@@ -16,7 +16,7 @@
 --dtype float16 --quantization fp8
 --attention-backend tilelang_fa_v100
 --linear-attn-prefill-backend tilelang --linear-attn-decode-backend triton
---kv-cache-dtype fp8_e5m2             # validated since #51/#79; required for 256k
+--kv-cache-dtype fp8_e4m3             # 1 byte; required for 256k. See "KV dtype".
 --tp-size 2 --context-length 262144   # max_position_embeddings
 --mem-fraction-static 0.85 --max-running-requests 4
 --chunked-prefill-size 4096 --max-prefill-tokens 8192
@@ -106,10 +106,12 @@ still run MTP for a ~0-15% decode gain, at the prefill cost above.
 
 ## Long context
 
-256k fits on 2x V100-32GB with e5m2 KV: the pool holds 395,600 tokens, so the
-old 32,768 ceiling was the launch flag, not memory. e5m2 is not optional at the
-top end — the fp16 pool is 198,816 tokens and cannot hold a 262,144-token
-request.
+256k fits on 2x V100-32GB with a 1-byte KV cache: the pool holds 395,600
+tokens, so the old 32,768 ceiling was the launch flag, not memory. A 1-byte
+cache is not optional at the top end — the fp16 pool is 198,816 tokens and
+cannot hold a 262,144-token request. `fp8_e4m3` and `fp8_e5m2` are the same
+size; the rows below were measured with e5m2, before e4m3 was the
+recommendation.
 
 Measurements before 2026-10-28 (the rows at 64k and above carry MTP's cost
 signature — see the crossover section — so read them as MTP rows):
@@ -199,13 +201,39 @@ also decodes at the same rate as a freshly prefilled one (median 32.63 vs
 byte-identical, so the win is not paid for during generation and does not change
 what the model says.
 
-## e5m2 vs fp16
+## KV dtype
 
-e5m2 is the default now. #51 was two uninitialised reads in the decode partial,
+`fp8_e4m3` is the recommendation. It is the same size as e5m2, runs at the same
+speed in the SM70 decode kernel, and moves the model's own next-token
+distribution less.
+
+The 1-byte formats first: #51 was two uninitialised reads in the decode partial,
 not a numerics problem; #79 put the e5m2 EAGLE target verify on the native
 grouped decoder, and at 32k with MTP it measures 47.4 tok/s against fp16's
 49.9 / 41.6 under the same sampling, with ~2x the prefill (1,447 vs 704). The
 "per-row decoder needs fp16 KV" rule is gone.
+
+e4m3 against e5m2, 27B-FP8 TP2, four fixed continuations, per-token
+log-probability against an fp16 cache (the lab's `notes/kv-dtype-quality.md`):
+
+| | e5m2 | e4m3 |
+|---|---:|---:|
+| mean abs log-prob shift, per token | 0.0627 | **0.0383** |
+| rms shift | 0.1030 | **0.0711** |
+| worst token | 0.5143 | **0.4350** |
+| closer to fp16 on | 60/177 | **117/177** (p=2.2e-5) |
+| signed shift, whole set | +0.29 | -0.99 |
+
+Cost: none measurable. Served at 122,880 tokens, 30.95 against 30.93 tok/s;
+per attention layer at 256k, 0.635 against 0.629 ms. Range: the kernel runs
+with `k_scale=1.0`, so e4m3's 448 ceiling matters — the measured K maximum on
+this model is 24.97, an 18x margin. Capacity: both are 1 byte, and the pool
+holds 392,560 tokens against fp16's 196,272.
+
+The e4m3 arm is slightly *less* confident overall: its signed shift is negative
+on all four prompts, -0.0056 nats per token, about 0.6% of a perplexity point.
+e5m2 has no such bias but a 1.6x larger per-token error, which costs more in
+expectation. Neither magnitude reorders a greedy decode.
 
 ## Notes
 
