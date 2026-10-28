@@ -80,12 +80,13 @@ collapse, but it did not remove the per-row prefix read: every verify row and
 every draft row still streams the whole prefix, so the step cost keeps growing
 with context while the tokens per step stay at ~2.9.
 
-Measured 2026-10-27, one host, 2x V100, e5m2, graph on, greedy, 64 output
-tokens, 2 reps:
+Measured 2026-10-27 on lambda4 and lambda12, 2x V100, e5m2, graph on, greedy,
+64 output tokens, 2 reps. The 128k arm was run on both hosts and agrees to
+0.1%:
 
 | context | MTP decode tok/s | no-MTP decode tok/s | MTP prefill | no-MTP prefill |
 |---|---:|---:|---:|---:|
-| 32k | 46.9 / 47.5 | ~30 | 1,447-1,466 | - |
+| 32k | 46.9 / 47.5 | 30.4 (fp16 arm) | 1,447-1,466 | - |
 | 48k | 37.06 / 34.75 | 31.44 / 31.01 | 1,299 / 1,291 | 1,570 / 1,566 |
 | 64k | 30.4 / 30.4 | 30.53 / 30.13 | 1,135 / 1,133 | 1,437 / 1,436 |
 | 128k | 17.54 / 17.52 | 26.57 / 26.58 | 791 / 789 | 1,088 / 1,085 |
@@ -110,7 +111,7 @@ old 32,768 ceiling was the launch flag, not memory. e5m2 is not optional at the
 top end — the fp16 pool is 198,816 tokens and cannot hold a 262,144-token
 request.
 
-| context | prefill tok/s | TTFT | decode tok/s (no MTP) |
+| context | prefill tok/s | TTFT | decode tok/s |
 |---|---:|---:|---:|
 | 1k | 1,811 | 0.55 s | 77.1 / 85.3 (MTP) |
 | 8k | 1,866 | 4.30 s | 56.5 / 81.3 (MTP) |
