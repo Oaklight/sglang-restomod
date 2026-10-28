@@ -111,18 +111,42 @@ old 32,768 ceiling was the launch flag, not memory. e5m2 is not optional at the
 top end — the fp16 pool is 198,816 tokens and cannot hold a 262,144-token
 request.
 
+Measurements before 2026-10-28 (the rows at 64k and above carry MTP's cost
+signature — see the crossover section — so read them as MTP rows):
+
 | context | prefill tok/s | TTFT | decode tok/s |
 |---|---:|---:|---:|
 | 1k | 1,811 | 0.55 s | 77.1 / 85.3 (MTP) |
 | 8k | 1,866 | 4.30 s | 56.5 / 81.3 (MTP) |
 | 32k | 1,447-1,466 | 21.9 s | 46.9 / 47.5 (MTP) |
-| 64k | 1,437 | 43.7 s | 30.5 |
-| 128k | 1,088 | 116-117 s | 26.6 |
-| 256k | 482 | 530 s | 9.51 |
+| 64k | 1,437 | 43.7 s | 30.5 (MTP) |
+| 128k | 1,088 | 116-117 s | 26.6 (MTP) |
+| 256k | 482 | 530 s | 9.51 (MTP) |
 
-Prefill falls roughly as 1/N and decode roughly halves per doubling of context.
-The remaining cost is the per-row KV read on the dense layers; the fix is a
-kernel that reads each KV tile once for all draft/verify rows (restomod #80).
+### Current: graph on, no MTP, two-CTA decode partial
+
+27B-FP8, TP2, e5m2, greedy, 192 output tokens, prefix cache hitting after the
+first rep, lambda12, `SGLANG_27B_SPEC=auto` (so no MTP above 49152) and the
+decode CUDA graph on, which was only the launcher default from 2026-10-28:
+
+| context | prefill tok/s | TTFT | decode tok/s |
+|---|---:|---:|---:|
+| 4k | 2,226 | 1.84 s | 34.26 |
+| 32k | 2,963 | 11.1 s | 33.55 |
+| 128k | 2,218 | 59.1 s | 30.83 |
+| 256k | 2,021 | 129.7 s | **27.88** |
+
+Against the table above: 256k decode **2.9x** and prefill **4.2x**; 128k decode
+1.16x and prefill 2.0x. Only one of those three changes is a kernel (the
+two-CTA decode partial, -28% per layer); the rest is turning off MTP at long
+context and turning the graph on.
+
+Decode is now flat-ish with context: 34.26 at 4k against 27.88 at 256k is a 19%
+fall over a 64x increase, where the MTP ladder fell 66% from 8k to 256k.
+
+Prefill is the weak term now, and it still falls with context (2,963 at 32k to
+2,021 at 256k). That is the gather-and-recompute path rather than attention,
+and it is the next thing worth attacking.
 
 ## Host KV tier
 
