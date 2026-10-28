@@ -42,3 +42,31 @@ behave the same.
 
 The rest of the backend (decode/extend delegation, E5M2 KV detection) is still
 read from the engine checkout; extracting it is the remaining part of E5.1.
+
+## What is vendored now (2026-10-28)
+
+The backend itself is in the component, not read from the engine checkout:
+
+| file | source |
+|---|---|
+| `flash_attn_v100_backend.py` | fork `73abfe1` + lab patches |
+| `qwen_sparse_attn_backend.py` | same |
+| `tilelang/` (11 modules) | same, with the package path rewritten to `sglang_restomod.attention.v100.tilelang` |
+| `kernels/sm70_longctx_decode.cu` | same, **re-synced** to include `sm70-decode-occ2.patch` |
+| `kernels/sm70_nvfp4_moe_decode.cu` | same |
+
+`sm70_longctx_decode.cu` was first vendored before the two-CTA decode patch
+landed in the lab tree, so the component would have shipped the slower kernel.
+It now carries `sm70-decode-occ2.patch`: the batched tile loader, the
+warp-specialized pipeline and the `kCtas` template, selectable at runtime with
+`SGLANG_SM70_DECODE_VARIANT=serial|occ2|pipelined` (default `occ2`). That is
+worth -28% per layer at 256k on e5m2 and +3.7% end-to-end decode.
+
+Still read from the engine checkout:
+
+- `sglang.kernels.ops.attention.sm70_qsa_combine` — the Flash-Next sparse path
+  needs it. Vendoring it is what makes the component independent of the fork.
+- `sglang.srt.environ.envs` for `SGLANG_SM70_QSA_COMBINE`.
+
+Not yet done: the component has not been run on a GPU through its own module
+path. Every V100 number in `recipes/` and `docs/runs/` was produced by the fork.

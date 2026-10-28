@@ -171,7 +171,22 @@ def sm70_cuda_decode_partial(
     # for the fp16 path; viewing an fp16 cache as uint8 would double its length.
     _fp8 = k_cache.dtype in (torch.float8_e4m3fn, torch.float8_e5m2)
     _kv_arg = (lambda t: t.view(torch.uint8)) if _fp8 else (lambda t: t)
-    ext.sm70_longctx_decode(
+    # Ablation switch for the split-KV partial. occ2 runs the same kernel with
+    # two CTAs resident per SM, which is where the e5m2 gain is: the 16-byte
+    # E5M2 reads are latency-bound, and a second resident CTA doubles the bytes
+    # in flight while the hardware overlaps one CTA's loads with the other's
+    # math.
+    _entry = getattr(
+        ext,
+        {
+            "serial": "sm70_longctx_decode",
+            "occ2": "sm70_longctx_decode_occ2",
+            "pipelined": "sm70_longctx_decode_pipelined",
+        }[
+            os.environ.get("SGLANG_SM70_DECODE_VARIANT", "occ2")
+        ],
+    )
+    _entry(
         q.contiguous(),
         _kv_arg(k_cache).contiguous(),
         _kv_arg(v_cache).contiguous(),
