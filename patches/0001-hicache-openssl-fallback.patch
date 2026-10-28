@@ -1,0 +1,58 @@
+diff --git a/python/sglang/srt/mem_cache/cpp_utils/native_hash.py b/python/sglang/srt/mem_cache/cpp_utils/native_hash.py
+index f23c1f7..4181af4 100644
+--- a/python/sglang/srt/mem_cache/cpp_utils/native_hash.py
++++ b/python/sglang/srt/mem_cache/cpp_utils/native_hash.py
+@@ -16,6 +16,33 @@ def _cpu_supports_avx2() -> bool:
+         return False
+ 
+ 
++def _system_has_openssl_headers() -> bool:
++    return os.path.exists("/usr/include/openssl/sha.h")
++
++
++def _local_openssl_build_flags() -> tuple[list[str], list[str]]:
++    """Find OpenSSL in the interpreter's own prefix, as a conda env has it.
++
++    The CUDA base images ship the OpenSSL runtime but not the development
++    files, so `<openssl/sha.h>` is missing and `-lcrypto` has no unversioned
++    library to resolve against; the JIT build of `hash_binding.cpp` then fails
++    and every HiCache storage backend is unusable. A conda-style prefix
++    carries both. Link the library by path so the linker records its SONAME,
++    which the image's runtime copy also provides.
++    """
++    cflags: list[str] = []
++    ldflags: list[str] = []
++    include_dir = os.path.join(sys.prefix, "include")
++    if os.path.exists(os.path.join(include_dir, "openssl", "sha.h")):
++        cflags.append(f"-I{include_dir}")
++    for name in ("libcrypto.so", "libcrypto.dylib"):
++        candidate = os.path.join(sys.prefix, "lib", name)
++        if os.path.exists(candidate):
++            ldflags.append(candidate)
++            break
++    return cflags, ldflags
++
++
+ @lru_cache(maxsize=1)
+ def _load_native_hash_module() -> Any:
+     if sys.byteorder != "little" or not sys.platform.startswith("linux"):
+@@ -30,13 +57,18 @@ def _load_native_hash_module() -> Any:
+ 
+         abs_path = os.path.dirname(os.path.abspath(__file__))
+         extra_cflags = ["-O3", "-std=c++17", "-DNDEBUG"]
++        extra_ldflags = ["-lcrypto"]
++        if not _system_has_openssl_headers():
++            prefix_cflags, prefix_ldflags = _local_openssl_build_flags()
++            extra_cflags += prefix_cflags
++            extra_ldflags = prefix_ldflags or extra_ldflags
+         if _cpu_supports_avx2():
+             extra_cflags.append("-mavx2")
+         return load_extension_with_recovery(
+             name="hicache_hash_cpp",
+             sources=[f"{abs_path}/hash_binding.cpp"],
+             extra_cflags=extra_cflags,
+-            extra_ldflags=["-lcrypto"],
++            extra_ldflags=extra_ldflags,
+             with_cuda=False,
+         )
+     except Exception as exc:
