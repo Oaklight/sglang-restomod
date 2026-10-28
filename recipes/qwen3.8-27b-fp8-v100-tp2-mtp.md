@@ -170,9 +170,10 @@ Two settings decide whether the disk tier does anything at all. 24 distinct
 That combination serves a working set **twice the host tier** from disk at 1.0-1.1 s
 TTFT against 17.3 s to re-prefill: 16x. Replicated with 16 documents on a host
 whose page cache holds the 40 GB corpus: 16/16 at 0.19-0.62 s. A restored prefix
-also decodes at the same rate as a freshly prefilled one (32.62-32.67 vs
-32.05-32.61 tok/s at 32k, no MTP) and greedy output is byte-identical, so the
-win is not paid for during generation and does not change what the model says.
+also decodes at the same rate as a freshly prefilled one (median 32.63 vs
+32.58 tok/s at 32k, no MTP, over 16 documents) and greedy output is
+byte-identical, so the win is not paid for during generation and does not change
+what the model says.
 
 ## e5m2 vs fp16
 
