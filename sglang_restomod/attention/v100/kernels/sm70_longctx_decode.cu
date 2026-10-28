@@ -117,8 +117,224 @@ __device__ __forceinline__ void load_kv_tile(const KV* __restrict__ k_cache,
   }
 }
 
-template <typename KV>
-__global__ void __launch_bounds__(kThreads, 1)
+// One 32-token tile of QK + softmax + PV for a single query row. The serial
+// kernel and the pipelined kernel both call this, so the math cannot drift
+// between them.
+//
+// Register blocking is what keeps this out of the LDS-bound regime: the query
+// row is read as 16-byte vectors (32 LDS.128 per tile instead of 128 LDS.32),
+// and the PV pass reads one 16-byte vector per token because lane l owns dims
+// [8l, 8l+8) - which is exactly the row layout the loader already writes, so
+// the vectorized read costs nothing on the store side.
+__device__ __forceinline__ void decode_tile_compute(
+    const int r, const int tile_tokens, const __half* __restrict__ ks,
+    const __half* __restrict__ vs, const __half* __restrict__ qs,
+    float* __restrict__ scores, __half* __restrict__ probs, float& m_row,
+    float& l_row, float (&o_acc)[kAccPerLane], const float scale_log2) {
+  const int lane = threadIdx.x & 31;
+
+  // ---- QK: lane == token, the whole 256-dim dot in four fp16 accumulators ----
+  {
+    const uint4* qv = reinterpret_cast<const uint4*>(qs + r * kDim);
+    const uint4* kv = reinterpret_cast<const uint4*>(ks + lane * kKVStride);
+    __half2 hacc0 = __float2half2_rn(0.f);
+    __half2 hacc1 = hacc0, hacc2 = hacc0, hacc3 = hacc0;
+#pragma unroll
+    for (int h = 0; h < kDim / 8; ++h) {
+      const uint4 qa = qv[h];
+      const uint4 ka = kv[h];
+      const __half2* qh = reinterpret_cast<const __half2*>(&qa);
+      const __half2* kh2 = reinterpret_cast<const __half2*>(&ka);
+      hacc0 = __hfma2(qh[0], kh2[0], hacc0);
+      hacc1 = __hfma2(qh[1], kh2[1], hacc1);
+      hacc2 = __hfma2(qh[2], kh2[2], hacc2);
+      hacc3 = __hfma2(qh[3], kh2[3], hacc3);
+    }
+    const __half2 ssum = __hadd2(__hadd2(hacc0, hacc1), __hadd2(hacc2, hacc3));
+    const float acc = __half2float(ssum.x) + __half2float(ssum.y);
+    if (lane < tile_tokens) {
+      scores[r * kBlockN + lane] = acc;
+    }
+  }
+  __syncwarp();
+
+  // ---- online softmax ----
+  float loc_max = -1.0e30f;
+  if (lane < tile_tokens) {
+    loc_max = scores[r * kBlockN + lane];
+  }
+#pragma unroll
+  for (int off = 16; off; off >>= 1) {
+    loc_max = fmaxf(loc_max, __shfl_xor_sync(0xffffffffu, loc_max, off));
+  }
+  const float m_new = fmaxf(m_row, loc_max);
+  const float alpha = exp2f((m_row - m_new) * scale_log2);
+  m_row = m_new;
+  l_row *= alpha;
+  float p = 0.f;
+  if (lane < tile_tokens) {
+    p = exp2f((scores[r * kBlockN + lane] - m_new) * scale_log2);
+  }
+  // Write every lane: the PV pass scans all kBlockN entries, and a stale NaN
+  // left in a tail slot is multiplied by a zeroed V row, which is still NaN.
+  probs[r * kBlockN + lane] = __float2half(p);
+  float loc_sum = p;
+#pragma unroll
+  for (int off = 16; off; off >>= 1) {
+    loc_sum += __shfl_xor_sync(0xffffffffu, loc_sum, off);
+  }
+  l_row += loc_sum;
+  // Every lane reads back what all 32 lanes wrote; a shuffle is not a memory
+  // barrier, so say so.
+  __syncwarp();
+  if (alpha != 1.f) {
+#pragma unroll
+    for (int j = 0; j < kAccPerLane; ++j) {
+      o_acc[j] *= alpha;
+    }
+  }
+
+  // ---- PV: o_acc += p * V, one 16-byte V vector per token ----
+  __half2 tacc[kPairsPerLane];
+#pragma unroll
+  for (int j = 0; j < kPairsPerLane; ++j) {
+    tacc[j] = __float2half2_rn(0.f);
+  }
+#pragma unroll
+  for (int n = 0; n < kBlockN; ++n) {
+    const float pn = __half2float(probs[r * kBlockN + n]);
+    if (pn == 0.f) {
+      continue;
+    }
+    const __half2 p2 = __float2half2_rn(pn);
+    const uint4 va =
+        *reinterpret_cast<const uint4*>(vs + n * kKVStride + 8 * lane);
+    const __half2* vh = reinterpret_cast<const __half2*>(&va);
+#pragma unroll
+    for (int j = 0; j < kPairsPerLane; ++j) {
+      tacc[j] = __hfma2(p2, vh[j], tacc[j]);
+    }
+  }
+#pragma unroll
+  for (int j = 0; j < kPairsPerLane; ++j) {
+    o_acc[2 * j] += __low2float(tacc[j]);
+    o_acc[2 * j + 1] += __high2float(tacc[j]);
+  }
+}
+
+// Write one normalized query row: lane l owns dims [8l, 8l+8), so the row goes
+// out as a single 16-byte store per lane.
+__device__ __forceinline__ void store_partial_row(
+    __half* __restrict__ o_row, const float (&o_acc)[kAccPerLane],
+    const float inv_l, const float kv_scale) {
+  const int lane = threadIdx.x & 31;
+  __half2 out[kPairsPerLane];
+#pragma unroll
+  for (int j = 0; j < kPairsPerLane; ++j) {
+    out[j] = __floats2half2_rn(o_acc[2 * j] * inv_l * kv_scale,
+                               o_acc[2 * j + 1] * inv_l * kv_scale);
+  }
+  *reinterpret_cast<uint4*>(o_row + 8 * lane) =
+      *reinterpret_cast<const uint4*>(out);
+}
+
+// ---------------------------------------------------------------------------
+// Double-buffered, warp-specialized variant of decode_partial_kernel.
+//
+// The single-buffer kernel is strictly phase-serial: all sixteen warps load K
+// and V for tile i, __syncthreads(), six warps run QK/softmax/PV,
+// __syncthreads(). At 256k the load+convert phase measures 0.79 ms of the
+// 1.98 ms a layer costs (683 GB/s against the 776 a pure copy reaches), so
+// two fifths of the layer is SM idle waiting on DRAM. Here warps 6..15 stream
+// tile i+1 into the other buffer while warps 0..5 compute tile i, so the DRAM
+// time hides under the math instead of adding to it.
+//
+// Ten warps are enough for the load: 683 GB/s is a bandwidth limit, not a
+// warp-count one, and each loader thread keeps kPipeLoadIters vectors in
+// flight, which covers the latency. The pipeline costs one __syncthreads()
+// per tile where the serial kernel used two - the softmax-to-PV handoff is
+// warp-local (warp r owns row r on both sides), so __syncwarp() replaces it.
+constexpr int kPipeComputeWarps = kGroup;  // warps 0..5 own one row each
+constexpr int kPipeComputeThreads = kPipeComputeWarps * 32;
+constexpr int kPipeLoadThreads = (kThreads / 32 - kPipeComputeWarps) * 32;
+constexpr int kPipeVecPerTensor = kBlockN * (kDim / 16);  // 16B vectors
+constexpr int kPipeVecPerTile = 2 * kPipeVecPerTensor;    // K, then V
+constexpr int kPipeLoadIters =
+    (kPipeVecPerTile + kPipeLoadThreads - 1) / kPipeLoadThreads;
+// Two buffers of K and V: 67.6 KB, which is past the 48 KB static limit, so
+// the launcher sets the dynamic-smem attribute (V100 allows 96 KB).
+constexpr int kPipeDynSmemBytes = 2 * 2 * kSmemKV * sizeof(__half);
+
+// Stage one 32-token K/V tile. Loads are issued as a batch before any of them
+// is consumed: the e5m2 path reads 16 bytes per request, so a load-convert-store
+// loop that waits on each request caps the grid at a few KB of bytes in flight
+// per SM and lands at ~330 GB/s, while the same code in fp16 (32 bytes per
+// request) reaches 640. batching kIters requests per thread is what closes gap.
+template <typename KV, int kTh, int kIters>
+__device__ __forceinline__ void pipe_load_tile(
+    const KV* __restrict__ k_cache, const KV* __restrict__ v_cache,
+    const int* __restrict__ page_table, const int seq_id, const int kv_head,
+    const int kv_stride, const int max_blocks, const int tile_begin,
+    const int split_end, const int ltid, __half* __restrict__ ks,
+    __half* __restrict__ vs) {
+  uint4 ra[kIters];
+  uint4 rb[kIters];  // second half of an fp16 vector; unused for e5m2
+  __half* dstv[kIters];
+#pragma unroll
+  for (int it = 0; it < kIters; ++it) {
+    const int v = ltid + it * kTh;
+    const bool live = v < kPipeVecPerTile;
+    const bool is_v = v >= kPipeVecPerTensor;
+    const int byte_off = (v & (kPipeVecPerTensor - 1)) << 4;
+    const int tok_local = byte_off >> 8;
+    const int d_off = byte_off & 255;
+    const int token = tile_begin + tok_local;
+    const bool valid = live && token < split_end;
+    const int64_t base =
+        valid ? (page_table != nullptr
+                     ? (int64_t)page_table[seq_id * max_blocks + (token >> 4)] *
+                               (kPageSize * kv_stride) +
+                           (int64_t)(token & (kPageSize - 1)) * kv_stride +
+                           kv_head * kDim + d_off
+                     : (int64_t)token * kv_stride + kv_head * kDim + d_off)
+              : -1;
+    // A tail iteration (v past the tile) must not write at all: the masked
+    // zero would land on slots an earlier iteration already staged.
+    dstv[it] = live ? (is_v ? vs : ks) + tok_local * kKVStride + d_off : nullptr;
+    const uint4 zero = make_uint4(0, 0, 0, 0);
+    ra[it] = zero;
+    rb[it] = zero;
+    if (valid) {
+      const uint4* src = reinterpret_cast<const uint4*>(
+          (is_v ? v_cache : k_cache) + base);
+      ra[it] = src[0];
+      if constexpr (sizeof(KV) != 1) {
+        rb[it] = src[1];
+      }
+    }
+  }
+#pragma unroll
+  for (int it = 0; it < kIters; ++it) {
+    if (dstv[it] == nullptr) {
+      continue;
+    }
+    if constexpr (sizeof(KV) == 1) {
+      // E5M2 shares the sign/exponent layout with FP16, so one byte becomes one
+      // half by shifting left eight bits; 16 bytes become two 16-byte stores.
+      e5m2_to_fp16_16(ra[it], dstv[it]);
+    } else {
+      uint4* d = reinterpret_cast<uint4*>(dstv[it]);
+      d[0] = ra[it];
+      d[1] = rb[it];
+    }
+  }
+}
+
+// kCtas = CTAs resident per SM. At two, the SM interleaves one CTA's load with
+// the other's math for free, and holds twice the bytes in flight - which is the
+// binding constraint for the 16-byte e5m2 reads.
+template <typename KV, int kCtas>
+__global__ void __launch_bounds__(kThreads, kCtas)
 decode_partial_kernel(const __half* __restrict__ q,
                       const KV* __restrict__ k_cache,
                       const KV* __restrict__ v_cache,
@@ -210,159 +426,16 @@ decode_partial_kernel(const __half* __restrict__ q,
     const int tile_tokens = min(kBlockN, split_end - tile_begin);
 
     // ---- Cooperative vectorized load + E5M2 -> FP16 convert (K and V) ----
-    // kBlockN tokens * 256 bytes = 8KB/tensor. Each thread: 16B (one uint4)
-    // per tensor. slot = tid + it*512; byte_off = slot*16; token = byte>>8;
-    // d_off = byte & 255. Consecutive threads read consecutive 16B chunks of
-    // a 256B token row -> fully coalesced 128B transactions.
-#pragma unroll
-    for (int it = 0; it < kLoadIters; ++it) {
-      const int slot = tid + it * kThreads;   // 16-byte units [0, kBlockN*16)
-      const int byte_off = slot << 4;
-      const int tok_local = byte_off >> 8;
-      const int d_off = byte_off & 255;
-      const int token = tile_begin + tok_local;
-      const bool valid = (token < split_end) && (tok_local < kBlockN);
-      const int64_t base =
-          valid
-              ? (page_table != nullptr
-                     ? (int64_t)page_table[seq_id * max_blocks + (token >> 4)] *
-                               (kPageSize * kv_stride) +
-                           (int64_t)(token & (kPageSize - 1)) * kv_stride +
-                           kv_head * kDim + d_off
-                     : (int64_t)token * kv_stride + kv_head * kDim + d_off)
-              : -1;
-      const int dst = tok_local * kKVStride + d_off;
-      if constexpr (sizeof(KV) == 1) {
-        // E5M2 byte cache: one 16-byte vector per thread, dequantized to FP16.
-        uint4 raw_k = make_uint4(0, 0, 0, 0);
-        uint4 raw_v = make_uint4(0, 0, 0, 0);
-        if (valid) {
-          raw_k = *reinterpret_cast<const uint4*>(k_cache + base);
-          raw_v = *reinterpret_cast<const uint4*>(v_cache + base);
-        }
-        e5m2_to_fp16_16(raw_k, ks + dst);
-        e5m2_to_fp16_16(raw_v, vs + dst);
-      } else {
-        // fp16 cache: two vectors per thread, direct copy.
-        uint4* dk = reinterpret_cast<uint4*>(ks + dst);
-        uint4* dv = reinterpret_cast<uint4*>(vs + dst);
-        if (valid) {
-          const uint4* sk = reinterpret_cast<const uint4*>(k_cache + base);
-          const uint4* sv = reinterpret_cast<const uint4*>(v_cache + base);
-          dk[0] = sk[0];
-          dk[1] = sk[1];
-          dv[0] = sv[0];
-          dv[1] = sv[1];
-        } else {
-          const uint4 z = make_uint4(0, 0, 0, 0);
-          dk[0] = z;
-          dk[1] = z;
-          dv[0] = z;
-          dv[1] = z;
-        }
-      }
-    }
+    pipe_load_tile<KV, kThreads, (2 * kPipeVecPerTensor + kThreads - 1) / kThreads>(
+        k_cache, v_cache, page_table, seq_id, kv_head, kv_stride, max_blocks,
+        tile_begin, split_end, tid, ks, vs);
     __syncthreads();
 
-    // ---- QK: each compute warp owns one query row ----
+    // ---- QK / softmax / PV for one 32-token tile ----
     if (is_compute_warp) {
-      const int r = warp;
-      const __half2* qr = reinterpret_cast<const __half2*>(qs + r * kDim);
-      {
-        const int n = lane;  // kBlockN == 32 == warp width
-        const __half2* krow =
-            reinterpret_cast<const __half2*>(ks + n * kKVStride);
-        // HFMA2 accumulation: two dims per instruction and no per-element
-        // cvt, which is 4x fewer instructions than the scalar form. Each of
-        // the four accumulators sums 64 products in fp16; the logits are O(1)
-        // and go through a softmax, so the ~2e-3 absolute error is free.
-        __half2 hacc0 = __float2half2_rn(0.f);
-        __half2 hacc1 = hacc0, hacc2 = hacc0, hacc3 = hacc0;
-#pragma unroll
-        for (int h = 0; h < kDim / 8; ++h) {
-          hacc0 = __hfma2(qr[4 * h], krow[4 * h], hacc0);
-          hacc1 = __hfma2(qr[4 * h + 1], krow[4 * h + 1], hacc1);
-          hacc2 = __hfma2(qr[4 * h + 2], krow[4 * h + 2], hacc2);
-          hacc3 = __hfma2(qr[4 * h + 3], krow[4 * h + 3], hacc3);
-        }
-        const __half2 ssum = __hadd2(__hadd2(hacc0, hacc1), __hadd2(hacc2, hacc3));
-        const float acc = __half2float(ssum.x) + __half2float(ssum.y);
-        if (n < tile_tokens) {
-          scores[r * kBlockN + n] = acc;
-        }
-      }
-      __syncwarp();
-      float loc_max = -1.0e30f;
-      if (lane < tile_tokens) {
-        loc_max = scores[r * kBlockN + lane];
-      }
-#pragma unroll
-      for (int off = 16; off; off >>= 1) {
-        loc_max = fmaxf(loc_max, __shfl_xor_sync(0xffffffffu, loc_max, off));
-      }
-      const float m_new = fmaxf(m_row[r], loc_max);
-      const float alpha = exp2f((m_row[r] - m_new) * scale_log2);
-      m_row[r] = m_new;
-      l_row[r] *= alpha;
-      if (alpha != 1.f) {
-#pragma unroll
-        for (int j = 0; j < kAccPerLane; ++j) {
-          o_acc[r][j] *= alpha;
-        }
-      }
-      float loc_sum = 0.f;
-      {
-        const int n = lane;
-        float p = 0.f;
-        if (n < tile_tokens) {
-          p = exp2f((scores[r * kBlockN + n] - m_new) * scale_log2);
-        }
-        // Write every lane. The PV pass below scans all kBlockN entries and
-        // skips only exact zeros; a lane past tile_tokens left uninitialised
-        // can hold NaN from a previous kernel, and NaN * 0 (the zeroed V rows)
-        // is still NaN, which then poisons the KV cache.
-        probs[r * kBlockN + n] = __float2half(p);
-        loc_sum = p;
-      }
-#pragma unroll
-      for (int off = 16; off; off >>= 1) {
-        loc_sum += __shfl_xor_sync(0xffffffffu, loc_sum, off);
-      }
-      l_row[r] += loc_sum;
-    }
-    __syncthreads();
-
-    // ---- PV: o_acc += p * V ----
-    if (is_compute_warp) {
-      const int r = warp;
-      // Accumulate one tile in half2 and fold it into the fp32 accumulators
-      // once, so the cross-tile sum (up to ~819 terms per split) keeps full
-      // fp32 range while the inner loop is four HFMA2 per token instead of
-      // eight cvt + eight fmaf.
-      __half2 tacc[kPairsPerLane];
-#pragma unroll
-      for (int j = 0; j < kPairsPerLane; ++j) {
-        tacc[j] = __float2half2_rn(0.f);
-      }
-#pragma unroll
-      for (int n = 0; n < kBlockN; ++n) {
-        const float p = __half2float(probs[r * kBlockN + n]);
-        if (p == 0.f) {
-          continue;
-        }
-        const __half2 p2 = __float2half2_rn(p);
-        const __half2* vrow =
-            reinterpret_cast<const __half2*>(vs + n * kKVStride);
-#pragma unroll
-        for (int j = 0; j < kPairsPerLane; ++j) {
-          tacc[j] = __hfma2(p2, vrow[lane + j * 32], tacc[j]);
-        }
-      }
-#pragma unroll
-      for (int j = 0; j < kPairsPerLane; ++j) {
-        o_acc[r][2 * j] += __low2float(tacc[j]);
-        o_acc[r][2 * j + 1] += __high2float(tacc[j]);
-      }
+      decode_tile_compute(warp, tile_tokens, ks, vs, qs, scores,
+                          probs, m_row[warp], l_row[warp],
+                          o_acc[warp], scale_log2);
     }
     __syncthreads();
   }
@@ -377,12 +450,7 @@ decode_partial_kernel(const __half* __restrict__ q,
                      oh) *
                         kDim;
 #pragma unroll
-    for (int j = 0; j < kPairsPerLane; ++j) {
-      o_row[2 * (lane + j * 32)] =
-          __float2half_rn(o_acc[r][2 * j] * inv_l * kv_scale);
-      o_row[2 * (lane + j * 32) + 1] =
-          __float2half_rn(o_acc[r][2 * j + 1] * inv_l * kv_scale);
-    }
+    store_partial_row(o_row, o_acc[r], inv_l, kv_scale);
   }
   if (is_compute_warp && lane == 0) {
     const int r = warp;
@@ -390,6 +458,147 @@ decode_partial_kernel(const __half* __restrict__ q,
         l_row[r] > 0.f ? __log2f(l_row[r]) + m_row[r] * scale_log2 : -1.0e30f;
     partial_lse[((int64_t)seq_id * max_splits + split_id) * heads_total +
                 kv_head * kGroup + r] = lse;
+  }
+}
+
+template <typename KV>
+__global__ void __launch_bounds__(kThreads, 1)
+decode_partial_kernel_pipelined(const __half* __restrict__ q,
+                                const KV* __restrict__ k_cache,
+                                const KV* __restrict__ v_cache,
+                                const int* __restrict__ page_table,
+                                const int* __restrict__ seq_lens,
+                                const int max_splits,
+                                const int min_tokens_per_split,
+                                const int max_blocks, const float score_scale,
+                                const float kv_scale,
+                                __half* __restrict__ partial_o,
+                                float* __restrict__ partial_lse) {
+  const int kv_head = blockIdx.x;
+  const int kv_heads = gridDim.x;
+  const int kv_stride = kDim * kv_heads;  // per-token elements across KV heads
+  const int heads_total = kGroup * kv_heads;
+  const int split_id = blockIdx.y;
+  const int seq_id = blockIdx.z;
+
+  extern __shared__ uint4 dyn_raw[];
+  __half* const ks0 = reinterpret_cast<__half*>(dyn_raw);
+  __half* const vs0 = ks0 + 2 * kSmemKV;
+  __shared__ __half qs[kGroup * kDim];
+  __shared__ float scores[kGroup * kBlockN];
+  __shared__ __half probs[kGroup * kBlockN];
+
+  const int tid = threadIdx.x;
+  const int warp = tid >> 5;
+  const int lane = tid & 31;
+  const bool is_compute_warp = warp < kPipeComputeWarps;
+  const int ltid = tid - kPipeComputeThreads;  // valid for loader warps only
+
+  const int context = seq_lens[seq_id];
+  const int active_splits =
+      min(max_splits, max(1, (context + min_tokens_per_split - 1) /
+                                 min_tokens_per_split));
+  if (split_id >= active_splits || context <= 0) {
+    return;
+  }
+  const int split_len = (context + active_splits - 1) / active_splits;
+  const int split_begin = split_id * split_len;
+  const int split_end = min(context, split_begin + split_len);
+  if (split_begin >= split_end) {
+    if (is_compute_warp) {
+      __half* o_row =
+          partial_o +
+          (((int64_t)seq_id * max_splits + split_id) * heads_total +
+           kv_head * kGroup + warp) *
+              kDim;
+      for (int d = lane; d < kDim; d += 32) {
+        o_row[d] = __float2half(0.f);
+      }
+      if (lane == 0) {
+        partial_lse[((int64_t)seq_id * max_splits + split_id) * heads_total +
+                    kv_head * kGroup + warp] = -1.0e30f;
+      }
+    }
+    return;
+  }
+  const float scale_log2 = score_scale * kLog2E;
+
+  for (int i = tid; i < kGroup * kDim; i += kThreads) {
+    const int r = i / kDim;
+    const int d = i % kDim;
+    qs[r * kDim + d] = q[(kv_head * kGroup + r) * kDim + d];
+  }
+
+  float m_row[kGroup];
+  float l_row[kGroup];
+  float o_acc[kGroup][kAccPerLane];
+#pragma unroll
+  for (int r = 0; r < kGroup; ++r) {
+    m_row[r] = -1.0e30f;
+    l_row[r] = 0.f;
+  }
+  if (is_compute_warp) {
+#pragma unroll
+    for (int j = 0; j < kAccPerLane; ++j) {
+      o_acc[warp][j] = 0.f;
+    }
+  }
+
+  const int num_tiles = (split_end - split_begin + kBlockN - 1) / kBlockN;
+
+  // Prologue: the loader warps fill buffer 0 while everyone else finishes
+  // staging the queries.
+  if (!is_compute_warp) {
+    pipe_load_tile<KV, kPipeLoadThreads, kPipeLoadIters>(
+        k_cache, v_cache, page_table, seq_id, kv_head, kv_stride, max_blocks,
+        split_begin, split_end, ltid, ks0, vs0);
+  }
+  __syncthreads();
+
+  for (int tile = 0; tile < num_tiles; ++tile) {
+    if (!is_compute_warp) {
+      // Buffer (tile+1)&1 is the one consumed at tile-1, released by the
+      // barrier that ended the previous iteration.
+      if (tile + 1 < num_tiles) {
+        const int next = (tile + 1) & 1;
+        pipe_load_tile<KV, kPipeLoadThreads, kPipeLoadIters>(
+            k_cache, v_cache, page_table, seq_id, kv_head, kv_stride,
+            max_blocks, split_begin + (tile + 1) * kBlockN, split_end, ltid,
+            ks0 + next * kSmemKV, vs0 + next * kSmemKV);
+      }
+    } else {
+      const int buf = tile & 1;
+      const __half* ks = ks0 + buf * kSmemKV;
+      const __half* vs = vs0 + buf * kSmemKV;
+      const int tile_begin = split_begin + tile * kBlockN;
+      const int tile_tokens = min(kBlockN, split_end - tile_begin);
+
+      // ---- QK / softmax / PV for one 32-token tile ----
+      if (is_compute_warp) {
+        decode_tile_compute(warp, tile_tokens, ks, vs, qs, scores,
+                            probs, m_row[warp], l_row[warp],
+                            o_acc[warp], scale_log2);
+      }
+    }
+    __syncthreads();
+  }
+
+  if (is_compute_warp) {
+    const int r = warp;
+    const float inv_l = l_row[r] > 0.f ? 1.f / l_row[r] : 0.f;
+    const int oh = kv_head * kGroup + r;
+    __half* o_row = partial_o +
+                    (((int64_t)seq_id * max_splits + split_id) * heads_total +
+                     oh) *
+                        kDim;
+#pragma unroll
+    store_partial_row(o_row, o_acc[r], inv_l, kv_scale);
+    if (lane == 0) {
+      const float lse =
+          l_row[r] > 0.f ? __log2f(l_row[r]) + m_row[r] * scale_log2 : -1.0e30f;
+      partial_lse[((int64_t)seq_id * max_splits + split_id) * heads_total +
+                  kv_head * kGroup + r] = lse;
+    }
   }
 }
 
@@ -905,13 +1114,145 @@ void dispatch_qsa_decode(const dim3& grid, cudaStream_t stream, int group,
 
 }  // namespace sm70_longctx
 
+namespace {
+
+using namespace sm70_longctx;
+
+// Shared prologue for the three long-context decode entry points: they differ
+// only in which kernel they dispatch to.
+struct DecodeArgs {
+  dim3 grid;
+  const int* page_ptr;
+  int max_blocks;
+  int max_splits;
+  int min_tokens;
+  float scale_k;
+  float vscale;
+  bool byte_cache;
+};
+
+inline DecodeArgs decode_args(const torch::Tensor& q,
+                              const torch::Tensor& k_cache,
+                              const torch::Tensor& v_cache,
+                              const torch::Tensor& page_table,
+                              int64_t max_splits,
+                              int64_t min_tokens_per_split,
+                              double softmax_scale, double k_scale,
+                              double v_scale) {
+  const int heads = q.size(1);
+  const int heads_kv = k_cache.size(2);
+  const int dim = q.size(2);
+  const int batch = q.size(0);
+  TORCH_CHECK(heads_kv >= 1 && heads == heads_kv * kGroup && dim == kDim,
+              "sm70_longctx expects H6/D256 GQA with a full KV-head split "
+              "(TP1 Hkv4, TP2 Hkv2, TP4 Hkv1)");
+  TORCH_CHECK((k_cache.scalar_type() == torch::kUInt8 ||
+               k_cache.scalar_type() == torch::kHalf) &&
+                  v_cache.scalar_type() == k_cache.scalar_type(),
+              "sm70_longctx expects an E5M2 byte or FP16 KV cache");
+  TORCH_CHECK(q.dtype() == torch::kHalf, "sm70_longctx expects fp16 queries");
+  DecodeArgs a;
+  a.grid = dim3((unsigned)heads_kv, (unsigned)max_splits, (unsigned)batch);
+  a.page_ptr = page_table.numel() > 0 ? page_table.data_ptr<int>() : nullptr;
+  a.max_blocks = page_table.numel() > 0 ? (int)page_table.size(1) : 0;
+  a.max_splits = (int)max_splits;
+  a.min_tokens = (int)min_tokens_per_split;
+  a.scale_k = (float)(softmax_scale * k_scale);
+  a.vscale = (float)v_scale;
+  a.byte_cache = k_cache.scalar_type() == torch::kUInt8;
+  return a;
+}
+
+template <typename KV, int kCtas>
+inline void launch_serial(const DecodeArgs& a, cudaStream_t stream,
+                          const torch::Tensor& q, const torch::Tensor& k_cache,
+                          const torch::Tensor& v_cache,
+                          const torch::Tensor& seq_lens,
+                          torch::Tensor& partial_o,
+                          torch::Tensor& partial_lse) {
+  decode_partial_kernel<KV, kCtas><<<a.grid, kThreads, 0, stream>>>(
+      reinterpret_cast<const __half*>(q.data_ptr()),
+      reinterpret_cast<const KV*>(k_cache.data_ptr()),
+      reinterpret_cast<const KV*>(v_cache.data_ptr()), a.page_ptr,
+      seq_lens.data_ptr<int>(), a.max_splits, a.min_tokens, a.max_blocks,
+      a.scale_k, a.vscale, reinterpret_cast<__half*>(partial_o.data_ptr()),
+      partial_lse.data_ptr<float>());
+}
+
+template <int kCtas>
+inline void dispatch_serial(const DecodeArgs& a, cudaStream_t stream,
+                            const torch::Tensor& q,
+                            const torch::Tensor& k_cache,
+                            const torch::Tensor& v_cache,
+                            const torch::Tensor& seq_lens,
+                            torch::Tensor& partial_o,
+                            torch::Tensor& partial_lse) {
+  if (a.byte_cache) {
+    launch_serial<uint8_t, kCtas>(a, stream, q, k_cache, v_cache, seq_lens,
+                                  partial_o, partial_lse);
+  } else {
+    launch_serial<__half, kCtas>(a, stream, q, k_cache, v_cache, seq_lens,
+                                 partial_o, partial_lse);
+  }
+}
+
+// Dynamic smem above 48 KB needs the opt-in attribute set once per entry
+// point; V100 allows up to 96 KB with 1 KB reserved.
+template <typename KV>
+bool pipelined_smem_ready() {
+  static const bool ok = [] {
+    return cudaFuncSetAttribute(
+               reinterpret_cast<const void*>(
+                   &decode_partial_kernel_pipelined<KV>),
+               cudaFuncAttributeMaxDynamicSharedMemorySize,
+               kPipeDynSmemBytes) == cudaSuccess;
+  }();
+  return ok;
+}
+
+}  // namespace
+
 void sm70_longctx_decode(torch::Tensor q, torch::Tensor k_cache,
                          torch::Tensor v_cache, torch::Tensor page_table,
                          torch::Tensor seq_lens, int64_t max_splits,
                          int64_t min_tokens_per_split, double softmax_scale,
                          double k_scale, double v_scale,
-                         torch::Tensor partial_o,
-                         torch::Tensor partial_lse) {
+                         torch::Tensor partial_o, torch::Tensor partial_lse) {
+  c10::cuda::CUDAGuard guard(q.device());
+  const DecodeArgs a =
+      decode_args(q, k_cache, v_cache, page_table, max_splits,
+                  min_tokens_per_split, softmax_scale, k_scale, v_scale);
+  auto stream = at::cuda::getCurrentCUDAStream();
+  dispatch_serial<1>(a, stream, q, k_cache, v_cache, seq_lens, partial_o,
+                     partial_lse);
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+// Same kernel, two CTAs resident per SM: the hardware interleaves one CTA's
+// loads with the other's math, which is the occupancy version of the software
+// pipeline below.
+void sm70_longctx_decode_occ2(torch::Tensor q, torch::Tensor k_cache,
+                              torch::Tensor v_cache, torch::Tensor page_table,
+                              torch::Tensor seq_lens, int64_t max_splits,
+                              int64_t min_tokens_per_split,
+                              double softmax_scale, double k_scale,
+                              double v_scale, torch::Tensor partial_o,
+                              torch::Tensor partial_lse) {
+  c10::cuda::CUDAGuard guard(q.device());
+  const DecodeArgs a =
+      decode_args(q, k_cache, v_cache, page_table, max_splits,
+                  min_tokens_per_split, softmax_scale, k_scale, v_scale);
+  auto stream = at::cuda::getCurrentCUDAStream();
+  dispatch_serial<2>(a, stream, q, k_cache, v_cache, seq_lens, partial_o,
+                     partial_lse);
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+void sm70_longctx_decode_pipelined(
+    torch::Tensor q, torch::Tensor k_cache, torch::Tensor v_cache,
+    torch::Tensor page_table, torch::Tensor seq_lens, int64_t max_splits,
+    int64_t min_tokens_per_split, double softmax_scale, double k_scale,
+    double v_scale, torch::Tensor partial_o, torch::Tensor partial_lse) {
   using namespace sm70_longctx;
   c10::cuda::CUDAGuard guard(q.device());
   const int heads = q.size(1);
@@ -931,24 +1272,34 @@ void sm70_longctx_decode(torch::Tensor q, torch::Tensor k_cache,
   const int* page_ptr = page_table.numel() > 0 ? page_table.data_ptr<int>()
                                                : nullptr;
   const int max_blocks = page_table.numel() > 0 ? (int)page_table.size(1) : 0;
+  const float scale_k = (float)(softmax_scale * k_scale);
+  const float vscale = (float)v_scale;
   if (k_cache.scalar_type() == torch::kUInt8) {
-    decode_partial_kernel<<<grid, sm70_longctx::kThreads, 0, stream>>>(
-        reinterpret_cast<const __half*>(q.data_ptr()),
-        reinterpret_cast<const uint8_t*>(k_cache.data_ptr()),
-        reinterpret_cast<const uint8_t*>(v_cache.data_ptr()), page_ptr,
-        seq_lens.data_ptr<int>(), (int)max_splits, (int)min_tokens_per_split,
-        max_blocks, (float)(softmax_scale * k_scale), (float)v_scale,
-        reinterpret_cast<__half*>(partial_o.data_ptr()),
-        partial_lse.data_ptr<float>());
+    TORCH_CHECK(pipelined_smem_ready<uint8_t>(),
+                "cannot raise the dynamic smem limit for the pipelined "
+                "decode kernel");
+    decode_partial_kernel_pipelined<uint8_t>
+        <<<grid, kThreads, kPipeDynSmemBytes, stream>>>(
+            reinterpret_cast<const __half*>(q.data_ptr()),
+            reinterpret_cast<const uint8_t*>(k_cache.data_ptr()),
+            reinterpret_cast<const uint8_t*>(v_cache.data_ptr()), page_ptr,
+            seq_lens.data_ptr<int>(), (int)max_splits,
+            (int)min_tokens_per_split, max_blocks, scale_k, vscale,
+            reinterpret_cast<__half*>(partial_o.data_ptr()),
+            partial_lse.data_ptr<float>());
   } else {
-    decode_partial_kernel<<<grid, sm70_longctx::kThreads, 0, stream>>>(
-        reinterpret_cast<const __half*>(q.data_ptr()),
-        reinterpret_cast<const __half*>(k_cache.data_ptr()),
-        reinterpret_cast<const __half*>(v_cache.data_ptr()), page_ptr,
-        seq_lens.data_ptr<int>(), (int)max_splits, (int)min_tokens_per_split,
-        max_blocks, (float)(softmax_scale * k_scale), (float)v_scale,
-        reinterpret_cast<__half*>(partial_o.data_ptr()),
-        partial_lse.data_ptr<float>());
+    TORCH_CHECK(pipelined_smem_ready<__half>(),
+                "cannot raise the dynamic smem limit for the pipelined "
+                "decode kernel");
+    decode_partial_kernel_pipelined<__half>
+        <<<grid, kThreads, kPipeDynSmemBytes, stream>>>(
+            reinterpret_cast<const __half*>(q.data_ptr()),
+            reinterpret_cast<const __half*>(k_cache.data_ptr()),
+            reinterpret_cast<const __half*>(v_cache.data_ptr()), page_ptr,
+            seq_lens.data_ptr<int>(), (int)max_splits,
+            (int)min_tokens_per_split, max_blocks, scale_k, vscale,
+            reinterpret_cast<__half*>(partial_o.data_ptr()),
+            partial_lse.data_ptr<float>());
   }
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
@@ -1103,8 +1454,13 @@ void sm70_qsa_prefill(torch::Tensor q, torch::Tensor k_cache,
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+  m.def("sm70_longctx_decode_occ2", &sm70_longctx_decode_occ2,
+        "split-KV decode with two CTAs resident per SM");
   m.def("sm70_longctx_decode", &sm70_longctx_decode,
         "Long-context grouped decode partial (D256 G6 E5M2)");
+  m.def("sm70_longctx_decode_pipelined",
+        &sm70_longctx_decode_pipelined,
+        "double-buffered warp-specialized split-KV decode");
   m.def("sm70_qsa_decode", &sm70_qsa_decode,
         "QSA grouped split-KV decode (D256 G6 E5M2)");
   m.def("sm70_qsa_indexer_decode", &sm70_qsa_indexer_decode,
