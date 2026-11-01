@@ -108,13 +108,21 @@ on SM70; the `ple_sm70` component replaces it.
 
 `scripts/bench.py`, prompt 74 tokens, 128 output, temperature 0, three reps:
 
-| Config | Decode | accept len |
-|---|---|---|
-| no MTP | 44.05 tok/s | — |
-| MTP3/4 | **88.80 tok/s** | 3.12—3.20 |
+| Config | Decode | accept len | per step |
+|---|---|---|---|
+| no MTP | 44.05 tok/s | — | 22.7 ms |
+| MTP3/4 | **88.80 tok/s** | 3.12—3.20 | 35.2 ms |
 
-Per-step time is about 35.2 ms, versus 32.5 ms for the FP8 TP8/EP8 run at
-accept 3.48. The remaining throughput gap is acceptance, not kernel time.
+Compare against the FP8 TP8/EP8 run measured the same way, not against its
+default-sampling number. Greedy FP8 on 8 cards is 98.3—106.2 tok/s at accept
+3.48—3.70, which is 34.8—35.4 ms per step. Per-step time is at parity; the
+throughput difference tracks acceptance (3.12 against 3.48—3.70), not kernel
+time.
+
+The 73.9 tok/s / accept 2.83 row in
+`recipes/flash-next-fp8-v100-tp8ep8-mtp.md` is the default-sampling run. It is
+not comparable to this temperature-0 table, and mixing the two reads as a
+larger gap than exists.
 
 Memory: about 23 GiB resident per card; `--mem-fraction-static 0.85` leaves
 only 0.89 GiB free, so MTP runs at 0.82.
@@ -125,5 +133,6 @@ only 0.89 GiB free, so MTP runs at 0.82.
   log warns `device-loaded after serving started`.
 - The checkpoint's FP4 nibble order is validated only indirectly, by
   generation quality. No independent dequantization comparison exists yet.
-- Accept length is 3.12, below the FP8 run's 3.48. Cause not confirmed.
+- Accept length is 3.12, below the FP8 greedy run's 3.48—3.70. Cause not
+  confirmed.
 - Contexts above 4k are untested.
