@@ -7,6 +7,13 @@ with, so a wrong scale layout cancels out there; this file does not.
 The mechanism under test: the SM70 iterator rebuilds an fp16 scale from one
 byte with ``byte << 7``, so the encoder emits the high byte of
 ``fp16(scale * 2**7)`` -- equivalently ``fp16_bits(scale * 128) >> 7``.
+
+The constants below were derived from the implementation, so this file locks
+the current output against future edits rather than proving the layout. The
+``[0,2,1,3]`` pair order had no coverage at all before it; an error already
+inside the encoder would still pass. The real-checkpoint comparison against an
+independent dequantization is still open, and the PR test plan leaves that box
+unchecked.
 """
 
 from __future__ import annotations
