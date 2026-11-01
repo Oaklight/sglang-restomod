@@ -70,3 +70,36 @@ def test_dtype_is_preserved():
     probs = torch.softmax(torch.randn(2, 16), dim=-1).to(torch.float16)
     got = top_k_renorm_probs(probs, 3)
     assert got.dtype == torch.float16
+
+
+def test_top_p_returns_float32():
+    # FlashInfer's top_p_renorm_probs casts to float() before allocating its
+    # output, while top_k_renorm_probs uses empty_like. The replacement mirrors
+    # both, so a chained call keeps the dtype upstream would produce.
+    from sglang_restomod.spec.sm70_sampling import (
+        top_k_renorm_probs,
+        top_p_renorm_probs,
+    )
+
+    probs = torch.softmax(torch.randn(2, 16), dim=-1).to(torch.float16)
+    assert top_k_renorm_probs(probs, 3).dtype == torch.float16
+    assert top_p_renorm_probs(probs, 0.9).dtype == torch.float32
+
+
+def test_is_deterministic_breaks_ties_by_index():
+    from sglang_restomod.spec.sm70_sampling import (
+        top_k_renorm_probs,
+        top_p_renorm_probs,
+    )
+
+    # Four equal entries, keep two: a stable sort must keep the lower indices.
+    probs = torch.zeros(1, 4)
+    probs[0, 2] = 0.25
+    probs[0, 3] = 0.25
+    probs[0, 0] = 0.25
+    probs[0, 1] = 0.25
+    got = top_k_renorm_probs(probs, 2, is_deterministic=True)
+    assert got.tolist() == [[0.5, 0.5, 0.0, 0.0]]
+
+    got = top_p_renorm_probs(probs, 0.5, is_deterministic=True)
+    assert got.tolist() == [[0.5, 0.5, 0.0, 0.0]]
