@@ -35,6 +35,22 @@ SGLANG_RESTOMOD_COMPONENTS=fp8_moe,attention_v100
 不设置这个变量时插件保持惰性。patch 队列仍为空（`patches/manifest.json`），
 所以这一层不修改上游文件，全部通过插件入口生效。
 
+## 参考项目
+
+以下项目定义本层要复现的行为。只使用组件 `PROVENANCE.md` 中列出的代码，其余仅作参考。
+
+| 项目 | 用途 |
+|---|---|
+| [sgl-project/sglang](https://github.com/sgl-project/sglang) | 固定 pin 的上游引擎。 |
+| [heislera763/sglang-v100-plus](https://github.com/heislera763/sglang-v100-plus) | V100 基线，也是集成参考；本地快照为 `sglang-restomod-reference`。 |
+| [haohervchb/sglang-V100](https://github.com/haohervchb/sglang-V100) | 该谱系中最早的 Volta 移植。 |
+| [dg1kjd/sglang-sxm2](https://github.com/dg1kjd/sglang-sxm2) | `attention_v100` backend 与长上下文 decode kernel。 |
+| [heislera763/flash-attention-v100](https://github.com/heislera763/flash-attention-v100) | `attention_v100` 使用的 dense prefill attention。 |
+| [zhinianqin/marlin_v100](https://github.com/zhinianqin/marlin_v100) | block-FP8 与 NVFP4 expert GEMM 的 SM70 Marlin 内核。 |
+| [1CatAI/1Cat-vLLM](https://github.com/1CatAI/1Cat-vLLM) | FP8 expert GEMM 的接口约定，以及本仓库对标的 Flash-Next 公开数字。 |
+| TurboMind（[LMDeploy](https://github.com/InternLM/lmdeploy)） | `fp8_moe` 绑定的预编译 SM70 block-FP8 expert GEMM。 |
+| [NVIDIA/cutlass](https://github.com/NVIDIA/cutlass) | SM70 Marlin 扩展的构建依赖（v4.2.1）。 |
+
 ## 快速开始
 
 ```bash

@@ -31,6 +31,9 @@ def register() -> None:
 
     loaded = load_enabled()
     if loaded:
+        from .overrides import install as install_overrides
+
+        install_overrides()
         logger.info("sglang-restomod plugin loaded (components: %s)", ", ".join(loaded))
     else:
         logger.info("sglang-restomod plugin loaded (no components selected)")

@@ -37,6 +37,23 @@ With the variable unset the plugin stays inert. The patch queue is still empty
 (`patches/manifest.json`), so nothing here edits upstream files; it all arrives
 through the plugin entry point.
 
+## Reference projects
+
+These projects define the behaviour this layer reproduces. Only the code named
+in a component's `PROVENANCE.md` is used; the rest is reference material.
+
+| Project | Used for |
+|---|---|
+| [sgl-project/sglang](https://github.com/sgl-project/sglang) | Upstream engine at the pin. |
+| [heislera763/sglang-v100-plus](https://github.com/heislera763/sglang-v100-plus) | V100 baseline and integration reference; local snapshot at `sglang-restomod-reference`. |
+| [haohervchb/sglang-V100](https://github.com/haohervchb/sglang-V100) | Original Volta port in that lineage. |
+| [dg1kjd/sglang-sxm2](https://github.com/dg1kjd/sglang-sxm2) | `attention_v100` backend and the long-context decode kernel. |
+| [heislera763/flash-attention-v100](https://github.com/heislera763/flash-attention-v100) | Dense prefill attention used by `attention_v100`. |
+| [zhinianqin/marlin_v100](https://github.com/zhinianqin/marlin_v100) | SM70 Marlin kernels for block-FP8 and NVFP4 expert GEMM. |
+| [1CatAI/1Cat-vLLM](https://github.com/1CatAI/1Cat-vLLM) | FP8 expert GEMM contract, and the published Flash-Next number this repo compares against. |
+| TurboMind ([LMDeploy](https://github.com/InternLM/lmdeploy)) | Prebuilt SM70 block-FP8 expert GEMM bound by `fp8_moe`. |
+| [NVIDIA/cutlass](https://github.com/NVIDIA/cutlass) | Build dependency of the SM70 Marlin extension (v4.2.1). |
+
 ## Quick start
 
 ```bash

@@ -41,10 +41,25 @@ COMPONENTS: dict[str, Component] = {
         module="sglang_restomod.quant.sm70_fp8_moe",
         description="Block-FP8 expert GEMM bound from the prebuilt TurboMind library",
     ),
+    "fp8_dense": Component(
+        name="fp8_dense",
+        module="sglang_restomod.quant.sm70_fp8_dense",
+        description="SM70 W8A16 dense FP8 linear kernels for the pinned engine",
+    ),
     "attention_v100": Component(
         name="attention_v100",
         module="sglang_restomod.attention.v100",
         description="V100 full-attention backend and its CUDA graph metadata hooks",
+    ),
+    "fp4_moe": Component(
+        name="fp4_moe",
+        module="sglang_restomod.quant.sm70_fp4_moe",
+        description="SM70 NVFP4 expert GEMM through the marlin_v100 extension",
+    ),
+    "ple_sm70": Component(
+        name="ple_sm70",
+        module="sglang_restomod.models.ple_sm70",
+        description="SM70 decode for the fp8 PLE host-embedding gather kernel",
     ),
 }
 
