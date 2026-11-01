@@ -7,7 +7,7 @@
 | Topology | TP4, `--ep-size 1` |
 | Context | 4,096 |
 | Engine | upstream `v0.5.22 @ baa9befa` + `sglang_restomod` |
-| Components | `attention_v100`, `fp4_moe`, `ple_sm70` |
+| Components | `attention_v100`, `fp4_moe`, `ple_sm70`, `spec_sm70` |
 | External | `marlin_v100` extension (`SM70_MARLIN_DIR`) |
 | Date | 2026-11-01 |
 
@@ -51,6 +51,7 @@ rank's weights by global expert id, and EP marks remote routes with -1. Use
 --max-running-requests 1 --chunked-prefill-size 4096
 --speculative-algorithm NEXTN
 --speculative-num-steps 3 --speculative-eagle-topk 1 --speculative-num-draft-tokens 4
+--speculative-use-rejection-sampling
 --cuda-graph-backend-prefill=disabled
 ```
 
@@ -66,20 +67,38 @@ Greedy requests (temperature 0, top-k 1) never reach that kernel, so a
 temperature-0 benchmark passes while a default-sampling request crashes the
 server.
 
-**MTP with non-greedy sampling still fails.** The flag is necessary but not
-sufficient: the EAGLE verify path calls FlashInfer directly, regardless of the
-sampling backend:
+**MTP with non-greedy sampling needs two changes.** The sampling backend flag is
+necessary but not sufficient.
 
-```
-eagle_worker_v2.py:1908 verify
-eagle_worker_common.py:698 run_eagle_verify
-eagle_utils.py:984 eagle_sample -> top_k_renorm_prob
-flashinfer/sampling.py:2095 -> get_sampling_module
-RuntimeError: FlashInfer requires GPUs with sm75 or higher.
-```
+1. The EAGLE verify path calls FlashInfer directly, regardless of
+   `--sampling-backend`:
 
-So the measured MTP numbers are temperature 0. Serving MTP with sampling needs
-a non-FlashInfer `top_k_renorm_prob` on SM70; that is not implemented yet.
+   ```
+   eagle_worker_v2.py:1908 verify
+   eagle_worker_common.py:698 run_eagle_verify
+   eagle_utils.py:984 eagle_sample -> top_k_renorm_prob
+   flashinfer/sampling.py:2095 -> get_sampling_module
+   RuntimeError: FlashInfer requires GPUs with sm75 or higher.
+   ```
+
+   The `spec_sm70` component replaces `top_k_renorm_probs` and
+   `top_p_renorm_probs` with torch implementations on SM70.
+
+2. With that fixed, the next call is the tree sampler, whose JIT build fails
+   against this image's CCCL:
+
+   ```
+   flashinfer/data/include/flashinfer/sampling.cuh(40): error:
+   namespace "cuda" has no member "maximum"
+   ```
+
+   Launch with `--speculative-use-rejection-sampling`. That selects the Triton
+   chain sampler (`chain_speculative_sampling_triton`) instead of the JIT tree
+   sampler. With `--speculative-eagle-topk 1` the tree is a chain, so this is
+   the natural equivalent.
+
+Non-greedy measurement (temperature 1, top-p 0.95, top-k 20, 128 output):
+100.89 / 103.91 / 78.24 tok/s, accept len 3.27—3.83.
 
 `--ple-offload-embedding` is required: the n-gram table does not fit on four
 cards. The offloaded table is fp8, and the pinned gather kernel cannot compile
