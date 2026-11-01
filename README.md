@@ -22,12 +22,16 @@ tests. The repository is not a fork of SGLang or of any V100 project.
 
 ## Status
 
-Two components ship, both opt-in via `SGLANG_RESTOMOD_COMPONENTS`:
+Six components ship, all opt-in via `SGLANG_RESTOMOD_COMPONENTS`:
 
 | component | what it does |
 |---|---|
 | `fp8_moe` | block-FP8 expert GEMM on sm70. The TurboMind library SGLang ships for SM70 exports `fp8_moe_gemm_sm70_out` but never registers it with torch; this resolves the symbol with a small `dlopen`/`dlsym` shim and exposes a typed surface. This is what makes the official block-FP8 MoE checkpoints runnable on V100. |
+| `fp8_dense` | SM70 W8A16 dense FP8 linear kernels for the pinned engine. |
 | `attention_v100` | implements `init_forward_metadata_out_graph` on the V100 attention backend, which the graph runner calls and the base class leaves as a no-op. Without it a decode CUDA graph cannot capture. |
+| `fp4_moe` | NVFP4 expert GEMM through the `marlin_v100` extension: load-time repack, SM70 scale encoding, and the GEMM bridge. The Marlin kernel SGLang ships is an empty body below SM80. |
+| `ple_sm70` | SM70 decode for the fp8 PLE host-embedding gather, which the pinned kernel cannot compile because it casts to `tl.float8e4nv`. |
+| `spec_sm70` | top-k/top-p renorm replacements so non-greedy EAGLE verify does not reach FlashInfer's sm75 floor. |
 
 ```bash
 SGLANG_RESTOMOD_COMPONENTS=fp8_moe,attention_v100
@@ -53,6 +57,35 @@ in a component's `PROVENANCE.md` is used; the rest is reference material.
 | [1CatAI/1Cat-vLLM](https://github.com/1CatAI/1Cat-vLLM) | FP8 expert GEMM contract, and the published Flash-Next number this repo compares against. |
 | TurboMind ([LMDeploy](https://github.com/InternLM/lmdeploy)) | Prebuilt SM70 block-FP8 expert GEMM bound by `fp8_moe`. |
 | [NVIDIA/cutlass](https://github.com/NVIDIA/cutlass) | Build dependency of the SM70 Marlin extension (v4.2.1). |
+
+## Performance
+
+Qwen3.8-Flash-Next on V100-SXM2-32GB, one node, decode throughput in tok/s at
+128 output tokens from `scripts/bench.py`. A row is only meaningful with its
+precision, card count, and sampling mode; nothing here is comparable across
+those axes.
+
+| Precision | Cards | Parallel | MTP | Sampling | Prompt | Decode | Source |
+|---|---|---|---|---|---|---|---|
+| FP8 | 8 | TP8 / EP8 | off | default | 76 | 40.0 | `recipes/flash-next-fp8-v100-tp8ep8-mtp.md` |
+| FP8 | 8 | TP8 / EP8 | 3/4 | temp 1, top-p 0.95, top-k 20 | 74 | 73.9 | `recipes/flash-next-fp8-v100-tp8ep8-mtp.md` |
+| FP8 | 8 | TP8 / EP8 | 3/4 | temperature 0 | 74 | 98.3—106.2 | `task.md` |
+| NVFP4 | 4 | TP4, no EP | 3/4 | temperature 0 | 993 | 87.27 / 87.24 | receipt `evidence-6294562-nvfp4` |
+| NVFP4 | 4 | TP4, no EP | 3/4 | temperature 0 | 3473 | 72.43 / 90.68 | receipt `evidence-6294562-nvfp4` |
+| NVFP4 | 4 | TP4, no EP | 3/4 | temp 1, top-p 0.95, top-k 20 | 74 | 81.83 / 88.06 | receipt `evidence-6294562-nvfp4` |
+
+How to read it:
+
+- Decode throughput is `accepted tokens per step / step time`. A greedy row and
+  a sampled row differ in acceptance, so they must not be compared.
+- Rows from different days differ by host load as much as by code. The same
+  commit measured 87.27 tok/s and 70.32 tok/s an hour apart on the same box,
+  with prefill at 3.6k and 1.4k tok/s. The back-to-back A/B behind that spread
+  is in pull request #96.
+- FP8 rows use 8 cards, NVFP4 rows use 4. Per-card throughput is the
+  comparable quantity, not the row total.
+- Update this table when a new signed receipt lands, and only with numbers that
+  cite a receipt or a recipe. A row without a citation does not belong here.
 
 ## Quick start
 
