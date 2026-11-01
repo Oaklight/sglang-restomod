@@ -54,8 +54,8 @@ rank's weights by global expert id, and EP marks remote routes with -1. Use
 --cuda-graph-backend-prefill=disabled
 ```
 
-`--sampling-backend pytorch` is required. The default FlashInfer sampling
-backend refuses to JIT below sm75:
+`--sampling-backend pytorch` is required for non-greedy requests. The default
+FlashInfer sampling backend refuses to JIT below sm75:
 
 ```
 RuntimeError: FlashInfer requires GPUs with sm75 or higher.
@@ -65,6 +65,21 @@ Detected TARGET_CUDA_ARCHS=[(7, '0')].
 Greedy requests (temperature 0, top-k 1) never reach that kernel, so a
 temperature-0 benchmark passes while a default-sampling request crashes the
 server.
+
+**MTP with non-greedy sampling still fails.** The flag is necessary but not
+sufficient: the EAGLE verify path calls FlashInfer directly, regardless of the
+sampling backend:
+
+```
+eagle_worker_v2.py:1908 verify
+eagle_worker_common.py:698 run_eagle_verify
+eagle_utils.py:984 eagle_sample -> top_k_renorm_prob
+flashinfer/sampling.py:2095 -> get_sampling_module
+RuntimeError: FlashInfer requires GPUs with sm75 or higher.
+```
+
+So the measured MTP numbers are temperature 0. Serving MTP with sampling needs
+a non-FlashInfer `top_k_renorm_prob` on SM70; that is not implemented yet.
 
 `--ple-offload-embedding` is required: the n-gram table does not fit on four
 cards. The offloaded table is fp8, and the pinned gather kernel cannot compile

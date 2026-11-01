@@ -52,6 +52,10 @@ FP8 8 卡 + MTP 是 73.9 tok/s（accept len 2.83）。
 6. **必须加 `--sampling-backend pytorch`。** 默认 FlashInfer 采样在 sm70 上直接
    抛 `FlashInfer requires GPUs with sm75 or higher`，服务会崩。temp 0 / top-k 1
    的请求不会走到那个内核，所以只用贪心请求测不出这个问题。
+7. **MTP + 非贪心采样仍然会崩。** EAGLE verify 直接调用 FlashInfer 的
+   `top_k_renorm_prob`（`eagle_utils.py:984`），与 `--sampling-backend` 无关。
+   所以 88.8 tok/s 是 temp 0 的数字。要支持带温度的 MTP，需要在 SM70 上提供
+   非 FlashInfer 的 `top_k_renorm_prob`。
 
 ## 启动命令
 
