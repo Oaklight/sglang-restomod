@@ -113,22 +113,31 @@ on SM70; the `ple_sm70` component replaces it.
 
 ## Measured
 
-`scripts/bench.py`, prompt 74 tokens, 128 output, temperature 0, three reps:
+4× V100-SXM2, TP4 on one NVLink island (0-3), `--ple-offload-embedding`,
+`--mem-fraction-static 0.82`, MTP3/4. `scripts/bench.py`, 128 output tokens,
+two reps each. These are the runs the signed receipt
+`evidence-6294562-nvfp4` covers:
 
-| Config | Decode | accept len | per step |
-|---|---|---|---|
-| no MTP | 44.05 tok/s | — | 22.7 ms |
-| MTP3/4 | **88.80 tok/s** | 3.12—3.20 | 35.2 ms |
+| Sampling | Prompt tokens | Decode |
+|---|---|---|
+| temperature 0 | 993 | 87.27 / 87.24 tok/s |
+| temperature 0 | 3473 | 72.43 / 90.68 tok/s |
+| temp 1, top-p 0.95, top-k 20 | 74 | 81.83 / 88.06 tok/s |
 
-Compare against the FP8 TP8/EP8 run measured the same way, not against its
-default-sampling number. Greedy FP8 on 8 cards is 98.3—106.2 tok/s at accept
-3.48—3.70, which is 34.8—35.4 ms per step. Per-step time is at parity; the
-throughput difference tracks acceptance (3.12 against 3.48—3.70), not kernel
-time.
+Accept length comes from the server log, not from `bench.py`: 3.12—3.20 on the
+greedy runs, 3.27—3.83 on the sampled ones.
+
+Two earlier figures are **not** in the receipt and must not be quoted as if
+they were: 44.05 tok/s with MTP off, and 88.80 tok/s at a 74-token prompt.
+
+Compare against FP8 TP8/EP8 at the same sampling mode. Greedy FP8 on 8 cards is
+98.3—106.2 tok/s at accept 3.48—3.70, which is 34.8—35.4 ms per step. NVFP4
+greedy is about 35.2 ms per step. Per-step time is at parity; the throughput
+difference tracks acceptance, not kernel time.
 
 The 73.9 tok/s / accept 2.83 row in
 `recipes/flash-next-fp8-v100-tp8ep8-mtp.md` is the default-sampling run. It is
-not comparable to this temperature-0 table, and mixing the two reads as a
+not comparable to these temperature-0 numbers, and mixing the two reads as a
 larger gap than exists.
 
 Memory: about 23 GiB resident per card; `--mem-fraction-static 0.85` leaves
