@@ -61,6 +61,11 @@ COMPONENTS: dict[str, Component] = {
         module="sglang_restomod.models.ple_sm70",
         description="SM70 decode for the fp8 PLE host-embedding gather kernel",
     ),
+    "spec_sm70": Component(
+        name="spec_sm70",
+        module="sglang_restomod.spec.sm70_sampling",
+        description="SM70 top-k/top-p renorm kernels for non-greedy EAGLE verify",
+    ),
 }
 
 
