@@ -97,6 +97,13 @@ necessary but not sufficient.
    sampler. With `--speculative-eagle-topk 1` the tree is a chain, so this is
    the natural equivalent.
 
+   The flag is also load-bearing for a second reason. The tree sampler
+   (`tree_speculative_sampling_target_only`) validates `target_probs` as
+   float32; the chain sampler reads whatever dtype it is given. Before
+   `sm70_sampling` mirrored FlashInfer's per-function dtypes, a chained
+   `top_k` -> `top_p` could hand it fp16. Both are fp32 now, but the chain
+   sampler is still the path that was measured.
+
 Non-greedy measurement (temperature 1, top-p 0.95, top-k 20, 128 output):
 100.89 / 103.91 / 78.24 tok/s, accept len 3.27—3.83.
 
