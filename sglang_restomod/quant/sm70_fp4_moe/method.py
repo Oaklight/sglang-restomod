@@ -83,8 +83,9 @@ def _repack_experts(weight: torch.Tensor) -> torch.Tensor:
 def _ep_size() -> int | None:
     """The launch's expert-parallel width, or None when it is not readable.
 
-    ``runtime_context`` raises on a field read before the parallel context is
-    published, which is the normal state during an early import.
+    ``moe_ep_size`` is a ``ParallelContext`` field that is absent until the
+    parallel context is published; before that the read fails with
+    ``AttributeError`` and the check is skipped.
     """
     try:
         from sglang.srt.runtime_context import get_parallel
@@ -367,9 +368,13 @@ def install() -> bool:
     from . import sum_reduce
 
     if sum_reduce.available() and not _install_sum_reduce():
-        raise RuntimeError(
+        # Not raised: ``register()`` runs under ``except Exception`` in
+        # ``sglang.srt.plugins``, so a raise would only be logged. The runner
+        # resolves the absent op at the first expert layer and fails there,
+        # which is the loud outcome this needs.
+        logger.error(
             "SM70 NVFP4 MoE: sgl_kernel exports no moe_sum_reduce and the "
-            "replacement could not be bound; the Marlin runner would fail on "
+            "replacement could not be bound; the Marlin runner will fail at "
             "the first expert layer"
         )
 
@@ -390,12 +395,22 @@ def install() -> bool:
     }
     missing = sorted(name for name, bound in required.items() if not bound)
     if missing:
-        # A hook that did not bind leaves the empty SM80 kernel in the path.
-        raise RuntimeError(
-            "SM70 NVFP4 MoE: hook(s) did not bind: "
-            + ", ".join(missing)
-            + ". The pin moved; update sglang_restomod/quant/sm70_fp4_moe/method.py."
-        )
+        # Same reasoning as the missing-extension branch: ``register()`` runs
+        # under ``except Exception`` in ``sglang.srt.plugins``, so raising here
+        # would only be logged. Refuse at weight-load time on whichever
+        # prepare hook still exists.
+        names = ", ".join(missing)
+
+        def _refuse_binding(*_args, **_kwargs):
+            raise RuntimeError(
+                f"SM70 NVFP4 MoE: hook(s) did not bind: {names}. The pin moved; "
+                "update sglang_restomod/quant/sm70_fp4_moe/method.py."
+            )
+
+        for module in (marlin_utils_fp4, modelopt_quant):
+            _patch(module, "prepare_moe_nvfp4_layer_for_marlin", _refuse_binding)
+        logger.error("SM70 NVFP4 MoE: hook(s) did not bind: %s", names)
+        return False
     try:
         from sglang.srt.layers.moe.fused_moe_triton import fused_marlin_moe
 
