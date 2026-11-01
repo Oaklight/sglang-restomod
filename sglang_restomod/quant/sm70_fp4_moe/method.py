@@ -41,7 +41,18 @@ def _is_sm70() -> bool:
 
 
 def _repack_experts(weight: torch.Tensor) -> torch.Tensor:
-    """Packed NVFP4 ``[E, N, K/2]`` uint8 -> Marlin ``[E, K/16, N*2]`` int32."""
+    """Packed NVFP4 ``[E, N, K/2]`` uint8 -> Marlin ``[E, K/16, N*2]`` int32.
+
+    ``sglang-v100-plus`` pads a narrow shard before repacking
+    (``pad_nvfp4_expert_width``). That helps its eight-way expert sharding,
+    where ``inter`` is 80 per rank: ``w13``'s ``N`` becomes 160 and ``w2``'s
+    ``K`` 80, and the gate/up halves grow 80 -> 96. Neither number is a
+    multiple of 64, so this component does not cover that profile.
+
+    The four-card profile it does ship is ``moe_intermediate_size=640`` over
+    ``TP=4``, i.e. ``inter=160`` per rank: ``w13`` is ``N=320 K=2560`` and
+    ``w2`` is ``N=2560 K=160``. Both satisfy the gate, so no padding is needed.
+    """
     ops = ensure_loaded()
     experts, size_n, packed_k = (int(d) for d in weight.shape)
     size_k = packed_k * 2
@@ -208,12 +219,25 @@ _INSTALLED = False
 _ORIGINALS: dict[str, object] = {}
 
 
-def _patch(module, name: str, replacement) -> None:
+def _patch(module, name: str, replacement) -> bool:
+    """Replace ``module.name``; False when the symbol is not there to replace.
+
+    A missing symbol is not a no-op on this component: the pinned Marlin kernel
+    is an empty body below SM80, so a hook that fails to bind leaves routed
+    experts contributing zeros while the server keeps serving. The caller turns
+    False into a startup failure.
+    """
     original = getattr(module, name, None)
     if original is None:
-        return
+        logger.warning(
+            "SM70 NVFP4 MoE: %s.%s not found; the hook did not bind",
+            module.__name__,
+            name,
+        )
+        return False
     _ORIGINALS[f"{module.__name__}.{name}"] = original
     setattr(module, name, replacement)
+    return True
 
 
 def _install_sum_reduce() -> bool:
@@ -292,15 +316,38 @@ def install() -> bool:
             f"Set {ENV_DIR}, or set {ENV_MODE}=off to disable the layer."
         )
 
-    _install_sum_reduce()
+    from . import sum_reduce
+
+    if sum_reduce.available() and not _install_sum_reduce():
+        raise RuntimeError(
+            "SM70 NVFP4 MoE: sgl_kernel exports no moe_sum_reduce and the "
+            "replacement could not be bound; the Marlin runner would fail on "
+            "the first expert layer"
+        )
 
     from sglang.kernels.ops.moe import moe_wna16_marlin
     from sglang.srt.layers.quantization import marlin_utils_fp4, modelopt_quant
 
-    _patch(marlin_utils_fp4, "prepare_moe_nvfp4_layer_for_marlin", prepare_moe_nvfp4)
-    # modelopt_quant imported the name at module load.
-    _patch(modelopt_quant, "prepare_moe_nvfp4_layer_for_marlin", prepare_moe_nvfp4)
-    _patch(moe_wna16_marlin, "moe_wna16_marlin_gemm", moe_wna16_marlin_gemm)
+    required = {
+        "marlin_utils_fp4.prepare_moe_nvfp4_layer_for_marlin": _patch(
+            marlin_utils_fp4, "prepare_moe_nvfp4_layer_for_marlin", prepare_moe_nvfp4
+        ),
+        # modelopt_quant imported the name at module load.
+        "modelopt_quant.prepare_moe_nvfp4_layer_for_marlin": _patch(
+            modelopt_quant, "prepare_moe_nvfp4_layer_for_marlin", prepare_moe_nvfp4
+        ),
+        "moe_wna16_marlin.moe_wna16_marlin_gemm": _patch(
+            moe_wna16_marlin, "moe_wna16_marlin_gemm", moe_wna16_marlin_gemm
+        ),
+    }
+    missing = sorted(name for name, bound in required.items() if not bound)
+    if missing:
+        # A hook that did not bind leaves the empty SM80 kernel in the path.
+        raise RuntimeError(
+            "SM70 NVFP4 MoE: hook(s) did not bind: "
+            + ", ".join(missing)
+            + ". The pin moved; update sglang_restomod/quant/sm70_fp4_moe/method.py."
+        )
     try:
         from sglang.srt.layers.moe.fused_moe_triton import fused_marlin_moe
 
