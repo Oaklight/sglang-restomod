@@ -81,6 +81,11 @@ def prepare_moe_nvfp4(layer, group_size: int | None = None) -> None:
     ensure_loaded()  # fail before touching the parameters
 
     device = layer.w13_weight.device
+    # The SM70 entry point ignores ``workspace`` (``(void)workspace`` in
+    # marlin_v100's ``moe/marlin_moe_wna16/ops.cu``), so this is a
+    # compatibility tensor, not a lock array. The size follows upstream
+    # Marlin's own cap in ``fused_marlin_moe.py`` (``min(max_workspace_size,
+    # sms * 4)``) so the attribute stays valid if a non-SM70 path reads it.
     layer.workspace = torch.zeros(
         torch.cuda.get_device_properties(device).multi_processor_count * 4,
         device=device,
@@ -110,12 +115,15 @@ def prepare_moe_nvfp4(layer, group_size: int | None = None) -> None:
         copy_or_rebind_param(layer, prefix + "_weight_scale", encoded)
         copy_or_rebind_param(layer, prefix + "_weight_scale_2", global_scales)
 
-        # ModelOpt allocates a swizzled copy for other backends. Marlin reads
-        # only weight_scale; keep the unused attribute as an alias so the
-        # second allocation is released.
+        # ModelOpt allocates a swizzled copy for the TRT-LLM backend. Marlin
+        # reads only weight_scale, and that attribute now holds encoded Q0.7
+        # bytes rather than blockscales, so aliasing it here would hand a
+        # reader plausible garbage. Set it to None, as upstream does wherever
+        # the backend does not read it (``modelopt_quant.py``), and let the
+        # allocation go.
         swizzled = prefix + "_blockscale_swizzled"
         if hasattr(layer, swizzled):
-            setattr(layer, swizzled, getattr(layer, prefix + "_weight_scale"))
+            setattr(layer, swizzled, None)
 
 
 def moe_wna16_marlin_gemm(
@@ -154,7 +162,14 @@ def moe_wna16_marlin_gemm(
     * it takes the scalar-type id, not the ``ScalarType`` object and ``is_ep``;
     * it takes three launch hints, which the SM70 kernel ignores.
     """
-    del is_ep
+    if is_ep:
+        # ``is_ep`` is ``expert_map is not None``. The SM70 kernel indexes this
+        # rank's weights by global expert id, so an EP launch would read the
+        # wrong expert without either layer noticing. Fail at startup instead.
+        raise RuntimeError(
+            "SM70 NVFP4 Marlin does not support expert parallelism; "
+            "launch with --ep-size 1"
+        )
     op = ensure_loaded().gemm
     return op(
         a,
@@ -208,6 +223,12 @@ def _install_sum_reduce() -> bool:
     attribute on ``sgl_kernel`` alone misses the bindings made at import time.
     Every already-imported module that still points at the original function is
     rewritten as well.
+
+    The sweep only covers modules imported before this runs. Anything imported
+    later binds whatever ``sgl_kernel`` exposes at that point, which is the
+    replacement. ``torch.ops.sgl_kernel.moe_sum_reduce`` is deliberately left
+    alone: the Marlin runner resolves the Python function, so patching that is
+    enough, but a direct operator-namespace call would still raise.
     """
     import sys
 
@@ -221,14 +242,27 @@ def _install_sum_reduce() -> bool:
     except ImportError:
         return False
 
-    original = sgl_moe.moe_sum_reduce
+    original = getattr(sgl_moe, "moe_sum_reduce", None)
+    if original is None:
+        # ``available()`` probes the operator namespace; this reads the Python
+        # wrapper. A build with one but not the other is not ours to patch, so
+        # leave it alone rather than raising out of install().
+        return False
+
     replacement = sum_reduce.moe_sum_reduce
     sgl_kernel.moe_sum_reduce = replacement
     sgl_moe.moe_sum_reduce = replacement
     for module in list(sys.modules.values()):
         if module is None:
             continue
-        if getattr(module, "moe_sum_reduce", None) is original:
+        # A module that is mid-import can raise anything from __getattr__, and
+        # a raise here would leave the server with no moe_sum_reduce at all --
+        # exactly the failure this function exists to prevent.
+        try:
+            bound = getattr(module, "moe_sum_reduce", None)
+        except Exception:  # noqa: BLE001 - partial modules raise arbitrary errors
+            continue
+        if bound is original:
             setattr(module, "moe_sum_reduce", replacement)
     logger.info("SM70 NVFP4 MoE: replaced missing sgl_kernel.moe_sum_reduce")
     return True
@@ -248,13 +282,15 @@ def install() -> bool:
         if mode == "on":
             raise RuntimeError(f"{ENV_MODE}=on requires an SM70 device")
         return False
-    if mode == "auto" and not available():
-        logger.warning(
-            "SM70 NVFP4 MoE: %s does not hold a usable marlin_v100 build; "
-            "leaving upstream Marlin in place",
-            os.environ.get(ENV_DIR, "<unset>"),
+    if not available():
+        # Falling back to upstream is not an option on SM70: its Marlin kernel
+        # is an empty body below SM80, so every routed expert contributes
+        # zeros and the model serves fluent, wrong text without an error.
+        raise RuntimeError(
+            f"{ENV_MODE}={mode} needs a loadable marlin_v100 build on SM70; "
+            f"{os.environ.get(ENV_DIR, '<unset>')} does not hold one. "
+            f"Set {ENV_DIR}, or set {ENV_MODE}=off to disable the layer."
         )
-        return False
 
     _install_sum_reduce()
 
