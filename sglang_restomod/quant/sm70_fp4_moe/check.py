@@ -6,10 +6,18 @@ reference:
 
     python -m sglang_restomod.quant.sm70_fp4_moe.check
 
+Both expert sets are exercised: ``w13`` at ``[E, 2*inter, hidden]`` and ``w2``
+at ``[E, hidden, inter]``. They land on different ``N`` and ``K``, which is
+where the ``N % 64`` and ``K % 16`` gates diverge, and a wrong ``w2`` layout
+would otherwise be hidden behind a zero weight.
+
 The packing assumption is the GPTQ one: byte ``j`` along K holds ``k=2j`` in
 the low nibble and ``k=2j+1`` in the high nibble. A real checkpoint is checked
 by serving a model; this test pins the kernel, the repack, and the scale
-encoding against each other.
+encoding against each other. It cannot see the checkpoint-to-check conventions
+(nibble pairing, the ``[E, N, K/16]`` orientation), because ``_quantize`` and
+``_dequant`` agree with themselves by construction; ``tests/test_sm70_fp4_scales.py``
+pins the byte encoder separately on CPU.
 """
 
 from __future__ import annotations
@@ -54,6 +62,12 @@ def _dequant(packed, scales):
     return (values.to(torch.float16) * scale).contiguous()
 
 
+def _relative_error(got: torch.Tensor, ref: torch.Tensor) -> float:
+    diff = (got.float() - ref.float()).abs()
+    denom = ref.float().abs().clamp_min(1e-3)
+    return float((diff / denom).max())
+
+
 def run() -> float:
     """Return the max relative error of the kernel against the reference."""
     from sgl_kernel.scalar_type import scalar_types
@@ -63,18 +77,27 @@ def run() -> float:
 
     torch.manual_seed(0)
     device = "cuda"
-    experts, n, k = 4, 128, 256
-    hidden = k
-    inter = 128
+    experts = 4
+    # w13 is [E, 2*inter, hidden]; w2 is [E, hidden, inter]. The two land on
+    # different N (256 against 256 here, but by different routes) and on
+    # different K (256 against 128).
+    inter, hidden = 128, 256
     tokens, block = 8, 8
 
-    packed, scales, dense = [], [], []
+    packed13, scales13, dense13 = [], [], []
+    packed2, scales2, dense2 = [], [], []
     for _ in range(experts):
-        w = torch.randn(n, k, device=device, dtype=torch.float16)
-        p, s, _ = _quantize(w)
-        packed.append(p)
-        scales.append(s)
-        dense.append(_dequant(p, s))
+        w13 = torch.randn(2 * inter, hidden, device=device, dtype=torch.float16)
+        p, s, _ = _quantize(w13)
+        packed13.append(p)
+        scales13.append(s)
+        dense13.append(_dequant(p, s))
+
+        w2 = torch.randn(hidden, inter, device=device, dtype=torch.float16)
+        p, s, _ = _quantize(w2)
+        packed2.append(p)
+        scales2.append(s)
+        dense2.append(_dequant(p, s))
 
     layer = SimpleNamespace(
         params_dtype=torch.float16,
@@ -83,59 +106,80 @@ def run() -> float:
         w13_bias=None,
         w2_bias=None,
         # Checkpoint layout: [E, N, K/2] uint8 and [E, N, K/16] e4m3.
-        w13_weight=torch.stack(packed),
-        w13_weight_scale=torch.stack(scales),
+        w13_weight=torch.stack(packed13),
+        w13_weight_scale=torch.stack(scales13),
         w13_weight_scale_2=torch.ones(experts, device=device),
-        w2_weight=torch.zeros(experts, hidden, inter // 2, dtype=torch.uint8, device=device),
-        w2_weight_scale=torch.zeros(
-            experts, hidden, inter // 16, dtype=torch.float8_e4m3fn, device=device
-        ),
+        w2_weight=torch.stack(packed2),
+        w2_weight_scale=torch.stack(scales2),
         w2_weight_scale_2=torch.ones(experts, device=device),
     )
     prepare_moe_nvfp4(layer)
 
-    x = torch.randn(tokens, k, device=device, dtype=torch.float16)
     sorted_ids = torch.arange(tokens, dtype=torch.int32, device=device)
     expert_ids = torch.zeros(1, dtype=torch.int32, device=device)
     padded = torch.tensor([tokens], dtype=torch.int32, device=device)
     topk_weights = torch.ones(tokens, 1, device=device)
+    op = ensure_loaded().gemm
 
-    out = torch.empty(tokens, n, dtype=torch.float16, device=device)
-    ensure_loaded().gemm(
-        x,
-        out,
+    def gemm(x, weight, scale, scale_2, size_n, size_k):
+        out = torch.empty(tokens, size_n, dtype=torch.float16, device=device)
+        op(
+            x,
+            out,
+            weight,
+            None,
+            scale,
+            None,
+            scale_2,
+            None,
+            None,
+            None,
+            torch.empty(0, dtype=torch.int32, device=device),
+            sorted_ids,
+            expert_ids,
+            padded,
+            topk_weights,
+            block,
+            1,
+            False,
+            scalar_types.float4_e2m1f.id,
+            tokens,
+            size_n,
+            size_k,
+            True,
+            False,
+            False,
+            False,
+            -1,
+            -1,
+            -1,
+        )
+        return out
+
+    # Expert 0 only: every expert runs the same code path.
+    x13 = torch.randn(tokens, hidden, device=device, dtype=torch.float16)
+    out13 = gemm(
+        x13,
         layer.w13_weight,
-        None,
         layer.w13_weight_scale,
-        None,
         layer.w13_weight_scale_2,
-        None,
-        None,
-        None,
-        torch.empty(0, dtype=torch.int32, device=device),
-        sorted_ids,
-        expert_ids,
-        padded,
-        topk_weights,
-        block,
-        1,
-        False,
-        scalar_types.float4_e2m1f.id,
-        tokens,
-        n,
-        k,
-        True,
-        False,
-        False,
-        False,
-        -1,
-        -1,
-        -1,
+        2 * inter,
+        hidden,
     )
-    ref = x @ dense[0].T
-    diff = (out.float() - ref.float()).abs()
-    denom = ref.float().abs().clamp_min(1e-3)
-    return float((diff / denom).max())
+    error13 = _relative_error(out13, x13 @ dense13[0].T)
+
+    x2 = torch.randn(tokens, inter, device=device, dtype=torch.float16)
+    out2 = gemm(
+        x2,
+        layer.w2_weight,
+        layer.w2_weight_scale,
+        layer.w2_weight_scale_2,
+        hidden,
+        inter,
+    )
+    error2 = _relative_error(out2, x2 @ dense2[0].T)
+
+    return max(error13, error2)
 
 
 def main() -> None:
