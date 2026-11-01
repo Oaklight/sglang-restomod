@@ -65,7 +65,7 @@ Qwen3.8-Flash-Next，V100-SXM2-32GB，单节点，输出 128 token 时的 decode
 |---|---|---|---|---|---|---|---|
 | FP8 | 8 | TP8 / EP8 | 关 | 默认 | 76 | 40.0 | `recipes/flash-next-fp8-v100-tp8ep8-mtp.md` |
 | FP8 | 8 | TP8 / EP8 | 3/4 | temp 1, top-p 0.95, top-k 20 | 74 | 73.9 | `recipes/flash-next-fp8-v100-tp8ep8-mtp.md` |
-| FP8 | 8 | TP8 / EP8 | 3/4 | temperature 0 | 74 | 98.3—106.2 | `task.md` |
+| FP8 | 8 | TP8 / EP8 | 3/4 | temperature 0 | 74 | 98.3—106.2 | `recipes/flash-next-fp8-v100-tp8ep8-mtp.md` |
 | NVFP4 | 4 | TP4，无 EP | 3/4 | temperature 0 | 993 | 87.27 / 87.24 | receipt `evidence-6294562-nvfp4` |
 | NVFP4 | 4 | TP4，无 EP | 3/4 | temperature 0 | 3473 | 72.43 / 90.68 | receipt `evidence-6294562-nvfp4` |
 | NVFP4 | 4 | TP4，无 EP | 3/4 | temp 1, top-p 0.95, top-k 20 | 74 | 81.83 / 88.06 | receipt `evidence-6294562-nvfp4` |
@@ -73,8 +73,9 @@ Qwen3.8-Flash-Next，V100-SXM2-32GB，单节点，输出 128 token 时的 decode
 读法：
 
 - decode 吞吐等于「每步接受的 token 数 / 每步耗时」。贪心行与采样行的接受长度不同，不得互相比较。
-- 不同日期的行，差异既来自代码也来自主机负载。同一 commit 在同一台机器上相隔一小时测到 87.27 与 70.32 tok/s，
-  prefill 分别是 3.6k 与 1.4k tok/s。支撑这个差异的背靠背 A/B 在 pull request #96 中。
+- 不同日期的行，差异既来自代码也来自主机状态。同一台机器上，`6294562` 在 16:00 测得 87.27 tok/s，
+  一小时后 `303e162` 测得 70.32 tok/s。两个 head 在同等条件下的背靠背 A/B（pull request #96）显示
+  commit 之间最多约 10% 的差异，因此那 19 tok/s 中剩下的部分来自主机状态，原因未确认。
 - FP8 行是 8 卡，NVFP4 行是 4 卡；可比较的量是单卡吞吐，不是整行总和。
 - 新的签名 receipt 落地时更新此表，且只收录能引用 receipt 或 recipe 的数字。没有来源的行不得写入。
 

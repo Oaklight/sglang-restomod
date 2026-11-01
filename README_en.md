@@ -69,7 +69,7 @@ those axes.
 |---|---|---|---|---|---|---|---|
 | FP8 | 8 | TP8 / EP8 | off | default | 76 | 40.0 | `recipes/flash-next-fp8-v100-tp8ep8-mtp.md` |
 | FP8 | 8 | TP8 / EP8 | 3/4 | temp 1, top-p 0.95, top-k 20 | 74 | 73.9 | `recipes/flash-next-fp8-v100-tp8ep8-mtp.md` |
-| FP8 | 8 | TP8 / EP8 | 3/4 | temperature 0 | 74 | 98.3—106.2 | `task.md` |
+| FP8 | 8 | TP8 / EP8 | 3/4 | temperature 0 | 74 | 98.3—106.2 | `recipes/flash-next-fp8-v100-tp8ep8-mtp.md` |
 | NVFP4 | 4 | TP4, no EP | 3/4 | temperature 0 | 993 | 87.27 / 87.24 | receipt `evidence-6294562-nvfp4` |
 | NVFP4 | 4 | TP4, no EP | 3/4 | temperature 0 | 3473 | 72.43 / 90.68 | receipt `evidence-6294562-nvfp4` |
 | NVFP4 | 4 | TP4, no EP | 3/4 | temp 1, top-p 0.95, top-k 20 | 74 | 81.83 / 88.06 | receipt `evidence-6294562-nvfp4` |
@@ -78,10 +78,11 @@ How to read it:
 
 - Decode throughput is `accepted tokens per step / step time`. A greedy row and
   a sampled row differ in acceptance, so they must not be compared.
-- Rows from different days differ by host load as much as by code. The same
-  commit measured 87.27 tok/s and 70.32 tok/s an hour apart on the same box,
-  with prefill at 3.6k and 1.4k tok/s. The back-to-back A/B behind that spread
-  is in pull request #96.
+- Rows from different days differ by host state as much as by code. The same
+  box measured 87.27 tok/s for `6294562` at 16:00 and 70.32 tok/s for `303e162`
+  an hour later. A back-to-back A/B of both heads under identical conditions
+  (pull request #96) shows up to 10% between commits, so the rest of that
+  19 tok/s spread is host state, and it is unexplained.
 - FP8 rows use 8 cards, NVFP4 rows use 4. Per-card throughput is the
   comparable quantity, not the row total.
 - Update this table when a new signed receipt lands, and only with numbers that
