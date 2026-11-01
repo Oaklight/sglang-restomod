@@ -1,10 +1,15 @@
 """NVFP4 scale encoding for the SM70 Marlin expert GEMM.
 
-The SM70 iterator reconstructs an FP16 scale from one byte with integer shifts
-(``(byte << 8) >> 1``, i.e. ``byte << 7``). It therefore consumes a compact
-non-negative S0E5M3 byte, not the checkpoint's S1E4M3 value. The byte order is
-logical ``[experts, K/16, N]``: the iterator indexes the per-expert scale block
-by logical ``n``, so ``marlin_permute_scales`` must not be applied here.
+The SM70 iterator rebuilds an FP16 scale from one byte with integer shifts
+(``(byte << 8) >> 1``, i.e. ``byte << 7``). What this encoder emits is the high
+byte of ``fp16(scale * 2**7)`` with the low pad bit dropped -- a Q0.7-style
+code with the exponent in the high bits, not a float field. For a scale of
+``1.0`` the byte is ``176``. The result is bit-identical to upstream's
+``nvfp4_marlin_process_scales``, which the SM80 path validates.
+
+The byte order is logical ``[experts, K/16, N]``: the iterator indexes the
+per-expert scale block by logical ``n``, so ``marlin_permute_scales`` must not
+be applied here.
 
 Ported from ``sglang-v100-plus`` (``v100_plus/sglang_v100_plus/quantization.py``).
 """
@@ -13,16 +18,13 @@ from __future__ import annotations
 
 
 def encode_scales(scales, activation_dtype):
-    """Encode logical ``[E, K/16, N]`` E4M3 scales for the SM70 iterator.
-
-    Returns ``(encoded, factor)``. ``factor`` is a power of two applied to the
-    scales for bfloat16; the caller divides the processed global scale by it.
-    """
+    """Encode logical ``[E, K/16, N]`` E4M3 scales for the SM70 iterator."""
     import torch
 
-    if activation_dtype not in (torch.float16, torch.bfloat16):
+    if activation_dtype != torch.float16:
         raise ValueError(
-            f"SM70 NVFP4 Marlin supports FP16/BF16 activations, got {activation_dtype}"
+            "SM70 NVFP4 Marlin supports FP16 activations only, got "
+            f"{activation_dtype}"
         )
     if scales.dtype != torch.float8_e4m3fn or scales.ndim != 3:
         raise ValueError(
@@ -34,17 +36,11 @@ def encode_scales(scales, activation_dtype):
     if bool((logical < 0).any()):
         raise ValueError("NVFP4 block scales must be non-negative")
 
-    # FP16 has enough exponent range for ModelOpt's normalized E4M3 scales.
-    # BF16 may need a shared rescale so every non-zero S0E5M3 byte keeps its
-    # high bit set, which the integer dequantizer relies on.
+    # FP16's exponent range covers ModelOpt's normalized E4M3 scales: the
+    # largest (448) times 2**7 is 57,344, still inside fp16. BF16 is rejected
+    # above rather than rescaled, because the compensation would also have to
+    # land on the global scale and that pairing is not exercised anywhere.
     scale_factor = 1.0
-    if activation_dtype == torch.bfloat16:
-        nonzero = logical[logical > 0]
-        if nonzero.numel() > 0:
-            min_scaled = nonzero.float().min() * (2**7)
-            if min_scaled < 2:
-                scale_factor = float(torch.ceil(torch.log2(2 / min_scaled)).exp2())
-                logical = (logical.float() * scale_factor).to(torch.float16)
 
     num_experts, num_groups, size_n = logical.shape
     if size_n % 4 != 0:
@@ -64,16 +60,14 @@ def encode_global_scale(global_scale, activation_dtype):
     """Compensate an NVFP4 global scale for SM70's integer dequantizer."""
     import torch
 
-    if activation_dtype == torch.float16:
-        target_exponent = 5
-    elif activation_dtype == torch.bfloat16:
-        target_exponent = 8
-    else:
+    if activation_dtype != torch.float16:
         raise ValueError(
-            f"SM70 NVFP4 Marlin supports FP16/BF16 activations, got {activation_dtype}"
+            "SM70 NVFP4 Marlin supports FP16 activations only, got "
+            f"{activation_dtype}"
         )
-    fp4_exponent = 2
-    exponent_bias = 2 ** (target_exponent - 1) - 2 ** (fp4_exponent - 1)
+    # E5 (fp16) to E2 (fp4): 2**4 - 2**1 = 14. The -7 stands for the 128 that
+    # ``encode_scales`` multiplied into every block scale.
+    exponent_bias = 2**4 - 2**1
     return (
         global_scale.to(torch.float32) * (2.0 ** (exponent_bias - 7))
     ).contiguous()

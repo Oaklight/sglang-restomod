@@ -81,15 +81,28 @@ def _kernel():
 _KERNEL = None
 
 
-def moe_sum_reduce(input_tensor, output_tensor, routed_scaling_factor=0):
+def moe_sum_reduce(input_tensor, output_tensor, routed_scaling_factor=1.0):
     """Sum ``input`` over its top-k dimension into ``output``."""
     global _KERNEL
     import triton
 
+    if input_tensor.dtype != output_tensor.dtype:
+        raise ValueError(
+            f"moe_sum_reduce dtype mismatch: input {input_tensor.dtype}, "
+            f"output {output_tensor.dtype}"
+        )
+    if not (input_tensor.is_contiguous() and output_tensor.is_contiguous()):
+        # The kernel ignores input_stride_2 and output_stride_1, so it needs
+        # contiguous tensors. Degrade instead of aborting: the same arithmetic
+        # through torch keeps the in-place contract and a layout change
+        # upstream does not take the server down mid-generation.
+        output_tensor.copy_(
+            input_tensor.sum(dim=1, dtype=torch.float32).mul_(routed_scaling_factor)
+        )
+        return output_tensor
+
     if _KERNEL is None:
         _KERNEL = _kernel()
-    if not (input_tensor.is_contiguous() and output_tensor.is_contiguous()):
-        raise ValueError("moe_sum_reduce expects contiguous tensors")
     token_num, topk_num, hidden_dim = input_tensor.shape
     block = min(triton.next_power_of_2(hidden_dim), 2048)
     grid = (triton.cdiv(token_num, 1), triton.cdiv(hidden_dim, block))
