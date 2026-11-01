@@ -41,7 +41,9 @@ include = ["sglang_restomod*"]
 # Native sources are read or JIT-compiled at runtime, so they have to travel
 # with the wheel. Without this the wheel installs and then fails on first use.
 # `kernels/sm70_longctx_decode.cu` is generated from the pinned submodule by
-# scripts/sync_kernels.py; CI runs it with --check so the copy cannot drift.
+# `scripts/sync_kernels.py`, which also writes SHA256SUMS next to it. CI cannot
+# run that check: the submodule repository is private. Run
+# `python scripts/sync_kernels.py --check` locally after touching the kernel.
 [tool.setuptools.package-data]
 "sglang_restomod.attention.v100" = ["kernels/*.cu", "kernels/SHA256SUMS", "PROVENANCE.md"]
 "sglang_restomod.quant.sm70_fp8_moe" = ["*.cpp", "README.md"]
