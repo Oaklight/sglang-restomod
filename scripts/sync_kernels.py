@@ -43,6 +43,14 @@ def _sha256(path: Path) -> str:
 
 
 def _submodule_head(path: Path) -> str:
+    # `git -C` walks up to the enclosing repository, so an uninitialized
+    # submodule directory resolves the *parent's* HEAD and the pin check
+    # compares against the wrong commit. Require the submodule's own git dir.
+    if not (path / ".git").exists():
+        raise SystemExit(
+            f"submodule not initialized at {path}; run "
+            "`git submodule update --init --recursive`"
+        )
     try:
         out = subprocess.run(
             ["git", "-C", str(path), "rev-parse", "HEAD"],

@@ -53,7 +53,12 @@ The backend itself is in the component, not read from the engine checkout:
 | `qwen_sparse_attn_backend.py` | same |
 | `tilelang/` (11 modules) | same, with the package path rewritten to `sglang_restomod.attention.v100.tilelang` |
 | `kernels/sm70_longctx_decode.cu` | same, **re-synced** to include `sm70-decode-occ2.patch` |
-| `kernels/sm70_nvfp4_moe_decode.cu` | same |
+
+`kernels/sm70_nvfp4_moe_decode.cu` used to sit in this directory. Nothing loads
+it -- the NVFP4 expert GEMM goes through the out-of-tree `marlin_v100`
+extension (`sglang_restomod/quant/sm70_fp4_moe/PROVENANCE.md`) -- and it was
+never covered by `UPSTREAM_PIN.toml`, so its hash in `SHA256SUMS` guarded a
+file with no pin. Removed on 2026-11-01.
 
 `sm70_longctx_decode.cu` was first vendored before the two-CTA decode patch
 landed in the lab tree, so the component would have shipped the slower kernel.
