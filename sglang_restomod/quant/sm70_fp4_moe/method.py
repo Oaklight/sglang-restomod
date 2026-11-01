@@ -40,27 +40,36 @@ def _is_sm70() -> bool:
     return torch.cuda.is_available() and torch.cuda.get_device_capability() == (7, 0)
 
 
-def _repack_experts(weight: torch.Tensor) -> torch.Tensor:
-    """Packed NVFP4 ``[E, N, K/2]`` uint8 -> Marlin ``[E, K/16, N*2]`` int32.
+def check_expert_shape(size_n: int, size_k: int) -> None:
+    """Reject an expert shard the SM70 Marlin tile cannot cover.
 
-    ``sglang-v100-plus`` pads a narrow shard before repacking
-    (``pad_nvfp4_expert_width``). That helps its eight-way expert sharding,
-    where ``inter`` is 80 per rank: ``w13``'s ``N`` becomes 160 and ``w2``'s
-    ``K`` 80, and the gate/up halves grow 80 -> 96. Neither number is a
-    multiple of 64, so this component does not cover that profile.
-
-    The four-card profile it does ship is ``moe_intermediate_size=640`` over
-    ``TP=4``, i.e. ``inter=160`` per rank: ``w13`` is ``N=320 K=2560`` and
-    ``w2`` is ``N=2560 K=160``. Both satisfy the gate, so no padding is needed.
+    Runs before the extension loads, so it is reachable without a GPU.
     """
-    ops = ensure_loaded()
-    experts, size_n, packed_k = (int(d) for d in weight.shape)
-    size_k = packed_k * 2
     if size_k % 16 or size_n % 64:
         raise RuntimeError(
             "SM70 NVFP4 Marlin needs K divisible by 16 and N by 64, got "
             f"N={size_n} K={size_k}"
         )
+
+
+def _repack_experts(weight: torch.Tensor) -> torch.Tensor:
+    """Packed NVFP4 ``[E, N, K/2]`` uint8 -> Marlin ``[E, K/16, N*2]`` int32.
+
+    ``sglang-v100-plus`` pads a narrow shard before repacking
+    (``pad_nvfp4_expert_width``). That helps its eight-way expert sharding,
+    where ``inter`` is 80 per rank: ``w13``'s ``N`` is 160 and ``w2``'s ``K``
+    is 80, and the gate/up halves grow 80 -> 96. ``160 % 64 == 32``, so
+    ``check_expert_shape`` rejects that profile; this component does not
+    cover it.
+
+    The four-card profile it does ship is ``moe_intermediate_size=640`` over
+    ``TP=4``, i.e. ``inter=160`` per rank: ``w13`` is ``N=320 K=2560`` and
+    ``w2`` is ``N=2560 K=160``. Both satisfy the gate, so no padding is needed.
+    """
+    experts, size_n, packed_k = (int(d) for d in weight.shape)
+    size_k = packed_k * 2
+    check_expert_shape(size_n, size_k)
+    ops = ensure_loaded()
     perm = torch.empty(0, dtype=torch.int32, device=weight.device)
     out = torch.empty(
         (experts, size_k // 16, size_n * 2), dtype=torch.int32, device=weight.device
@@ -71,6 +80,20 @@ def _repack_experts(weight: torch.Tensor) -> torch.Tensor:
     return out
 
 
+def _ep_size() -> int | None:
+    """The launch's expert-parallel width, or None when it is not readable.
+
+    ``runtime_context`` raises on a field read before the parallel context is
+    published, which is the normal state during an early import.
+    """
+    try:
+        from sglang.srt.runtime_context import get_parallel
+
+        return int(get_parallel().moe_ep_size)
+    except Exception:  # noqa: BLE001 - an unpublished context is not an error
+        return None
+
+
 def prepare_moe_nvfp4(layer, group_size: int | None = None) -> None:
     """Replace the checkpoint expert layout with the SM70 Marlin layout."""
     from sglang.srt.layers.utils import copy_or_rebind_param
@@ -79,6 +102,16 @@ def prepare_moe_nvfp4(layer, group_size: int | None = None) -> None:
         raise RuntimeError(
             "The SM70 NVFP4 profile requires FP16 activations, got "
             f"{layer.params_dtype}"
+        )
+    ep_size = _ep_size()
+    if ep_size is not None and ep_size != 1:
+        # The kernel indexes this rank's weights by global expert id, so an EP
+        # launch would read the wrong expert. Checked here, during weight
+        # loading, so the server never binds; the GEMM raises again as a
+        # backstop.
+        raise RuntimeError(
+            "SM70 NVFP4 Marlin does not support expert parallelism; "
+            f"launch with --ep-size 1 (got moe_ep_size={ep_size})"
         )
     if hasattr(layer, "moe_runner_config") and not layer.moe_runner_config.is_gated:
         raise RuntimeError("The SM70 NVFP4 profile requires gated MoE experts")
@@ -307,14 +340,29 @@ def install() -> bool:
             raise RuntimeError(f"{ENV_MODE}=on requires an SM70 device")
         return False
     if not available():
-        # Falling back to upstream is not an option on SM70: its Marlin kernel
-        # is an empty body below SM80, so every routed expert contributes
-        # zeros and the model serves fluent, wrong text without an error.
-        raise RuntimeError(
-            f"{ENV_MODE}={mode} needs a loadable marlin_v100 build on SM70; "
-            f"{os.environ.get(ENV_DIR, '<unset>')} does not hold one. "
-            f"Set {ENV_DIR}, or set {ENV_MODE}=off to disable the layer."
+        # ``sglang.srt.plugins`` wraps plugin execution in
+        # ``except Exception: logger.exception(...)`` at the pin, so a raise
+        # here would only be logged and the engine would keep loading with the
+        # empty SM80 kernel in the path. Install a hook that refuses at
+        # weight-load time instead: ``modelopt_quant`` calls the prepare
+        # function while loading, before the server binds.
+        from sglang.srt.layers.quantization import marlin_utils_fp4, modelopt_quant
+
+        def _refuse(*_args, **_kwargs):
+            raise RuntimeError(
+                f"{ENV_MODE}={mode} needs a loadable marlin_v100 build on SM70; "
+                f"{os.environ.get(ENV_DIR, '<unset>')} does not hold one. "
+                f"Set {ENV_DIR}, or set {ENV_MODE}=off to disable the layer."
+            )
+
+        _patch(marlin_utils_fp4, "prepare_moe_nvfp4_layer_for_marlin", _refuse)
+        _patch(modelopt_quant, "prepare_moe_nvfp4_layer_for_marlin", _refuse)
+        logger.error(
+            "SM70 NVFP4 MoE: no usable marlin_v100 build in %s; weight loading "
+            "will fail",
+            os.environ.get(ENV_DIR, "<unset>"),
         )
+        return False
 
     from . import sum_reduce
 

@@ -7,9 +7,10 @@ reference:
     python -m sglang_restomod.quant.sm70_fp4_moe.check
 
 Both expert sets are exercised: ``w13`` at ``[E, 2*inter, hidden]`` and ``w2``
-at ``[E, hidden, inter]``. They land on different ``N`` and ``K``, which is
-where the ``N % 64`` and ``K % 16`` gates diverge, and a wrong ``w2`` layout
-would otherwise be hidden behind a zero weight.
+at ``[E, hidden, inter]``. They land on different ``N`` and ``K``, so a wrong
+``w2`` layout cannot hide behind a zero weight. Both shapes also pass the
+``N % 64`` and ``K % 16`` gates, so this file does not cover the gate
+boundaries; ``tests/test_sm70_fp4_scales.py`` covers them on CPU.
 
 The packing assumption is the GPTQ one: byte ``j`` along K holds ``k=2j`` in
 the low nibble and ``k=2j+1`` in the high nibble. A real checkpoint is checked
