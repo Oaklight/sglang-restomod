@@ -21,12 +21,16 @@
 
 ## 状态
 
-目前有两个组件，都通过 `SGLANG_RESTOMOD_COMPONENTS` 显式启用：
+目前有六个组件，都通过 `SGLANG_RESTOMOD_COMPONENTS` 显式启用：
 
 | 组件 | 作用 |
 |---|---|
 | `fp8_moe` | sm70 上的 block-FP8 expert GEMM。SGLang 随包提供的 SM70 TurboMind 库导出了 `fp8_moe_gemm_sm70_out`，但从未向 torch 注册；本组件用一个小的 `dlopen`/`dlsym` shim 解析该符号并暴露类型化接口。官方 block-FP8 MoE 权重能在 V100 上跑，靠的就是它。 |
+| `fp8_dense` | 固定 pin 引擎的 SM70 W8A16 稠密 FP8 线性层内核。 |
 | `attention_v100` | 在 V100 attention backend 上实现 `init_forward_metadata_out_graph`。graph runner 会调用它，而基类留成了 no-op；没有它，decode 的 CUDA graph 根本捕获不起来。 |
+| `fp4_moe` | 经 `marlin_v100` 扩展实现的 NVFP4 expert GEMM：加载期 repack、SM70 scale 编码、GEMM 桥接。SGLang 随包的 Marlin 内核在 SM80 以下是空实现。 |
+| `ple_sm70` | fp8 PLE host-embedding gather 的 SM70 版本。固定 pin 的内核会 cast 到 `tl.float8e4nv`，在 SM70 上无法编译。 |
+| `spec_sm70` | top-k/top-p renorm 替换，使非贪心 EAGLE verify 不再触到 FlashInfer 的 sm75 下限。 |
 
 ```bash
 SGLANG_RESTOMOD_COMPONENTS=fp8_moe,attention_v100
@@ -50,6 +54,29 @@ SGLANG_RESTOMOD_COMPONENTS=fp8_moe,attention_v100
 | [1CatAI/1Cat-vLLM](https://github.com/1CatAI/1Cat-vLLM) | FP8 expert GEMM 的接口约定，以及本仓库对标的 Flash-Next 公开数字。 |
 | TurboMind（[LMDeploy](https://github.com/InternLM/lmdeploy)） | `fp8_moe` 绑定的预编译 SM70 block-FP8 expert GEMM。 |
 | [NVIDIA/cutlass](https://github.com/NVIDIA/cutlass) | SM70 Marlin 扩展的构建依赖（v4.2.1）。 |
+
+## 性能
+
+Qwen3.8-Flash-Next，V100-SXM2-32GB，单节点，输出 128 token 时的 decode 吞吐（tok/s），
+数据来自 `scripts/bench.py`。一行数据只有同时给出精度、卡数和采样方式才有意义，
+不同轴之间不可比较。
+
+| 精度 | 卡数 | 并行 | MTP | 采样 | 提示长度 | Decode | 来源 |
+|---|---|---|---|---|---|---|---|
+| FP8 | 8 | TP8 / EP8 | 关 | 默认 | 76 | 40.0 | `recipes/flash-next-fp8-v100-tp8ep8-mtp.md` |
+| FP8 | 8 | TP8 / EP8 | 3/4 | temp 1, top-p 0.95, top-k 20 | 74 | 73.9 | `recipes/flash-next-fp8-v100-tp8ep8-mtp.md` |
+| FP8 | 8 | TP8 / EP8 | 3/4 | temperature 0 | 74 | 98.3—106.2 | `task.md` |
+| NVFP4 | 4 | TP4，无 EP | 3/4 | temperature 0 | 993 | 87.27 / 87.24 | receipt `evidence-6294562-nvfp4` |
+| NVFP4 | 4 | TP4，无 EP | 3/4 | temperature 0 | 3473 | 72.43 / 90.68 | receipt `evidence-6294562-nvfp4` |
+| NVFP4 | 4 | TP4，无 EP | 3/4 | temp 1, top-p 0.95, top-k 20 | 74 | 81.83 / 88.06 | receipt `evidence-6294562-nvfp4` |
+
+读法：
+
+- decode 吞吐等于「每步接受的 token 数 / 每步耗时」。贪心行与采样行的接受长度不同，不得互相比较。
+- 不同日期的行，差异既来自代码也来自主机负载。同一 commit 在同一台机器上相隔一小时测到 87.27 与 70.32 tok/s，
+  prefill 分别是 3.6k 与 1.4k tok/s。支撑这个差异的背靠背 A/B 在 pull request #96 中。
+- FP8 行是 8 卡，NVFP4 行是 4 卡；可比较的量是单卡吞吐，不是整行总和。
+- 新的签名 receipt 落地时更新此表，且只收录能引用 receipt 或 recipe 的数字。没有来源的行不得写入。
 
 ## 快速开始
 
