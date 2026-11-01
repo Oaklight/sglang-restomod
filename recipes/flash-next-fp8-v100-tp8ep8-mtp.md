@@ -111,6 +111,12 @@ with no patches. Launcher: `pin_launch_fn_mtp.sh` on lambda1.
 |---|---|---|
 | no MTP, 76-token prompt, 128 out | **40.0 tok/s** | — |
 | MTP3/4 draft, same prompt | **73.9 tok/s** | 2.83-2.85 |
+| MTP3/4 draft, temperature 0, three runs | **98.3—106.2 tok/s** | 3.48—3.70 |
+
+Per-step time on the greedy row is `accept / throughput`, i.e. 34.8—35.4 ms.
+That is the comparable quantity against the NVFP4 four-card profile in
+`recipes/flash-next-nvfp4-v100-tp4-mtp.md`; the 73.9 tok/s row above is the
+default-sampling run and is not comparable to it.
 
 Without MTP the pin is 2x behind the fork's 30.8-36.9 measured on the same box;
 with MTP it is 12-15% behind the fork's 82.9-86.5. Closing that gap needs the
