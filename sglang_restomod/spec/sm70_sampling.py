@@ -9,12 +9,20 @@ tree verification. The pinned EAGLE path calls FlashInfer directly, whatever
     RuntimeError: FlashInfer requires GPUs with sm75 or higher.
 
 These two functions keep the FlashInfer contract and run on any CUDA device.
-The output dtype is mirrored per function, because upstream's two kernels do
-not agree: ``top_k_renorm_probs`` allocates ``empty_like(probs)`` and keeps the
-input dtype, while ``top_p_renorm_probs`` casts to ``float()`` first and always
-returns float32. On the EAGLE path both inputs come from a float32 softmax, so
-the difference is invisible there -- but a drop-in replacement that normalised
-it away would silently change the dtype of the chained call.
+The output dtype is mirrored per function, because the two upstream kernels do
+not agree in the build this runs against (0.6.12, the ``flashinfer-sm70``
+source cache): the ``top_k_renorm_probs`` custom op allocates
+``empty_like(probs)`` and keeps the input dtype, while ``top_p_renorm_probs``
+does ``probs = probs.float()`` before allocating and therefore always returns
+float32. On the EAGLE path both inputs come from a float32 softmax, so the
+difference is invisible there -- but a drop-in replacement that normalised it
+away would silently change the dtype of the chained call.
+
+``is_deterministic`` is accepted for signature compatibility and does not
+change the result. Upstream's flag asks for reproducible *accumulation* (fixed
+point integer atomics instead of a float reduction whose order depends on CTA
+arrival); a sort and a sequential sum are already bitwise reproducible for a
+given input, so the property holds without a branch.
 
 * ``top_k`` keeps the ``k`` largest entries per row.
 * ``top_p`` keeps the smallest set of the largest entries whose sum reaches
@@ -56,15 +64,7 @@ def top_k_renorm_probs(probs, top_k, is_deterministic: bool = False):
     rows, vocab = dense.shape
     k = _per_row(top_k, rows, dense.device).clamp(1, vocab).to(torch.int64)
     k_max = int(k.max().item())
-    if is_deterministic:
-        # torch.topk does not define which of several equal values it keeps.
-        # A stable descending sort ties by index, which is the behaviour the
-        # FlashInfer flag asks for.
-        _, indices = torch.sort(dense, dim=-1, descending=True, stable=True)
-        indices = indices[:, :k_max]
-        values = dense.gather(1, indices)
-    else:
-        values, indices = torch.topk(dense, k_max, dim=-1)
+    values, indices = torch.topk(dense, k_max, dim=-1)
     rank = torch.arange(k_max, device=dense.device).unsqueeze(0)
     kept = torch.where(rank < k.unsqueeze(1), values, torch.zeros_like(values))
     out = torch.zeros_like(dense)
@@ -87,11 +87,9 @@ def top_p_renorm_probs(probs, top_p, is_deterministic: bool = False):
     rows, _ = dense.shape
     threshold = _per_row(top_p, rows, dense.device)
 
-    # A stable sort ties equal probabilities by index, so ``is_deterministic``
-    # selects which of two equal entries crosses the boundary.
-    sorted_probs, indices = torch.sort(
-        dense, dim=-1, descending=True, stable=bool(is_deterministic)
-    )
+    # A stable sort is not needed: no atomics are involved, so the result is
+    # bitwise reproducible for a given input whatever ``is_deterministic`` says.
+    sorted_probs, indices = torch.sort(dense, dim=-1, descending=True)
     cumulative = sorted_probs.cumsum(dim=-1)
     # Keep an entry while the mass before it is still below top_p. This keeps
     # the entry that crosses the threshold, matching FlashInfer's contract.
