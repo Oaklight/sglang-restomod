@@ -49,6 +49,9 @@ FP8 8 卡 + MTP 是 73.9 tok/s（accept len 2.83）。
    `device-loaded after serving started` 警告，之后正常。
 5. **`/nfs` 只剩约 293 GB。** 7 个模型目录已移到
    `/nfs/ml_lab/projects/ml_lab/pding/models/`，原路径是符号链接。
+6. **必须加 `--sampling-backend pytorch`。** 默认 FlashInfer 采样在 sm70 上直接
+   抛 `FlashInfer requires GPUs with sm75 or higher`，服务会崩。temp 0 / top-k 1
+   的请求不会走到那个内核，所以只用贪心请求测不出这个问题。
 
 ## 启动命令
 
