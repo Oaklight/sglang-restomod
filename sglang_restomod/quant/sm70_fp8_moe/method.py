@@ -46,7 +46,16 @@ def _is_sm70() -> bool:
 
 
 def _library_present() -> bool:
-    """Cheap check: does not import or compile the shim."""
+    """Cheap check: does not import or compile the shim.
+
+    The environment variables win over the engine's own resolver: at the pin
+    there is no ``sglang.kernels.sm70_paths`` module, and an explicit path is
+    the only way to name the library.
+    """
+    for var in ("SM70_TURBOMIND_SO", "SGLANG_SM70_TURBOMIND_SO"):
+        explicit = os.environ.get(var)
+        if explicit:
+            return Path(explicit).is_file()
     try:
         from sglang.kernels.sm70_paths import sm70_prebuilt
 
@@ -82,7 +91,12 @@ class SM70Fp8MoEMethod(Fp8MoEMethod):
             return "SwiGLU alpha/beta"
         if cfg.apply_router_weight_on_input or cfg.no_combine:
             return "router weight on input or no combine"
-        if cfg.wide_output_scale != 1.0 or cfg.gate_up_input_scale != 1.0:
+        # The pin's MoeRunnerConfig has no wide_output_scale; the fork added it.
+        # Both default to 1.0, which is the neutral value this check wants.
+        if (
+            getattr(cfg, "wide_output_scale", 1.0) != 1.0
+            or getattr(cfg, "gate_up_input_scale", 1.0) != 1.0
+        ):
             return "FP8 range scaling"
         return None
 

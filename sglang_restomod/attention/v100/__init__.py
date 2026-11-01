@@ -1,9 +1,9 @@
-"""V100 full-attention backend hooks.
+"""V100 attention component.
 
-Component entry point for the V100 full-attention path. It currently injects
-the CUDA graph metadata delegation the engine's backend is missing; the rest of
-the backend lives in the engine checkout (see ``PROVENANCE.md`` for the source
-and the split we intend).
+Registers the component's V100 full-attention backend with the pinned engine
+and installs the CUDA graph metadata delegation it needs. Everything the
+engine does not provide lives here; ``PROVENANCE.md`` records where it came
+from and ``UPSTREAM_PIN.toml`` pins the kernel submodule.
 
 Selection: ``SGLANG_RESTOMOD_COMPONENTS=attention_v100``.
 """
@@ -16,7 +16,11 @@ logger = logging.getLogger(__name__)
 
 
 def register() -> None:
-    """Component entry point: install the graph metadata delegation."""
-    from .graph_metadata import install
+    """Component entry point: register the backend, then patch it."""
+    from .backend_registry import install as install_backends
+    from .backend_registry import install_qsa_swap
+    from .graph_metadata import install as install_graph_metadata
 
-    install()
+    install_backends()
+    install_qsa_swap()
+    install_graph_metadata()

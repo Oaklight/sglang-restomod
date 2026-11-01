@@ -52,7 +52,21 @@ class Experts:
 
 
 def _default_so_path() -> str:
-    from sglang.kernels.sm70_paths import sm70_prebuilt
+    """Resolve the TurboMind library the engine ships.
+
+    The pinned upstream has no ``sglang.kernels.sm70_paths`` module; that path
+    belongs to the fork. When it is absent the caller must point
+    ``SM70_TURBOMIND_SO`` (or ``SGLANG_SM70_TURBOMIND_SO``) at the library, so
+    fail with an actionable message instead of a bare ImportError.
+    """
+    try:
+        from sglang.kernels.sm70_paths import sm70_prebuilt
+    except ImportError as exc:
+        raise FileNotFoundError(
+            "SM70 TurboMind library path cannot be resolved: this engine has no "
+            "sglang.kernels.sm70_paths module. Set SM70_TURBOMIND_SO (or "
+            "SGLANG_SM70_TURBOMIND_SO) to the _sm70_turbomind_v100.so path."
+        ) from exc
 
     return str(sm70_prebuilt("_sm70_turbomind_v100.so"))
 

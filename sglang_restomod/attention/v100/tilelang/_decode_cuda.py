@@ -20,7 +20,6 @@ import os
 from pathlib import Path
 
 import torch
-from sglang.srt.environ import envs
 
 logger = logging.getLogger(__name__)
 
@@ -169,7 +168,14 @@ def sm70_cuda_decode_partial(
     )
     # The kernel reads the cache as uint8 bytes for the E5M2 path and as halves
     # for the fp16 path; viewing an fp16 cache as uint8 would double its length.
-    _fp8 = k_cache.dtype in (torch.float8_e4m3fn, torch.float8_e5m2)
+    # E4M3 is templated in the kernel, but the Python side never selects that
+    # specialisation, so accepting it here would decode E4M3 bytes as E5M2 and
+    # return wrong numbers. Refuse until that half of the patch is carried.
+    if k_cache.dtype == torch.float8_e4m3fn:
+        raise NotImplementedError(
+            "SM70 CUDA decode does not select the E4M3 KV specialisation yet"
+        )
+    _fp8 = k_cache.dtype is torch.float8_e5m2
     _kv_arg = (lambda t: t.view(torch.uint8)) if _fp8 else (lambda t: t)
     # Ablation switch for the split-KV partial. occ2 runs the same kernel with
     # two CTAs resident per SM, which is where the e5m2 gain is: the 16-byte
@@ -182,6 +188,8 @@ def sm70_cuda_decode_partial(
             "serial": "sm70_longctx_decode",
             "occ2": "sm70_longctx_decode_occ2",
             "pipelined": "sm70_longctx_decode_pipelined",
+            "regpipe": "sm70_longctx_decode_regpipe",
+            "pv2": "sm70_longctx_decode_pv2",
         }[
             os.environ.get("SGLANG_SM70_DECODE_VARIANT", "occ2")
         ],
@@ -282,23 +290,12 @@ def sm70_cuda_qsa_decode(
         partial_o,
         partial_lse,
     )
-    if (
-        1 <= batch <= 4
-        and heads == 6
-        and dim == 256
-        and max_splits <= 160
-        and torch.cuda.get_device_capability(q.device) == (7, 0)
-        and envs.SGLANG_SM70_QSA_COMBINE.get()
-    ):
-        from sglang.kernels.ops.attention.sm70_qsa_combine import combine
-
-        return combine(
-            partial_o,
-            partial_lse,
-            seq_lens,
-            indices.shape[1],
-            QSA_DECODE_TOKENS_PER_SPLIT,
-        )
+    # The fork had an env-gated fast path here that called
+    # sglang.kernels.ops.attention.sm70_qsa_combine. Neither that module nor the
+    # SGLANG_SM70_QSA_COMBINE env name exists at the pin, so the gate raised
+    # AttributeError before it could fall through to its own default. The
+    # TileLang combine below is what the fork used with the gate off, which was
+    # the default.
     from ._kernels_paged_decode import _decode_combine_kernel
 
     combine = _decode_combine_kernel(

@@ -1,0 +1,3 @@
+[submodule "third_party/sm70-kernels"]
+	path = third_party/sm70-kernels
+	url = https://github.com/Oaklight/sm70-kernels.git

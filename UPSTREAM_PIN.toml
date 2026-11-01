@@ -13,3 +13,15 @@ ref = "v0.5.22"
 commit = "baa9befa381511cd4d56f83980951e5a45fffc6d"
 pypi_version = "0.5.22"
 pinned_at = "2026-10-23"
+
+# Kernel sources are not vendored by hand any more. They arrive through a git
+# submodule pinned to a commit (the repository has no tags) and are copied into
+# the package at build time by scripts/sync_kernels.py, which also records
+# SHA256SUMS next to the generated file. `--check` fails on any drift.
+[kernels]
+repo = "https://github.com/Oaklight/sm70-kernels.git"
+commit = "8245cf12277d4501e2c1f3e69f9deeb8b18b1e95"
+path = "third_party/sm70-kernels"
+source = "sm70_kernels/longctx_decode/csrc/sm70_longctx_decode.cu"
+dest = "sglang_restomod/attention/v100/kernels/sm70_longctx_decode.cu"
+sha256 = "3038250394ab872958e09a3eb98be914e471da8b99f5c4f199ccfc90b31b0b2f"

@@ -46,20 +46,68 @@ constexpr int kSmemBytes = 2 * kSmemKV * sizeof(__half) +
                            kGroup * kBlockN * sizeof(float) +
                            kGroup * kBlockN * sizeof(__half);
 
+// E5M2 -> FP16 is exact as the high byte of each half: the two formats share a
+// sign bit, a five-bit exponent and the same bias, so the conversion is two
+// PRMTs per four values (0.5 instructions/value) where the shift-and-mask form
+// costs 2.5. NaN and infinity come out right, because the exponent field is
+// copied rather than recomputed.
 __device__ __forceinline__ void e5m2_to_fp16_16(const uint4 raw, half* dst) {
-  // E5M2 shares sign/exponent bit positions with FP16: each byte shifted left
-  // by 8 is an exact value conversion, and the 16 output halves must keep the
-  // same dim order as the 16 input bytes. Each 32-bit input word b = [b0..b3]
-  // produces one uint32 pair [fp16(b0), fp16(b1)] and one [fp16(b2), fp16(b3)];
-  // the pairs go to consecutive uint32 slots so dim order is preserved.
   const uint32_t* r = reinterpret_cast<const uint32_t*>(&raw);
   uint32_t out[8];
 #pragma unroll
   for (int w = 0; w < 4; ++w) {
     const uint32_t b = r[w];
-    out[2 * w] = (b & 0x000000ffu) << 8 | ((b >> 8) & 0x000000ffu) << 24;
-    out[2 * w + 1] = ((b >> 16) & 0x000000ffu) << 8 |
-                     ((b >> 24) & 0x000000ffu) << 24;
+    out[2 * w] = __byte_perm(b, 0u, 0x1404);      // [0, b0, 0, b1]
+    out[2 * w + 1] = __byte_perm(b, 0u, 0x3626);  // [0, b2, 0, b3]
+  }
+  *reinterpret_cast<uint4*>(dst) = *reinterpret_cast<const uint4*>(out);
+  *reinterpret_cast<uint4*>(dst + 8) = *reinterpret_cast<const uint4*>(out + 4);
+}
+
+// E4M3 -> FP16 for one 16-byte vector. The E5M2 byte shift above is exact only
+// because E5M2 and FP16 share a sign bit, a five-bit exponent and the same
+// bias; E4M3 has a four-bit exponent with bias 7 and a three-bit mantissa, so
+// it needs real conversion. Normal numbers are a bias shift (e + 8) and a
+// mantissa slide (m << 7); E4M3 subnormals have no implicit leading one and
+// have to be renormalized into FP16, which is normal for them because E4M3's
+// smallest subnormal is 2^-9 and FP16's is 2^-24.
+// E4M3 -> FP16, four values at a time, 32 SASS instructions per 16-byte vector
+// against 480 for the branchy form and 752 for __nv_cvt_fp8x2_to_halfraw2,
+// which is emulated on SM70. Exact for all 254 finite E4M3 codes.
+//
+// The bias correction has to be a multiply, not an add. Assembling
+// s<<15 | e<<10 | m<<7 gives the right answer for normals, and for e == 0 it
+// gives the FP16 subnormal m<<7 = m*2^-17 where E4M3 means m*2^-9; one HMUL2 by
+// 256 restores both cases, and it covers two values per instruction. Adding
+// 0x2000 per half instead is wrong for every one of the 18 subnormal encodings.
+//
+// The only inputs it does not reproduce are 0x7F and 0xFF, which come out as
+// +-480 rather than NaN. A saturating quantizer cannot produce them, so a KV
+// cache cannot contain them; the cost of fixing it is 1.8x on this path.
+__device__ __forceinline__ uint2 cvt4_e4m3(const unsigned w) {
+  const unsigned lo = (w << 7) & 0x80808080u;              // mantissa bit 0
+  const unsigned hi = (((w & 0x7F7F7F7Fu) >> 1) & 0x3F3F3F3Fu) |
+                      (w & 0x80808080u);                    // e at 5:2, sign at 7
+  union {
+    unsigned u;
+    __half2 h;
+  } c0, c1;
+  const __half2 k256 = __float2half2_rn(256.0f);
+  c0.u = __byte_perm(lo, hi, 0x5140);  // lo.b0, hi.b0, lo.b1, hi.b1
+  c1.u = __byte_perm(lo, hi, 0x7362);  // lo.b2, hi.b2, lo.b3, hi.b3
+  c0.h = __hmul2(c0.h, k256);
+  c1.h = __hmul2(c1.h, k256);
+  return make_uint2(c0.u, c1.u);
+}
+
+__device__ __forceinline__ void e4m3_to_fp16_16(const uint4 raw, half* dst) {
+  const uint32_t* r = reinterpret_cast<const uint32_t*>(&raw);
+  uint32_t out[8];
+#pragma unroll
+  for (int w = 0; w < 4; ++w) {
+    const uint2 p = cvt4_e4m3(r[w]);
+    out[2 * w] = p.x;
+    out[2 * w + 1] = p.y;
   }
   *reinterpret_cast<uint4*>(dst) = *reinterpret_cast<const uint4*>(out);
   *reinterpret_cast<uint4*>(dst + 8) = *reinterpret_cast<const uint4*>(out + 4);
@@ -222,6 +270,128 @@ __device__ __forceinline__ void decode_tile_compute(
   }
 }
 
+
+// ---- PV across two warps per row -------------------------------------------
+// Warp pair (2r, 2r+1) owns row r. The even warp keeps QK, the online softmax
+// and the m/l state, because those are lane==token and have no spare dimension;
+// both warps then run PV over half the row each, lane l owning dims
+// [half*128 + 4l, +4). Disjoint dims mean no reduction and no change to any
+// lane's accumulation order.
+constexpr int kPv2DimsPerLane = kDim / (2 * 32);   // 4
+constexpr int kPv2Half = kDim / 2;                 // 128
+
+__device__ __forceinline__ void qk_softmax_tile(
+    const int r, const int tile_tokens, const __half* __restrict__ ks,
+    const __half* __restrict__ vs, const __half* __restrict__ qs,
+    float* __restrict__ scores, __half* __restrict__ probs, float& m_row,
+    float& l_row, float* __restrict__ alpha_s, const float scale_log2) {
+  const int lane = threadIdx.x & 31;
+
+  // ---- QK: lane == token, the whole 256-dim dot in four fp16 accumulators ----
+  {
+    const uint4* qv = reinterpret_cast<const uint4*>(qs + r * kDim);
+    const uint4* kv = reinterpret_cast<const uint4*>(ks + lane * kKVStride);
+    __half2 hacc0 = __float2half2_rn(0.f);
+    __half2 hacc1 = hacc0, hacc2 = hacc0, hacc3 = hacc0;
+#pragma unroll
+    for (int h = 0; h < kDim / 8; ++h) {
+      const uint4 qa = qv[h];
+      const uint4 ka = kv[h];
+      const __half2* qh = reinterpret_cast<const __half2*>(&qa);
+      const __half2* kh2 = reinterpret_cast<const __half2*>(&ka);
+      hacc0 = __hfma2(qh[0], kh2[0], hacc0);
+      hacc1 = __hfma2(qh[1], kh2[1], hacc1);
+      hacc2 = __hfma2(qh[2], kh2[2], hacc2);
+      hacc3 = __hfma2(qh[3], kh2[3], hacc3);
+    }
+    const __half2 ssum = __hadd2(__hadd2(hacc0, hacc1), __hadd2(hacc2, hacc3));
+    const float acc = __half2float(ssum.x) + __half2float(ssum.y);
+    if (lane < tile_tokens) {
+      scores[r * kBlockN + lane] = acc;
+    }
+  }
+  __syncwarp();
+
+  // ---- online softmax ----
+  float loc_max = -1.0e30f;
+  if (lane < tile_tokens) {
+    loc_max = scores[r * kBlockN + lane];
+  }
+#pragma unroll
+  for (int off = 16; off; off >>= 1) {
+    loc_max = fmaxf(loc_max, __shfl_xor_sync(0xffffffffu, loc_max, off));
+  }
+  const float m_new = fmaxf(m_row, loc_max);
+  const float alpha = exp2f((m_row - m_new) * scale_log2);
+  m_row = m_new;
+  l_row *= alpha;
+  float p = 0.f;
+  if (lane < tile_tokens) {
+    p = exp2f((scores[r * kBlockN + lane] - m_new) * scale_log2);
+  }
+  probs[r * kBlockN + lane] = __float2half(p);
+  float loc_sum = p;
+#pragma unroll
+  for (int off = 16; off; off >>= 1) {
+    loc_sum += __shfl_xor_sync(0xffffffffu, loc_sum, off);
+  }
+  l_row += loc_sum;
+  __syncwarp();
+  alpha_s[r] = alpha;
+}
+
+__device__ __forceinline__ void pv_half_tile(
+    const int r, const int half, const __half* __restrict__ vs,
+    const __half* __restrict__ probs, float (&o_acc)[kAccPerLane],
+    const float alpha) {
+  const int lane = threadIdx.x & 31;
+  if (alpha != 1.f) {
+#pragma unroll
+    for (int j = 0; j < kPv2DimsPerLane; ++j) {
+      o_acc[j] *= alpha;
+    }
+  }
+  __half2 tacc[kPv2DimsPerLane / 2];
+#pragma unroll
+  for (int j = 0; j < kPv2DimsPerLane / 2; ++j) {
+    tacc[j] = __float2half2_rn(0.f);
+  }
+  const int d0 = half * kPv2Half + kPv2DimsPerLane * lane;
+#pragma unroll
+  for (int n = 0; n < kBlockN; ++n) {
+    const float pn = __half2float(probs[r * kBlockN + n]);
+    if (pn == 0.f) {
+      continue;
+    }
+    const __half2 p2 = __float2half2_rn(pn);
+    const uint2 va = *reinterpret_cast<const uint2*>(vs + n * kKVStride + d0);
+    const __half2* vh = reinterpret_cast<const __half2*>(&va);
+#pragma unroll
+    for (int j = 0; j < kPv2DimsPerLane / 2; ++j) {
+      tacc[j] = __hfma2(p2, vh[j], tacc[j]);
+    }
+  }
+#pragma unroll
+  for (int j = 0; j < kPv2DimsPerLane / 2; ++j) {
+    o_acc[2 * j] += __low2float(tacc[j]);
+    o_acc[2 * j + 1] += __high2float(tacc[j]);
+  }
+}
+
+__device__ __forceinline__ void store_partial_row_pv2(
+    __half* __restrict__ o_row, const float (&o_acc)[kAccPerLane], const int half,
+    const float inv_l, const float kv_scale) {
+  const int lane = threadIdx.x & 31;
+  __half2 out[kPv2DimsPerLane / 2];
+#pragma unroll
+  for (int j = 0; j < kPv2DimsPerLane / 2; ++j) {
+    out[j] = __floats2half2_rn(o_acc[2 * j] * inv_l * kv_scale,
+                               o_acc[2 * j + 1] * inv_l * kv_scale);
+  }
+  *reinterpret_cast<uint2*>(o_row + half * kPv2Half + kPv2DimsPerLane * lane) =
+      *reinterpret_cast<const uint2*>(out);
+}
+
 // Write one normalized query row: lane l owns dims [8l, 8l+8), so the row goes
 // out as a single 16-byte store per lane.
 __device__ __forceinline__ void store_partial_row(
@@ -265,21 +435,26 @@ constexpr int kPipeLoadIters =
 // the launcher sets the dynamic-smem attribute (V100 allows 96 KB).
 constexpr int kPipeDynSmemBytes = 2 * 2 * kSmemKV * sizeof(__half);
 
-// Stage one 32-token K/V tile. Loads are issued as a batch before any of them
-// is consumed: the e5m2 path reads 16 bytes per request, so a load-convert-store
-// loop that waits on each request caps the grid at a few KB of bytes in flight
-// per SM and lands at ~330 GB/s, while the same code in fp16 (32 bytes per
-// request) reaches 640. batching kIters requests per thread is what closes gap.
+// Register staging for a tile a loader warp has fetched but not yet written to
+// smem. The fp16 read is two 16-byte vectors per lane and needs a register each;
+// the e5m2 read is one, so that path pays no second register.
+template <typename KV, int kIters>
+struct PipeRegs {
+  uint4 ra[kIters];
+  uint4 rb[sizeof(KV) == 1 ? 1 : kIters];
+  __half* dst[kIters];
+};
+
+// Phase one of a tile load: every request the tile needs is issued here and
+// lands in registers, so the caller can carry the tile across a barrier while
+// other warps compute on the previous one.
 template <typename KV, int kTh, int kIters>
-__device__ __forceinline__ void pipe_load_tile(
+__device__ __forceinline__ void pipe_fetch_tile(
     const KV* __restrict__ k_cache, const KV* __restrict__ v_cache,
     const int* __restrict__ page_table, const int seq_id, const int kv_head,
     const int kv_stride, const int max_blocks, const int tile_begin,
     const int split_end, const int ltid, __half* __restrict__ ks,
-    __half* __restrict__ vs) {
-  uint4 ra[kIters];
-  uint4 rb[kIters];  // second half of an fp16 vector; unused for e5m2
-  __half* dstv[kIters];
+    __half* __restrict__ vs, PipeRegs<KV, kIters>& st) {
 #pragma unroll
   for (int it = 0; it < kIters; ++it) {
     const int v = ltid + it * kTh;
@@ -300,40 +475,68 @@ __device__ __forceinline__ void pipe_load_tile(
               : -1;
     // A tail iteration (v past the tile) must not write at all: the masked
     // zero would land on slots an earlier iteration already staged.
-    dstv[it] = live ? (is_v ? vs : ks) + tok_local * kKVStride + d_off : nullptr;
+    st.dst[it] = live ? (is_v ? vs : ks) + tok_local * kKVStride + d_off : nullptr;
     const uint4 zero = make_uint4(0, 0, 0, 0);
-    ra[it] = zero;
-    rb[it] = zero;
+    st.ra[it] = zero;
+    if constexpr (sizeof(KV) != 1) {
+      st.rb[it] = zero;
+    }
     if (valid) {
       const uint4* src = reinterpret_cast<const uint4*>(
           (is_v ? v_cache : k_cache) + base);
-      ra[it] = src[0];
+      st.ra[it] = src[0];
       if constexpr (sizeof(KV) != 1) {
-        rb[it] = src[1];
+        st.rb[it] = src[1];
       }
     }
   }
+}
+
+// Phase two: dequantize (or copy) the staged registers into the smem tile.
+template <typename KV, int kIters, bool kE4M3>
+__device__ __forceinline__ void pipe_store_tile(PipeRegs<KV, kIters>& st) {
 #pragma unroll
   for (int it = 0; it < kIters; ++it) {
-    if (dstv[it] == nullptr) {
+    if (st.dst[it] == nullptr) {
       continue;
     }
     if constexpr (sizeof(KV) == 1) {
-      // E5M2 shares the sign/exponent layout with FP16, so one byte becomes one
-      // half by shifting left eight bits; 16 bytes become two 16-byte stores.
-      e5m2_to_fp16_16(ra[it], dstv[it]);
+      if constexpr (kE4M3) {
+        e4m3_to_fp16_16(st.ra[it], st.dst[it]);
+      } else {
+        e5m2_to_fp16_16(st.ra[it], st.dst[it]);
+      }
     } else {
-      uint4* d = reinterpret_cast<uint4*>(dstv[it]);
-      d[0] = ra[it];
-      d[1] = rb[it];
+      uint4* d = reinterpret_cast<uint4*>(st.dst[it]);
+      d[0] = st.ra[it];
+      d[1] = st.rb[it];
     }
   }
+}
+
+// Stage one 32-token K/V tile. Loads are issued as a batch before any of them
+// is consumed: the e5m2 path reads 16 bytes per request, so a load-convert-store
+// loop that waits on each request caps the grid at a few KB of bytes in flight
+// per SM and lands at ~330 GB/s, while the same code in fp16 (32 bytes per
+// request) reaches 640. batching kIters requests per thread is what closes gap.
+template <typename KV, int kTh, int kIters, bool kE4M3>
+__device__ __forceinline__ void pipe_load_tile(
+    const KV* __restrict__ k_cache, const KV* __restrict__ v_cache,
+    const int* __restrict__ page_table, const int seq_id, const int kv_head,
+    const int kv_stride, const int max_blocks, const int tile_begin,
+    const int split_end, const int ltid, __half* __restrict__ ks,
+    __half* __restrict__ vs) {
+  PipeRegs<KV, kIters> st;
+  pipe_fetch_tile<KV, kTh, kIters>(k_cache, v_cache, page_table, seq_id,
+                                   kv_head, kv_stride, max_blocks, tile_begin,
+                                   split_end, ltid, ks, vs, st);
+  pipe_store_tile<KV, kIters, kE4M3>(st);
 }
 
 // kCtas = CTAs resident per SM. At two, the SM interleaves one CTA's load with
 // the other's math for free, and holds twice the bytes in flight - which is the
 // binding constraint for the 16-byte e5m2 reads.
-template <typename KV, int kCtas>
+template <typename KV, int kCtas, bool kE4M3>
 __global__ void __launch_bounds__(kThreads, kCtas)
 decode_partial_kernel(const __half* __restrict__ q,
                       const KV* __restrict__ k_cache,
@@ -426,7 +629,7 @@ decode_partial_kernel(const __half* __restrict__ q,
     const int tile_tokens = min(kBlockN, split_end - tile_begin);
 
     // ---- Cooperative vectorized load + E5M2 -> FP16 convert (K and V) ----
-    pipe_load_tile<KV, kThreads, (2 * kPipeVecPerTensor + kThreads - 1) / kThreads>(
+    pipe_load_tile<KV, kThreads, (2 * kPipeVecPerTensor + kThreads - 1) / kThreads, kE4M3>(
         k_cache, v_cache, page_table, seq_id, kv_head, kv_stride, max_blocks,
         tile_begin, split_end, tid, ks, vs);
     __syncthreads();
@@ -461,7 +664,7 @@ decode_partial_kernel(const __half* __restrict__ q,
   }
 }
 
-template <typename KV>
+template <typename KV, bool kE4M3>
 __global__ void __launch_bounds__(kThreads, 1)
 decode_partial_kernel_pipelined(const __half* __restrict__ q,
                                 const KV* __restrict__ k_cache,
@@ -549,7 +752,7 @@ decode_partial_kernel_pipelined(const __half* __restrict__ q,
   // Prologue: the loader warps fill buffer 0 while everyone else finishes
   // staging the queries.
   if (!is_compute_warp) {
-    pipe_load_tile<KV, kPipeLoadThreads, kPipeLoadIters>(
+    pipe_load_tile<KV, kPipeLoadThreads, kPipeLoadIters, kE4M3>(
         k_cache, v_cache, page_table, seq_id, kv_head, kv_stride, max_blocks,
         split_begin, split_end, ltid, ks0, vs0);
   }
@@ -561,7 +764,7 @@ decode_partial_kernel_pipelined(const __half* __restrict__ q,
       // barrier that ended the previous iteration.
       if (tile + 1 < num_tiles) {
         const int next = (tile + 1) & 1;
-        pipe_load_tile<KV, kPipeLoadThreads, kPipeLoadIters>(
+        pipe_load_tile<KV, kPipeLoadThreads, kPipeLoadIters, kE4M3>(
             k_cache, v_cache, page_table, seq_id, kv_head, kv_stride,
             max_blocks, split_begin + (tile + 1) * kBlockN, split_end, ltid,
             ks0 + next * kSmemKV, vs0 + next * kSmemKV);
@@ -599,6 +802,281 @@ decode_partial_kernel_pipelined(const __half* __restrict__ q,
       partial_lse[((int64_t)seq_id * max_splits + split_id) * heads_total +
                   kv_head * kGroup + r] = lse;
     }
+  }
+}
+
+// Pipeline plus occupancy. The shipped pipeline pays a second smem tile (67.6 KB)
+// to hold the prefetched tile, which leaves it one CTA per SM; at TP2 the grid is
+// kv_heads * splits = two CTAs per SM, so that pipeline runs its second residency
+// slot empty. Holding the prefetched tile in registers instead costs no smem, so
+// two CTAs stay resident and each one still overlaps its loads with its math.
+template <typename KV, bool kE4M3>
+__global__ void __launch_bounds__(kThreads, 2)
+decode_partial_kernel_regpipe(const __half* __restrict__ q,
+                              const KV* __restrict__ k_cache,
+                              const KV* __restrict__ v_cache,
+                              const int* __restrict__ page_table,
+                              const int* __restrict__ seq_lens,
+                              const int max_splits,
+                              const int min_tokens_per_split,
+                              const int max_blocks, const float score_scale,
+                              const float kv_scale,
+                              __half* __restrict__ partial_o,
+                              float* __restrict__ partial_lse) {
+  const int kv_head = blockIdx.x;
+  const int kv_heads = gridDim.x;
+  const int kv_stride = kDim * kv_heads;  // per-token elements across KV heads
+  const int heads_total = kGroup * kv_heads;
+  const int split_id = blockIdx.y;
+  const int seq_id = blockIdx.z;
+
+  __shared__ __half ks[kSmemKV];
+  __shared__ __half vs[kSmemKV];
+  __shared__ __half qs[kGroup * kDim];
+  __shared__ float scores[kGroup * kBlockN];
+  __shared__ __half probs[kGroup * kBlockN];
+
+  const int tid = threadIdx.x;
+  const int warp = tid >> 5;
+  const int lane = tid & 31;
+  const bool is_compute_warp = warp < kPipeComputeWarps;
+  const int ltid = tid - kPipeComputeThreads;  // valid for loader warps only
+
+  const int context = seq_lens[seq_id];
+  const int active_splits =
+      min(max_splits, max(1, (context + min_tokens_per_split - 1) /
+                                 min_tokens_per_split));
+  if (split_id >= active_splits || context <= 0) {
+    return;
+  }
+  const int split_len = (context + active_splits - 1) / active_splits;
+  const int split_begin = split_id * split_len;
+  const int split_end = min(context, split_begin + split_len);
+  if (split_begin >= split_end) {
+    if (is_compute_warp) {
+      __half* o_row =
+          partial_o +
+          (((int64_t)seq_id * max_splits + split_id) * heads_total +
+           kv_head * kGroup + warp) *
+              kDim;
+      for (int d = lane; d < kDim; d += 32) {
+        o_row[d] = __float2half(0.f);
+      }
+      if (lane == 0) {
+        partial_lse[((int64_t)seq_id * max_splits + split_id) * heads_total +
+                    kv_head * kGroup + warp] = -1.0e30f;
+      }
+    }
+    return;
+  }
+  const float scale_log2 = score_scale * kLog2E;
+
+  for (int i = tid; i < kGroup * kDim; i += kThreads) {
+    const int r = i / kDim;
+    const int d = i % kDim;
+    qs[r * kDim + d] = q[(kv_head * kGroup + r) * kDim + d];
+  }
+
+  float m_row[kGroup];
+  float l_row[kGroup];
+  float o_acc[kGroup][kAccPerLane];
+#pragma unroll
+  for (int r = 0; r < kGroup; ++r) {
+    m_row[r] = -1.0e30f;
+    l_row[r] = 0.f;
+  }
+  if (is_compute_warp) {
+#pragma unroll
+    for (int j = 0; j < kAccPerLane; ++j) {
+      o_acc[warp][j] = 0.f;
+    }
+  }
+
+  const int num_tiles = (split_end - split_begin + kBlockN - 1) / kBlockN;
+
+  // Prologue: the loader warps stage tile 0 while the others finish the queries.
+  if (!is_compute_warp) {
+    PipeRegs<KV, kPipeLoadIters> st;
+    pipe_fetch_tile<KV, kPipeLoadThreads, kPipeLoadIters>(
+        k_cache, v_cache, page_table, seq_id, kv_head, kv_stride, max_blocks,
+        split_begin, split_end, ltid, ks, vs, st);
+    pipe_store_tile<KV, kPipeLoadIters, kE4M3>(st);
+  }
+  __syncthreads();
+
+  for (int tile = 0; tile < num_tiles; ++tile) {
+    const bool more = tile + 1 < num_tiles;
+    if (!is_compute_warp) {
+      PipeRegs<KV, kPipeLoadIters> st;
+      if (more) {
+        // Issued before the barrier, so these requests are in flight while the
+        // compute warps work through tile on the smem buffer.
+        pipe_fetch_tile<KV, kPipeLoadThreads, kPipeLoadIters>(
+            k_cache, v_cache, page_table, seq_id, kv_head, kv_stride,
+            max_blocks, split_begin + (tile + 1) * kBlockN, split_end, ltid,
+            ks, vs, st);
+      }
+      __syncthreads();
+      if (more) {
+        pipe_store_tile<KV, kPipeLoadIters, kE4M3>(st);
+      }
+    } else {
+      const int tile_begin = split_begin + tile * kBlockN;
+      const int tile_tokens = min(kBlockN, split_end - tile_begin);
+      decode_tile_compute(warp, tile_tokens, ks, vs, qs, scores,
+                          probs, m_row[warp], l_row[warp],
+                          o_acc[warp], scale_log2);
+      __syncthreads();
+    }
+    __syncthreads();
+  }
+
+  if (is_compute_warp) {
+    const int r = warp;
+    const float inv_l = l_row[r] > 0.f ? 1.f / l_row[r] : 0.f;
+    const int oh = kv_head * kGroup + r;
+    __half* o_row = partial_o +
+                    (((int64_t)seq_id * max_splits + split_id) * heads_total +
+                     oh) *
+                        kDim;
+    store_partial_row(o_row, o_acc[r], inv_l, kv_scale);
+    if (lane == 0) {
+      const float lse =
+          l_row[r] > 0.f ? __log2f(l_row[r]) + m_row[r] * scale_log2 : -1.0e30f;
+      partial_lse[((int64_t)seq_id * max_splits + split_id) * heads_total +
+                  kv_head * kGroup + r] = lse;
+    }
+  }
+}
+
+// PV across two warps per row: twelve compute warps instead of six, so the SM
+// has more eligible warps when the compute phase is latency-bound. Costs a third
+// barrier per tile (QK+softmax, then PV) and two floats of shared state per row.
+template <typename KV, bool kE4M3>
+__global__ void __launch_bounds__(kThreads, 2)
+decode_partial_kernel_pv2(const __half* __restrict__ q,
+                          const KV* __restrict__ k_cache,
+                          const KV* __restrict__ v_cache,
+                          const int* __restrict__ page_table,
+                          const int* __restrict__ seq_lens, const int max_splits,
+                          const int min_tokens_per_split, const int max_blocks,
+                          const float score_scale, const float kv_scale,
+                          __half* __restrict__ partial_o,
+                          float* __restrict__ partial_lse) {
+  const int kv_head = blockIdx.x;
+  const int kv_heads = gridDim.x;
+  const int kv_stride = kDim * kv_heads;
+  const int heads_total = kGroup * kv_heads;
+  const int split_id = blockIdx.y;
+  const int seq_id = blockIdx.z;
+
+  __shared__ __half ks[kSmemKV];
+  __shared__ __half vs[kSmemKV];
+  __shared__ __half qs[kGroup * kDim];
+  __shared__ float scores[kGroup * kBlockN];
+  __shared__ __half probs[kGroup * kBlockN];
+  __shared__ float alpha_s[kGroup];
+  __shared__ float inv_s[kGroup];
+
+  const int tid = threadIdx.x;
+  const int warp = tid >> 5;
+  const int lane = tid & 31;
+  const bool is_compute_warp = warp < 2 * kGroup;
+  const int row = warp >> 1;
+  const int half = warp & 1;
+
+  const int context = seq_lens[seq_id];
+  const int active_splits =
+      min(max_splits, max(1, (context + min_tokens_per_split - 1) /
+                                 min_tokens_per_split));
+  if (split_id >= active_splits || context <= 0) {
+    return;
+  }
+  const int split_len = (context + active_splits - 1) / active_splits;
+  const int split_begin = split_id * split_len;
+  const int split_end = min(context, split_begin + split_len);
+  if (split_begin >= split_end) {
+    if (is_compute_warp) {
+      __half* o_row =
+          partial_o +
+          (((int64_t)seq_id * max_splits + split_id) * heads_total +
+           kv_head * kGroup + row) *
+              kDim;
+      for (int d = half * kPv2Half + lane; d < (half + 1) * kPv2Half; d += 32) {
+        o_row[d] = __float2half(0.f);
+      }
+      if (half == 0 && lane == 0) {
+        partial_lse[((int64_t)seq_id * max_splits + split_id) * heads_total +
+                    kv_head * kGroup + row] = -1.0e30f;
+      }
+    }
+    return;
+  }
+  const float scale_log2 = score_scale * kLog2E;
+
+  for (int i = tid; i < kGroup * kDim; i += kThreads) {
+    const int r = i / kDim;
+    const int d = i % kDim;
+    qs[r * kDim + d] = q[(kv_head * kGroup + r) * kDim + d];
+  }
+
+  float m_row[kGroup];
+  float l_row[kGroup];
+  float o_acc[kGroup][kAccPerLane];
+#pragma unroll
+  for (int r = 0; r < kGroup; ++r) {
+    m_row[r] = -1.0e30f;
+    l_row[r] = 0.f;
+  }
+  if (is_compute_warp) {
+#pragma unroll
+    for (int j = 0; j < kAccPerLane; ++j) {
+      o_acc[row][j] = 0.f;
+    }
+  }
+  __syncthreads();
+
+  const int num_tiles = (split_end - split_begin + kBlockN - 1) / kBlockN;
+  for (int tile = 0; tile < num_tiles; ++tile) {
+    const int tile_begin = split_begin + tile * kBlockN;
+    const int tile_tokens = min(kBlockN, split_end - tile_begin);
+
+    pipe_load_tile<KV, kThreads, (2 * kPipeVecPerTensor + kThreads - 1) / kThreads, kE4M3>(
+        k_cache, v_cache, page_table, seq_id, kv_head, kv_stride, max_blocks,
+        tile_begin, split_end, tid, ks, vs);
+    __syncthreads();
+
+    if (is_compute_warp && half == 0) {
+      qk_softmax_tile(row, tile_tokens, ks, vs, qs, scores, probs,
+                      m_row[row], l_row[row], alpha_s, scale_log2);
+    }
+    __syncthreads();
+
+    if (is_compute_warp) {
+      pv_half_tile(row, half, vs, probs, o_acc[row], alpha_s[row]);
+    }
+    __syncthreads();
+  }
+
+  // Publish normalization and LSE from the even warp, then both halves store.
+  if (is_compute_warp && half == 0) {
+    const float inv_l = l_row[row] > 0.f ? 1.f / l_row[row] : 0.f;
+    inv_s[row] = inv_l;
+    if (lane == 0) {
+      const float lse =
+          l_row[row] > 0.f ? __log2f(l_row[row]) + m_row[row] * scale_log2
+                           : -1.0e30f;
+      partial_lse[((int64_t)seq_id * max_splits + split_id) * heads_total +
+                  kv_head * kGroup + row] = lse;
+    }
+  }
+  __syncthreads();
+  if (is_compute_warp) {
+    __half* o_row = partial_o +
+                    (((int64_t)seq_id * max_splits + split_id) * heads_total +
+                     kv_head * kGroup + row) *
+                        kDim;
+    store_partial_row_pv2(o_row, o_acc[row], half, inv_s[row], kv_scale);
   }
 }
 
@@ -1129,6 +1607,7 @@ struct DecodeArgs {
   float scale_k;
   float vscale;
   bool byte_cache;
+  bool e4m3;  // only meaningful when byte_cache
 };
 
 inline DecodeArgs decode_args(const torch::Tensor& q,
@@ -1147,9 +1626,10 @@ inline DecodeArgs decode_args(const torch::Tensor& q,
               "sm70_longctx expects H6/D256 GQA with a full KV-head split "
               "(TP1 Hkv4, TP2 Hkv2, TP4 Hkv1)");
   TORCH_CHECK((k_cache.scalar_type() == torch::kUInt8 ||
+               k_cache.scalar_type() == torch::kFloat8_e4m3fn ||
                k_cache.scalar_type() == torch::kHalf) &&
                   v_cache.scalar_type() == k_cache.scalar_type(),
-              "sm70_longctx expects an E5M2 byte or FP16 KV cache");
+              "sm70_longctx expects an E5M2 byte, E4M3 or FP16 KV cache");
   TORCH_CHECK(q.dtype() == torch::kHalf, "sm70_longctx expects fp16 queries");
   DecodeArgs a;
   a.grid = dim3((unsigned)heads_kv, (unsigned)max_splits, (unsigned)batch);
@@ -1159,18 +1639,20 @@ inline DecodeArgs decode_args(const torch::Tensor& q,
   a.min_tokens = (int)min_tokens_per_split;
   a.scale_k = (float)(softmax_scale * k_scale);
   a.vscale = (float)v_scale;
-  a.byte_cache = k_cache.scalar_type() == torch::kUInt8;
+  a.byte_cache = k_cache.scalar_type() == torch::kUInt8 ||
+                 k_cache.scalar_type() == torch::kFloat8_e4m3fn;
+  a.e4m3 = k_cache.scalar_type() == torch::kFloat8_e4m3fn;
   return a;
 }
 
-template <typename KV, int kCtas>
+template <typename KV, int kCtas, bool kE4M3>
 inline void launch_serial(const DecodeArgs& a, cudaStream_t stream,
                           const torch::Tensor& q, const torch::Tensor& k_cache,
                           const torch::Tensor& v_cache,
                           const torch::Tensor& seq_lens,
                           torch::Tensor& partial_o,
                           torch::Tensor& partial_lse) {
-  decode_partial_kernel<KV, kCtas><<<a.grid, kThreads, 0, stream>>>(
+  decode_partial_kernel<KV, kCtas, kE4M3><<<a.grid, kThreads, 0, stream>>>(
       reinterpret_cast<const __half*>(q.data_ptr()),
       reinterpret_cast<const KV*>(k_cache.data_ptr()),
       reinterpret_cast<const KV*>(v_cache.data_ptr()), a.page_ptr,
@@ -1187,25 +1669,106 @@ inline void dispatch_serial(const DecodeArgs& a, cudaStream_t stream,
                             const torch::Tensor& seq_lens,
                             torch::Tensor& partial_o,
                             torch::Tensor& partial_lse) {
-  if (a.byte_cache) {
-    launch_serial<uint8_t, kCtas>(a, stream, q, k_cache, v_cache, seq_lens,
-                                  partial_o, partial_lse);
+  if (a.e4m3) {
+    launch_serial<uint8_t, kCtas, true>(a, stream, q, k_cache, v_cache,
+                                        seq_lens, partial_o, partial_lse);
+  } else if (a.byte_cache) {
+    launch_serial<uint8_t, kCtas, false>(a, stream, q, k_cache, v_cache,
+                                         seq_lens, partial_o, partial_lse);
   } else {
-    launch_serial<__half, kCtas>(a, stream, q, k_cache, v_cache, seq_lens,
-                                 partial_o, partial_lse);
+    launch_serial<__half, kCtas, false>(a, stream, q, k_cache, v_cache,
+                                        seq_lens, partial_o, partial_lse);
+  }
+}
+
+template <typename KV, bool kE4M3>
+inline void launch_regpipe(const DecodeArgs& a, cudaStream_t stream,
+                           const torch::Tensor& q, const torch::Tensor& k_cache,
+                           const torch::Tensor& v_cache,
+                           const torch::Tensor& seq_lens,
+                           torch::Tensor& partial_o,
+                           torch::Tensor& partial_lse) {
+  decode_partial_kernel_regpipe<KV, kE4M3><<<a.grid, kThreads, 0, stream>>>(
+      reinterpret_cast<const __half*>(q.data_ptr()),
+      reinterpret_cast<const KV*>(k_cache.data_ptr()),
+      reinterpret_cast<const KV*>(v_cache.data_ptr()), a.page_ptr,
+      seq_lens.data_ptr<int>(), a.max_splits, a.min_tokens, a.max_blocks,
+      a.scale_k, a.vscale, reinterpret_cast<__half*>(partial_o.data_ptr()),
+      partial_lse.data_ptr<float>());
+}
+
+inline void dispatch_regpipe(const DecodeArgs& a, cudaStream_t stream,
+                             const torch::Tensor& q,
+                             const torch::Tensor& k_cache,
+                             const torch::Tensor& v_cache,
+                             const torch::Tensor& seq_lens,
+                             torch::Tensor& partial_o,
+                             torch::Tensor& partial_lse) {
+  if (a.e4m3) {
+    launch_regpipe<uint8_t, true>(a, stream, q, k_cache, v_cache, seq_lens,
+                                  partial_o, partial_lse);
+  } else if (a.byte_cache) {
+    launch_regpipe<uint8_t, false>(a, stream, q, k_cache, v_cache, seq_lens,
+                                   partial_o, partial_lse);
+  } else {
+    launch_regpipe<__half, false>(a, stream, q, k_cache, v_cache, seq_lens,
+                                  partial_o, partial_lse);
+  }
+}
+
+template <typename KV, bool kE4M3>
+inline void launch_pv2(const DecodeArgs& a, cudaStream_t stream,
+                       const torch::Tensor& q, const torch::Tensor& k_cache,
+                       const torch::Tensor& v_cache,
+                       const torch::Tensor& seq_lens,
+                       torch::Tensor& partial_o, torch::Tensor& partial_lse) {
+  decode_partial_kernel_pv2<KV, kE4M3><<<a.grid, kThreads, 0, stream>>>(
+      reinterpret_cast<const __half*>(q.data_ptr()),
+      reinterpret_cast<const KV*>(k_cache.data_ptr()),
+      reinterpret_cast<const KV*>(v_cache.data_ptr()), a.page_ptr,
+      seq_lens.data_ptr<int>(), a.max_splits, a.min_tokens, a.max_blocks,
+      a.scale_k, a.vscale, reinterpret_cast<__half*>(partial_o.data_ptr()),
+      partial_lse.data_ptr<float>());
+}
+
+inline void dispatch_pv2(const DecodeArgs& a, cudaStream_t stream,
+                         const torch::Tensor& q, const torch::Tensor& k_cache,
+                         const torch::Tensor& v_cache,
+                         const torch::Tensor& seq_lens,
+                         torch::Tensor& partial_o, torch::Tensor& partial_lse) {
+  if (a.e4m3) {
+    launch_pv2<uint8_t, true>(a, stream, q, k_cache, v_cache, seq_lens,
+                              partial_o, partial_lse);
+  } else if (a.byte_cache) {
+    launch_pv2<uint8_t, false>(a, stream, q, k_cache, v_cache, seq_lens,
+                               partial_o, partial_lse);
+  } else {
+    launch_pv2<__half, false>(a, stream, q, k_cache, v_cache, seq_lens,
+                              partial_o, partial_lse);
   }
 }
 
 // Dynamic smem above 48 KB needs the opt-in attribute set once per entry
 // point; V100 allows up to 96 KB with 1 KB reserved.
-template <typename KV>
+// One int rather than <type, bool>: TORCH_CHECK is a macro and the comma in a
+// two-argument template list splits its arguments.
+template <int kVariant>  // 0 = E5M2 bytes, 1 = E4M3, 2 = FP16
 bool pipelined_smem_ready() {
   static const bool ok = [] {
-    return cudaFuncSetAttribute(
-               reinterpret_cast<const void*>(
-                   &decode_partial_kernel_pipelined<KV>),
-               cudaFuncAttributeMaxDynamicSharedMemorySize,
-               kPipeDynSmemBytes) == cudaSuccess;
+    void* entry = nullptr;
+    if constexpr (kVariant == 2) {
+      entry = reinterpret_cast<void*>(
+          &decode_partial_kernel_pipelined<__half, false>);
+    } else if constexpr (kVariant == 1) {
+      entry = reinterpret_cast<void*>(
+          &decode_partial_kernel_pipelined<uint8_t, true>);
+    } else {
+      entry = reinterpret_cast<void*>(
+          &decode_partial_kernel_pipelined<uint8_t, false>);
+    }
+    return cudaFuncSetAttribute(entry,
+                                cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                kPipeDynSmemBytes) == cudaSuccess;
   }();
   return ok;
 }
@@ -1263,9 +1826,10 @@ void sm70_longctx_decode_pipelined(
               "sm70_longctx expects H6/D256 GQA with a full KV-head split "
               "(TP1 Hkv4, TP2 Hkv2, TP4 Hkv1)");
   TORCH_CHECK((k_cache.scalar_type() == torch::kUInt8 ||
+               k_cache.scalar_type() == torch::kFloat8_e4m3fn ||
                k_cache.scalar_type() == torch::kHalf) &&
                   v_cache.scalar_type() == k_cache.scalar_type(),
-              "sm70_longctx expects an E5M2 byte or FP16 KV cache");
+              "sm70_longctx expects an E5M2 byte, E4M3 or FP16 KV cache");
   TORCH_CHECK(q.dtype() == torch::kHalf, "sm70_longctx expects fp16 queries");
   auto stream = at::cuda::getCurrentCUDAStream();
   dim3 grid((unsigned)heads_kv, (unsigned)max_splits, (unsigned)batch);
@@ -1274,11 +1838,25 @@ void sm70_longctx_decode_pipelined(
   const int max_blocks = page_table.numel() > 0 ? (int)page_table.size(1) : 0;
   const float scale_k = (float)(softmax_scale * k_scale);
   const float vscale = (float)v_scale;
-  if (k_cache.scalar_type() == torch::kUInt8) {
-    TORCH_CHECK(pipelined_smem_ready<uint8_t>(),
+  const bool is_e4m3 = k_cache.scalar_type() == torch::kFloat8_e4m3fn;
+  if (is_e4m3) {
+    TORCH_CHECK(pipelined_smem_ready<1>(),
                 "cannot raise the dynamic smem limit for the pipelined "
                 "decode kernel");
-    decode_partial_kernel_pipelined<uint8_t>
+    decode_partial_kernel_pipelined<uint8_t, true>
+        <<<grid, kThreads, kPipeDynSmemBytes, stream>>>(
+            reinterpret_cast<const __half*>(q.data_ptr()),
+            reinterpret_cast<const uint8_t*>(k_cache.data_ptr()),
+            reinterpret_cast<const uint8_t*>(v_cache.data_ptr()), page_ptr,
+            seq_lens.data_ptr<int>(), (int)max_splits,
+            (int)min_tokens_per_split, max_blocks, scale_k, vscale,
+            reinterpret_cast<__half*>(partial_o.data_ptr()),
+            partial_lse.data_ptr<float>());
+  } else if (k_cache.scalar_type() == torch::kUInt8) {
+    TORCH_CHECK(pipelined_smem_ready<0>(),
+                "cannot raise the dynamic smem limit for the pipelined "
+                "decode kernel");
+    decode_partial_kernel_pipelined<uint8_t, false>
         <<<grid, kThreads, kPipeDynSmemBytes, stream>>>(
             reinterpret_cast<const __half*>(q.data_ptr()),
             reinterpret_cast<const uint8_t*>(k_cache.data_ptr()),
@@ -1288,10 +1866,10 @@ void sm70_longctx_decode_pipelined(
             reinterpret_cast<__half*>(partial_o.data_ptr()),
             partial_lse.data_ptr<float>());
   } else {
-    TORCH_CHECK(pipelined_smem_ready<__half>(),
+    TORCH_CHECK(pipelined_smem_ready<2>(),
                 "cannot raise the dynamic smem limit for the pipelined "
                 "decode kernel");
-    decode_partial_kernel_pipelined<__half>
+    decode_partial_kernel_pipelined<__half, false>
         <<<grid, kThreads, kPipeDynSmemBytes, stream>>>(
             reinterpret_cast<const __half*>(q.data_ptr()),
             reinterpret_cast<const __half*>(k_cache.data_ptr()),
@@ -1301,6 +1879,42 @@ void sm70_longctx_decode_pipelined(
             reinterpret_cast<__half*>(partial_o.data_ptr()),
             partial_lse.data_ptr<float>());
   }
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+// Pipeline with the prefetched tile in registers rather than a second smem
+// buffer, so it keeps two CTAs resident per SM alongside the shipped pipeline's
+// software overlap.
+void sm70_longctx_decode_regpipe(torch::Tensor q, torch::Tensor k_cache,
+                                 torch::Tensor v_cache, torch::Tensor page_table,
+                                 torch::Tensor seq_lens, int64_t max_splits,
+                                 int64_t min_tokens_per_split,
+                                 double softmax_scale, double k_scale,
+                                 double v_scale, torch::Tensor partial_o,
+                                 torch::Tensor partial_lse) {
+  c10::cuda::CUDAGuard guard(q.device());
+  const DecodeArgs a =
+      decode_args(q, k_cache, v_cache, page_table, max_splits,
+                  min_tokens_per_split, softmax_scale, k_scale, v_scale);
+  auto stream = at::cuda::getCurrentCUDAStream();
+  dispatch_regpipe(a, stream, q, k_cache, v_cache, seq_lens, partial_o,
+                   partial_lse);
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+// PV across two warps per query row: twelve compute warps instead of six.
+void sm70_longctx_decode_pv2(torch::Tensor q, torch::Tensor k_cache,
+                             torch::Tensor v_cache, torch::Tensor page_table,
+                             torch::Tensor seq_lens, int64_t max_splits,
+                             int64_t min_tokens_per_split, double softmax_scale,
+                             double k_scale, double v_scale,
+                             torch::Tensor partial_o, torch::Tensor partial_lse) {
+  c10::cuda::CUDAGuard guard(q.device());
+  const DecodeArgs a =
+      decode_args(q, k_cache, v_cache, page_table, max_splits,
+                  min_tokens_per_split, softmax_scale, k_scale, v_scale);
+  auto stream = at::cuda::getCurrentCUDAStream();
+  dispatch_pv2(a, stream, q, k_cache, v_cache, seq_lens, partial_o, partial_lse);
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
@@ -1456,6 +2070,10 @@ void sm70_qsa_prefill(torch::Tensor q, torch::Tensor k_cache,
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("sm70_longctx_decode_occ2", &sm70_longctx_decode_occ2,
         "split-KV decode with two CTAs resident per SM");
+  m.def("sm70_longctx_decode_pv2", &sm70_longctx_decode_pv2,
+        "split-KV decode with PV split across two warps per row");
+  m.def("sm70_longctx_decode_regpipe", &sm70_longctx_decode_regpipe,
+        "split-KV decode: register-staged pipeline, two CTAs per SM");
   m.def("sm70_longctx_decode", &sm70_longctx_decode,
         "Long-context grouped decode partial (D256 G6 E5M2)");
   m.def("sm70_longctx_decode_pipelined",

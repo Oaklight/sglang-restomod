@@ -15,7 +15,7 @@
 ```
 --dtype float16 --quantization fp8
 --attention-backend tilelang_fa_v100
---linear-attn-prefill-backend tilelang --linear-attn-decode-backend triton
+--linear-attn-prefill-backend triton --linear-attn-decode-backend triton
 --kv-cache-dtype fp8_e4m3             # 1 byte; required for 256k. See "KV dtype".
 --tp-size 2 --context-length 262144   # max_position_embeddings
 --mem-fraction-static 0.85 --max-running-requests 4
@@ -26,6 +26,14 @@
 --speculative-algorithm NEXTN
 --speculative-num-steps 3 --speculative-eagle-topk 1 --speculative-num-draft-tokens 4
 ```
+
+**GDN prefill runs on Triton at the pin.** The fork used
+`--linear-attn-prefill-backend tilelang`. That implementation was removed
+upstream before v0.5.22 — `srt/layers/attention/linear/kernels/` now ships only
+`gdn_cutedsl`, `gdn_flashinfer` and `gdn_triton`, and
+`LINEAR_ATTN_KERNEL_BACKEND_CHOICES` has no `tilelang` entry. Triton is the only
+path that exists at the pin, so prefill numbers measured on the fork are not
+directly comparable to ones measured here.
 
 ## Environment
 

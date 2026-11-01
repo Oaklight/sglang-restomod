@@ -36,6 +36,7 @@ from sglang.srt.layers.attention.qsa.metadata import (
     compressed_decode_view,
 )
 from sglang.srt.layers.attention.qsa.sparse_attn import (
+    pack_qsa_prefill_kv,
     qwen_sparse_fa2_cu_seqlens_triton,
     qwen_sparse_kv_extraction_compact_triton,
     qwen_sparse_valid_counts_triton,
@@ -53,9 +54,6 @@ from sglang.srt.layers.cp.utils import (
 from sglang.srt.mem_cache.memory_pool import HybridLinearKVPool, MHATokenToKVPool
 from sglang.srt.mem_cache.qsa_kv_pool import QSATokenToKVPool
 from sglang.srt.model_executor.forward_batch_info import ForwardMode
-from sglang.srt.model_executor.runner_backend_utils.breakable_cuda_graph import (
-    is_in_breakable_cuda_graph,
-)
 from sglang.srt.runtime_context import get_spec
 from sglang.srt.utils import is_hip
 
@@ -114,15 +112,14 @@ def use_sm70_qsa_dense_prefill(forward_batch, device: torch.device) -> bool:
 
 @lru_cache(maxsize=1)
 def _resolve_trtllm_sparse_decode():
-    """trtllm-gen paged decode for the post-gather sparse attention.
+    """FlashInfer paged decode for the post-gather sparse attention;
+    the FA4 varlen fallback runs a prefill-shaped kernel at decode row counts."""
+    from sglang.srt.utils import is_sm100_supported, is_sm120
 
-    On Blackwell the FA4 cute varlen fallback runs a prefill-shaped kernel
-    at decode row counts; the trtllm-gen decode kernel over a page-aligned
-    scratch measures ~35% faster for the gather+attention pair.
-    """
-    from sglang.srt.utils import is_sm100_supported
-
-    if not is_sm100_supported():
+    # This path is numerically validated on SM100 and SM120. Do not widen it
+    # to every SM12x device: it silently corrupts long-context decode on
+    # SM121/GB10.
+    if not (is_sm100_supported() or is_sm120()):
         return None
     try:
         from flashinfer.decode import trtllm_batch_decode_with_kv_cache
@@ -1772,37 +1769,24 @@ class QwenSparseAttnBackend(AttentionBackend):
                 layer.scaling,
             )
             return self._pad_extend_output(output, num_output_rows)
-        req_to_token = self.req_to_token_pool.req_to_token
-        if is_in_breakable_cuda_graph():
-            # Reuse the prepared slot table to avoid a D2H sync per layer on replay.
-            req_to_token = self._resolve_metadata(forward_batch).token_slot_table
-            req_indices = range(len(sequence_lens))
-        else:
-            req_indices = forward_batch.req_pool_indices.tolist()
-        k_parts = [
-            k_buffer.index_select(
-                0, req_to_token[req_indices[i], : sequence_lens[i]].long()
-            )
-            for i in range(len(sequence_lens))
-        ]
-        v_parts = [
-            v_buffer.index_select(
-                0, req_to_token[req_indices[i], : sequence_lens[i]].long()
-            )
-            for i in range(len(sequence_lens))
-        ]
         sequence_lens_tensor = torch.tensor(
             sequence_lens, dtype=torch.int32, device=q.device
         )
         cu_seqlens_k = F.pad(sequence_lens_tensor.cumsum(0), (1, 0)).contiguous()
-        packed_k = torch.cat(k_parts)
-        packed_v = torch.cat(v_parts)
-        if packed_k.dtype != q.dtype:
-            # SM70 has no FP8 dot instruction. Prefix/chunk prefill is an
-            # uncommon path for the bounded 8K deployment, so decode the
-            # gathered cache once before entering the sparse FP16 kernel.
-            packed_k = packed_k.to(q.dtype)
-            packed_v = packed_v.to(q.dtype)
+        # Upstream replaced the per-request gather with one shared packer. It
+        # takes the pool buffers plus the request indices and returns K/V packed
+        # tightly and already cast to `output_dtype`, which also removes the
+        # separate FP8-to-FP16 step this path used to do.
+        packed_k, packed_v = pack_qsa_prefill_kv(
+            k=k_buffer,
+            v=v_buffer,
+            req_to_token=self.req_to_token_pool.req_to_token,
+            req_indices=forward_batch.req_pool_indices,
+            cu_k=cu_seqlens_k,
+            total_k=sum(sequence_lens),
+            max_k=max(sequence_lens, default=1),
+            output_dtype=q.dtype,
+        )
         output = sparse_gqa_fwd_interface_triton_ck(
             q.contiguous(),
             packed_k,
@@ -1999,9 +1983,12 @@ class QwenSparseAttnBackend(AttentionBackend):
         buffers = self._fa2_scratch.get(key)
         if buffers is None or buffers[0].shape[0] < capacity:
             shape = (capacity, num_kv_heads, head_dim)
+            # Zeroed once (upstream change): a row is packed only up to its last
+            # visible page, so bytes past it are never written and must not be
+            # NaN garbage from an uninitialised buffer.
             buffers = (
-                torch.empty(shape, dtype=dtype, device=device),
-                torch.empty(shape, dtype=dtype, device=device),
+                torch.zeros(shape, dtype=dtype, device=device),
+                torch.zeros(shape, dtype=dtype, device=device),
             )
             self._fa2_scratch[key] = buffers
         return buffers[0][:capacity], buffers[1][:capacity]

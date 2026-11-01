@@ -72,15 +72,13 @@ def install_on(cls) -> bool:
 
 
 def install() -> bool:
-    """Patch the engine's V100 full-attention backend.
+    """Install the delegation on the component's own backend class.
 
-    Raises when the engine has no such backend: selecting this component names
-    a capability the engine does not provide, and failing at startup is better
-    than a silent no-op.
+    It used to import the engine's ``flash_attn_v100_backend`` module, which the
+    pinned upstream does not ship: the backend is component code, so the class
+    it patches has to be the component's too.
     """
-    from sglang.srt.layers.attention.flash_attn_v100_backend import (
-        FlashAttnV100Backend,
-    )
+    from .flash_attn_v100_backend import FlashAttnV100Backend
 
     added = install_on(FlashAttnV100Backend)
     if added:

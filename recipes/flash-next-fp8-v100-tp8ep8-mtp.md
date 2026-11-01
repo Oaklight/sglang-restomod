@@ -16,13 +16,21 @@
 --dtype float16 --quantization fp8
 --tp-size 8 --ep-size 8
 --attention-backend tilelang_fa_v100
---linear-attn-prefill-backend tilelang --linear-attn-decode-backend triton
+--linear-attn-prefill-backend triton --linear-attn-decode-backend triton
 --kv-cache-dtype auto --context-length 8192
 --mem-fraction-static 0.80 --max-running-requests 1
 --chunked-prefill-size 4096 --max-prefill-tokens 8192
 --speculative-algorithm NEXTN
 --speculative-num-steps 3 --speculative-eagle-topk 1 --speculative-num-draft-tokens 4
 ```
+
+**GDN prefill runs on Triton at the pin.** The fork used
+`--linear-attn-prefill-backend tilelang`. That implementation was removed
+upstream before v0.5.22 — `srt/layers/attention/linear/kernels/` now ships only
+`gdn_cutedsl`, `gdn_flashinfer` and `gdn_triton`, and
+`LINEAR_ATTN_KERNEL_BACKEND_CHOICES` has no `tilelang` entry. Triton is the only
+path that exists at the pin, so any prefill number measured on the fork is not
+directly comparable to one measured here.
 
 ## Environment
 
@@ -43,6 +51,14 @@ SGLANG_SM70_QWEN_FUSIONS=1
 SGLANG_SM70_QSA_DENSE_PREFILL_MAX_TOKENS=8192
 SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK=1
 ```
+
+Audited against the pin's `srt/environ.py`: **`SGLANG_MAMBA_CONV_DTYPE` and
+`SGLANG_MAMBA_SSM_DTYPE` are the two that matter** — they exist and are what
+keep the GDN state in fp16. `SGLANG_SM70_FORCE_FP16`, `SGLANG_SM70_DENSE_GEMV`,
+`SGLANG_SM70_QWEN_FUSIONS` and `SGLANG_CUSTOM_ALLREDUCE_ALGO` are **not read
+anywhere at the pin** (fork-only switches); they are inert there and kept only
+so this recipe still describes the fork launcher.
+`SGLANG_SM70_QSA_DENSE_PREFILL_MAX_TOKENS` is live — the component reads it.
 
 `SGLANG_CUSTOM_ALLREDUCE_ALGO` also accepts `2stage`; measured at 87.9 vs 86.5
 tok/s on a short prompt and 80.7 vs 84.0 at 4.8k, i.e. no difference.
@@ -75,3 +91,56 @@ at 3k) that is 2.2-2.7x. Cold 4,856-token prefill: 0.96 s, about 5,061 tok/s.
 
 Launcher and full measurement note: `benchmarks/flash-next-fp8-sglang-lambda4-tp8.md`
 in the lab repository.
+
+## Measured at the pin (restomod, 2026-10-31)
+
+Same hardware, same model, `sglang-restomod` on upstream `v0.5.22 @ baa9befa`
+with no patches. Launcher: `pin_launch_fn_mtp.sh` on lambda1.
+
+```
+--dtype float16 --quantization fp8
+--tp-size 8 --ep-size 8 --page-size 64
+--attention-backend qsa_v100
+--linear-attn-prefill-backend triton --linear-attn-decode-backend triton
+--context-length 4096 --mem-fraction-static 0.85 --max-running-requests 1
+--speculative-algorithm NEXTN --speculative-num-steps 3
+--speculative-eagle-topk 1 --speculative-num-draft-tokens 4
+```
+
+| Case | Decode | Accept len |
+|---|---|---|
+| no MTP, 76-token prompt, 128 out | **40.0 tok/s** | — |
+| MTP3/4 draft, same prompt | **73.9 tok/s** | 2.83-2.85 |
+
+Without MTP the pin is 2x behind the fork's 30.8-36.9 measured on the same box;
+with MTP it is 12-15% behind the fork's 82.9-86.5. Closing that gap needs the
+collectives, not the kernels: `ncclDevKernel_AllReduce_Sum_f16_RING_LL` was 24.5%
+of CUDA time (about 101 all-reduces per step, 79.5 us each) in the profile
+recorded on issue #94.
+
+`--attention-backend qsa_v100` is required. The registry does not reach the
+full-attention backend for this model: `attention_registry.py` builds its own
+`QwenSparseAttnBackend` for hybrid GDN + QSA models, and that class needs
+flash_attn for its packed varlen fallback, which sm70 cannot run. The component
+rebinds the class at plugin load (`backend_registry.install_qsa_swap`).
+
+### Card-count floor
+
+The FP8 checkpoint is about 120 GB. On 32 GB cards:
+
+| Cards | Result |
+|---|---|
+| 2 (TP2/EP2) | load-time OOM, 30.95 GiB allocated per card |
+| 4 (TP4/EP4) | load-time OOM, 30.68 GiB allocated per card |
+| 8 (TP8/EP8) | runs |
+
+So Flash-Next needs all 8 cards on this hardware; the 2- and 4-card runs belong
+to the 27B model.
+
+### Topology matters
+
+lambda1's eight V100s sit in two NVLink islands (0-3 and 4-7, `SYS` between),
+so the eight-rank group is not full NVLink. SGLang says so at startup:
+`CustomAllreduce is disabled because it's not supported on more than two
+PCIe-only GPUs`. Every all-reduce therefore crosses the socket boundary, which
+is the cost the pin still pays relative to the fork.
