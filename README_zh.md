@@ -72,10 +72,14 @@ decode 吞吐（tok/s），数据来自 `scripts/bench.py`。一行数据只有�
 | Flash-Next | NVFP4 | 4 | TP4，无 EP | 3/4 | temp 1, top-p 0.95, top-k 20 | 74 | 81.83 / 88.06 | receipt `evidence-6294562-nvfp4` |
 | 27B | FP8 | 2 | TP2，无 EP | 3/4 | temp 1, top-p 0.95, top-k 20 | 8037 | 69.30 / 63.24 | receipt `evidence-e5a5740-draft-extend` |
 | 27B | FP8 | 2 | TP2，无 EP | 3/4 | temp 1, top-p 0.95, top-k 20 | 31109 | 44.59 / 45.79 | receipt `evidence-e5a5740-draft-extend` |
+| 27B | FP8 | 2 | TP2，无 EP，40 KV splits | 3/4 | temp 1, top-p 0.95, top-k 20 | 8037 | 73.33 / 66.43 | receipt `evidence-153a4c2-kv-splits` |
+| 27B | FP8 | 2 | TP2，无 EP，40 KV splits | 3/4 | temp 1, top-p 0.95, top-k 20 | 31158 | 54.42 / 47.13 | receipt `evidence-153a4c2-kv-splits` |
 
 27B 行需要 `SGLANG_V100_DRAFT_EXTEND_NATIVE=1` 与
 `--speculative-draft-attention-backend tilelang_fa_v100`。缺少这两项时，
 同一台机器在 31.7k 上测得 17.9 tok/s（issue #75）。
+
+40 splits 的行是独立配置：它加了 `--triton-attention-num-kv-splits 40`，把 draft 解码内核从 16 个 CTA 提到 80 个。代价见配方的 log-probability 一节；这些行不能当作「只改了代码」与默认行比较。
 
 读法：
 
