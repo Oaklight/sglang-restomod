@@ -76,10 +76,17 @@ here is comparable across those axes.
 | Flash-Next | NVFP4 | 4 | TP4, no EP | 3/4 | temp 1, top-p 0.95, top-k 20 | 74 | 81.83 / 88.06 | receipt `evidence-6294562-nvfp4` |
 | 27B | FP8 | 2 | TP2, no EP | 3/4 | temp 1, top-p 0.95, top-k 20 | 8037 | 69.30 / 63.24 | receipt `evidence-e5a5740-draft-extend` |
 | 27B | FP8 | 2 | TP2, no EP | 3/4 | temp 1, top-p 0.95, top-k 20 | 31109 | 44.59 / 45.79 | receipt `evidence-e5a5740-draft-extend` |
+| 27B | FP8 | 2 | TP2, no EP, 40 KV splits | 3/4 | temp 1, top-p 0.95, top-k 20 | 8037 | 73.33 / 66.43 | receipt `evidence-153a4c2-kv-splits` |
+| 27B | FP8 | 2 | TP2, no EP, 40 KV splits | 3/4 | temp 1, top-p 0.95, top-k 20 | 31158 | 54.42 / 47.13 | receipt `evidence-153a4c2-kv-splits` |
 
 The 27B rows need `SGLANG_V100_DRAFT_EXTEND_NATIVE=1` and
 `--speculative-draft-attention-backend tilelang_fa_v100`. Without them the same
 box measured 17.9 tok/s at 31.7k (issue #75).
+
+The 40-split rows are a separate configuration: they add
+`--triton-attention-num-kv-splits 40`, which raises the draft decode kernel from
+16 CTAs to 80. The recipe says what it costs in log-probability; do not compare
+those rows against the default ones as if only the code changed.
 
 How to read it:
 
