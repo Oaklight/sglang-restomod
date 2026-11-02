@@ -37,3 +37,21 @@ Apache-2.0.
 
 The extension source and its build output stay outside this repository. The
 component only requires `SM70_MARLIN_DIR` to point at the built libraries.
+
+## Dense W4A16 redirect (2026-11-02)
+
+The pin's GPTQ/AWQ Marlin kernels are empty below SM80. Measured on lambda12
+inside the singularity image, same input through both paths:
+
+```
+routed (marlin_v100)  shape (8, 128)  nonzero 1024
+pinned (JIT stub)     shape (8, 128)  nonzero 0
+```
+
+`marlin_dense.py` rebinds `gptq_marlin_gemm` and `gptq_marlin_repack` so the
+dense compressed-tensors W4A16 path reaches the extension. Off SM70, or without
+the extension, both wrappers call the pinned functions unchanged.
+
+Open: the correctness test against a dequantized reference (issue #40). The
+redirect and the repack are verified; an end-to-end W4A16 layer has not been
+run, so `COMPATIBILITY.md` is unchanged.
