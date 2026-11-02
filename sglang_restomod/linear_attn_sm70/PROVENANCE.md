@@ -47,15 +47,16 @@ an exact token count, fresh prompts, greedy, lambda12, 2026-11-02.
 
 | context | Triton GDN (tok/s) | TileLang GDN (tok/s) | TTFT |
 |---|---|---|---|
-| 8,041 | 719.9 | 1,930.7 / 1,926.9 | 11.4 s -> 4.17 s |
-| 31,145 | 684.6 | 1,658.4 / 1,657.0 | 46.4 s -> 18.78 s |
+| 8,041 | 719.9 | 1,933.6 / 1,924.9 | 11.4 s -> 4.16 s |
+| 31,158 | 684.6 | 1,658.3 / 1,655.1 | 46.4 s -> 18.79 s |
 
 Greedy continuations are byte-identical to the Triton baseline at 8,192 and
 31,744 prompt tokens, including the second send of the same prompt (radix cache
 hit) and the 32k path that requests mamba state checkpoints.
 
-The TileLang rows are the signed run behind `evidence-e63a27e-gdn-tilelang`
-(`scripts/gpu_suite.sh` on lambda12 at `e63a27e`); the Triton rows are the
-earlier `bench.py` runs on the same box. Decode is unchanged: 43.72 / 40.77
+The TileLang rows are the signed run behind `evidence-55cb6e7-gdn-tilelang`
+(`scripts/gpu_suite.sh` on lambda12 at `55cb6e7`, `versions.txt` = sglang
+0.5.22, the pin); the Triton rows are the earlier `bench.py` runs on the same
+box with the same launcher. Decode is unchanged: 43.72 / 40.77
 tok/s at 31,796 prompt tokens with 128 output tokens, against 46.67 / 46.63 on
 Triton, which is inside the run-to-run spread.
