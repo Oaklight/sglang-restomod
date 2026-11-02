@@ -51,6 +51,15 @@ def _factories() -> dict[str, Callable]:
     }
 
 
+def build_backend(name: str, runner):
+    """Construct a registered backend for ``runner``.
+
+    The draft factory needs this: it resolves backend names through a map of
+    its own, and that map cannot hold this component's names.
+    """
+    return _factories()[name](runner)
+
+
 def _engine_hooks():
     from sglang.srt.arg_groups import choices
     from sglang.srt.layers.attention import attention_registry
