@@ -28,6 +28,7 @@
 --sampling-backend pytorch                    # see "Non-greedy requests"
 --speculative-use-rejection-sampling          # see "Non-greedy requests"
 --speculative-draft-attention-backend tilelang_fa_v100  # see "The draft backend"
+--triton-attention-num-kv-splits 40    # draft decode: 2 KV heads x 40 = 80 CTAs
 ```
 
 Add `SGLANG_V100_DRAFT_EXTEND_NATIVE=1` to the environment to put the draft
@@ -69,6 +70,34 @@ At 32k that kernel is 96.7 ms of a 168 ms step; the target verify costs 10.7 ms
 (issue #75). `tilelang_fa_v100` is selectable since pull request #99, and with
 `SGLANG_V100_DRAFT_EXTEND_NATIVE=1` the draft extend moves off that kernel
 entirely.
+
+**Draft decode attention: the split count.** With the draft extend on the native
+kernel, the largest term left in a draft phase is the three draft steps'
+attention, on the Triton split-KV kernel at grid `(1, 2, 8)`: one row, 2 KV heads
+and 8 splits, 16 CTAs on an 80-SM card. `--triton-attention-num-kv-splits` sets
+it:
+
+| splits | grid | CTAs | draft attention | draft phase | decode at 31.1k |
+|---:|---|---:|---:|---:|---:|
+| 8 (default) | `(1, 2, 8)` | 16 | 19.43 ms | 25.14 ms | 43.73 tok/s |
+| 20 | `(1, 2, 20)` | 40 | 12.73 ms | 18.20 ms | 44.99 tok/s |
+| 40 | `(1, 2, 40)` | 80 | 9.91 ms | 15.14 ms | **50.75 tok/s** |
+
+128 output tokens, four reps per arm, fp16 KV, TP2, 31.1-31.7k prompt. 40 splits
+is 2 KV heads times 40, one CTA per SM. The target verify is the control: it
+keeps its own kernel and computes its own split count, and measures 17.9 to
+18.3 ms per step in all three runs.
+
+The split count changes the reduction order, so it changes the text. Three
+31,744-token prompts over 96 greedy tokens measure a mean absolute
+log-probability shift of 0.0016 nats against the default (rms 0.0039, worst
+0.0304) and no token divergence in 288; one near-tie flipped on a different
+prompt. The KV dtype change already in use measures 0.0383 to 0.0627 on the same
+metric. Keep the flag off jobs that need byte-identical output, and measure
+below ~8k before making it the default.
+
+The trace, the three profiles and the log-probability comparison are in the lab
+note `notes/mtp-long-context-attribution.md`.
 
 **GDN prefill: the fork's TileLang kernel, or `gdn_tilelang_sm70` at the pin.**
 The fork runs it with `--linear-attn-prefill-backend tilelang`. That
