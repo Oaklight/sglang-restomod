@@ -195,3 +195,39 @@ def test_track_guard_clears_on_exception():
     with pytest.raises(RuntimeError, match="boom"):
         Backend().forward_extend()
     assert gdn_tilelang._tracking_active() is False
+
+
+def test_missing_tilelang_is_a_fallback_not_a_raise():
+    try:
+        import tilelang  # noqa: F401
+    except Exception:  # noqa: BLE001 - absent on a CPU runner
+        pass
+    else:
+        pytest.skip("tilelang is installed here")
+
+    gdn_tilelang._KERNEL_UNAVAILABLE = False
+    assert gdn_tilelang._load_kernel() is None
+    assert gdn_tilelang._KERNEL_UNAVAILABLE is True
+    # The latch keeps the warning to one line for the process.
+    assert gdn_tilelang._load_kernel() is None
+
+
+def test_other_chunk_grids_fall_back():
+    class Meta:
+        has_mamba_track_mask = True
+        track_ssm_h_src = _Idx(2)
+
+    class Kernel:
+        supports_track_state_snapshot = False
+
+    class Dispatcher:
+        extend_kernel = Kernel()
+
+    class Backend:
+        forward_metadata = Meta()
+        kernel_dispatcher = Dispatcher()
+        mamba_chunk_size = 128
+
+    assert gdn_tilelang._tracking_needed(Backend()) is False
+    Backend.mamba_chunk_size = gdn_tilelang._CHUNK_SIZE
+    assert gdn_tilelang._tracking_needed(Backend()) is True

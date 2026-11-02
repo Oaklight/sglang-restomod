@@ -35,6 +35,7 @@ TRACK_FLAG = "_restomod_gdn_tilelang_track"
 # and the wrapper restores the previous value in a `finally`.
 _TRACK_ACTIVE = False
 _GUARD_INSTALLED = False
+_KERNEL_UNAVAILABLE = False
 
 # Below this many tokens the recurrence is too short for the chunked kernel's
 # setup to pay off; Triton wins and skips a JIT compile.
@@ -43,6 +44,7 @@ DEFAULT_MIN_TOKENS = 256
 
 _KEY_DIM = 128
 _VALUE_DIM = 128
+_CHUNK_SIZE = 64
 
 
 def _min_tokens() -> int:
@@ -56,6 +58,28 @@ def _min_tokens() -> int:
     if value < 0:
         raise ValueError(f"{MIN_TOKENS_ENV} must be non-negative, got {value}.")
     return value
+
+
+def _load_kernel():
+    """Import the vendored kernel once; ``None`` if TileLang is not installed.
+
+    ``tilelang`` is an engine dependency, not a declared one of this package, so
+    a host can enable the component without it. Every other mismatch in this
+    module returns ``None`` and leaves the call on Triton; this one has to as
+    well, or the first eligible prefill raises into the model's forward pass.
+    """
+    global _KERNEL_UNAVAILABLE
+    if _KERNEL_UNAVAILABLE:
+        return None
+    try:
+        from .gdn_chunked_tilelang import chunked_gdn_sm70
+    except Exception as exc:  # noqa: BLE001 - no kernel means Triton is correct
+        _KERNEL_UNAVAILABLE = True
+        logger.warning(
+            "sglang-restomod: TileLang GDN kernel unavailable, staying on Triton: %s", exc
+        )
+        return None
+    return chunked_gdn_sm70
 
 
 def _unsqueeze_gate(tensor):
@@ -158,6 +182,13 @@ def _tracking_needed(backend) -> bool:
     kernel = getattr(dispatcher, "extend_kernel", None)
     if getattr(kernel, "supports_track_state_snapshot", False):
         return False
+    # The kernel emits one checkpoint per 64 tokens; the engine indexes them on
+    # the model's mamba chunk grid. A model that declares another size would get
+    # right-shaped states that mean something else, which only shows up later as
+    # wrong output on a radix-cache hit.
+    chunk_size = getattr(backend, "mamba_chunk_size", None)
+    if chunk_size is not None and int(chunk_size) != _CHUNK_SIZE:
+        return False
     source = getattr(meta, "track_ssm_h_src", None)
     return source is not None and source.numel() > 0
 
@@ -183,7 +214,9 @@ def tilelang_extend(
     if not _supported(q, k, v, ssm_states, inplace_update):
         return None
 
-    from .gdn_chunked_tilelang import chunked_gdn_sm70
+    chunked_gdn_sm70 = _load_kernel()
+    if chunked_gdn_sm70 is None:
+        return None
 
     store_checkpoints = _tracking_active()
     output, checkpoints = chunked_gdn_sm70(
@@ -253,11 +286,12 @@ def install_track_guard(backend_cls) -> bool:
 def install() -> bool:
     """Route the pin's GDN prefill through the TileLang kernel on SM70.
 
-    Deliberately does not import ``gdn_backend``: the package entry point runs
-    components before it installs the SM70 overrides, and importing the model
-    runner this early binds the original ``sm75`` capability gate in
-    ``model_runner`` for the rest of the process. The track guard is installed
-    on the first prefill instead, once the engine is fully loaded.
+    Deliberately does not import ``gdn_backend``: it imports ``ModelRunner`` at
+    module scope, which drags the whole model-runner graph into plugin startup
+    for no benefit. Installing the guard on the first prefill keeps that cost
+    out of startup and lets an import failure surface in the forward pass
+    instead of inside the plugin loader, which wraps every call in a bare
+    ``except Exception``.
     """
     from sglang.srt.layers.attention.linear.kernels.gdn_triton import TritonGDNKernel
 
