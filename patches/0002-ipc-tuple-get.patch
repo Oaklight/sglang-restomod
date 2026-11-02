@@ -1,0 +1,17 @@
+diff --git a/python/sglang/kernels/jit/csrc/distributed/ipc.cuh b/python/sglang/kernels/jit/csrc/distributed/ipc.cuh
+index ad7c220b8f..f5571b70cc 100644
+--- a/python/sglang/kernels/jit/csrc/distributed/ipc.cuh
++++ b/python/sglang/kernels/jit/csrc/distributed/ipc.cuh
+@@ -79,9 +79,9 @@ struct IPCManager : public tvm::ffi::Object {
+   BatchGetInputs batch_open_handles(BatchGetResult handles) {
+     tvm::ffi::Array<uintptr_t> result;
+     result.reserve(handles.size());
+-    for (const auto& pair : handles) {
+-      const auto ipc_handle = to_ipc_handle(get<0>(pair));
+-      const auto offset = get<1>(pair);
++    for (auto pair : handles) {
++      const auto ipc_handle = to_ipc_handle(pair.get<0>());
++      const auto offset = pair.get<1>();
+       result.push_back(open_handle(ipc_handle) + offset);
+     }
+     return result;
