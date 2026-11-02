@@ -57,18 +57,24 @@ SGLANG_RESTOMOD_COMPONENTS=fp8_moe,attention_v100
 
 ## 性能
 
-Qwen3.8-Flash-Next，V100-SXM2-32GB，单节点，输出 128 token 时的 decode 吞吐（tok/s），
-数据来自 `scripts/bench.py`。一行数据只有同时给出精度、卡数和采样方式才有意义，
-不同轴之间不可比较。
+Qwen3.8-Flash-Next 与 Qwen3.8-27B，V100-SXM2-32GB，单节点，输出 128 token 时的
+decode 吞吐（tok/s），数据来自 `scripts/bench.py`。一行数据只有同时给出模型、精度、
+卡数和采样方式才有意义，不同轴之间不可比较。
 
-| 精度 | 卡数 | 并行 | MTP | 采样 | 提示长度 | Decode | 来源 |
-|---|---|---|---|---|---|---|---|
-| FP8 | 8 | TP8 / EP8 | 关 | 默认 | 76 | 40.0 | `recipes/flash-next-fp8-v100-tp8ep8-mtp.md` |
-| FP8 | 8 | TP8 / EP8 | 3/4 | temp 1, top-p 0.95, top-k 20 | 74 | 73.9 | `recipes/flash-next-fp8-v100-tp8ep8-mtp.md` |
-| FP8 | 8 | TP8 / EP8 | 3/4 | temperature 0 | 74 | 98.3—106.2 | `recipes/flash-next-fp8-v100-tp8ep8-mtp.md` |
-| NVFP4 | 4 | TP4，无 EP | 3/4 | temperature 0 | 993 | 87.27 / 87.24 | receipt `evidence-6294562-nvfp4` |
-| NVFP4 | 4 | TP4，无 EP | 3/4 | temperature 0 | 3473 | 72.43 / 90.68 | receipt `evidence-6294562-nvfp4` |
-| NVFP4 | 4 | TP4，无 EP | 3/4 | temp 1, top-p 0.95, top-k 20 | 74 | 81.83 / 88.06 | receipt `evidence-6294562-nvfp4` |
+| 模型 | 精度 | 卡数 | 并行 | MTP | 采样 | 提示长度 | Decode | 来源 |
+|---|---|---|---|---|---|---|---|---|
+| Flash-Next | FP8 | 8 | TP8 / EP8 | 关 | 默认 | 76 | 40.0 | `recipes/flash-next-fp8-v100-tp8ep8-mtp.md` |
+| Flash-Next | FP8 | 8 | TP8 / EP8 | 3/4 | temp 1, top-p 0.95, top-k 20 | 74 | 73.9 | `recipes/flash-next-fp8-v100-tp8ep8-mtp.md` |
+| Flash-Next | FP8 | 8 | TP8 / EP8 | 3/4 | temperature 0 | 74 | 98.3—106.2 | `recipes/flash-next-fp8-v100-tp8ep8-mtp.md` |
+| Flash-Next | NVFP4 | 4 | TP4，无 EP | 3/4 | temperature 0 | 993 | 87.27 / 87.24 | receipt `evidence-6294562-nvfp4` |
+| Flash-Next | NVFP4 | 4 | TP4，无 EP | 3/4 | temperature 0 | 3473 | 72.43 / 90.68 | receipt `evidence-6294562-nvfp4` |
+| Flash-Next | NVFP4 | 4 | TP4，无 EP | 3/4 | temp 1, top-p 0.95, top-k 20 | 74 | 81.83 / 88.06 | receipt `evidence-6294562-nvfp4` |
+| 27B | FP8 | 2 | TP2，无 EP | 3/4 | temp 1, top-p 0.95, top-k 20 | 8037 | 69.30 / 63.24 | receipt `evidence-e5a5740-draft-extend` |
+| 27B | FP8 | 2 | TP2，无 EP | 3/4 | temp 1, top-p 0.95, top-k 20 | 31109 | 44.59 / 45.79 | receipt `evidence-e5a5740-draft-extend` |
+
+27B 行需要 `SGLANG_V100_DRAFT_EXTEND_NATIVE=1` 与
+`--speculative-draft-attention-backend tilelang_fa_v100`。缺少这两项时，
+同一台机器在 31.7k 上测得 17.9 tok/s（issue #75）。
 
 读法：
 

@@ -60,19 +60,25 @@ in a component's `PROVENANCE.md` is used; the rest is reference material.
 
 ## Performance
 
-Qwen3.8-Flash-Next on V100-SXM2-32GB, one node, decode throughput in tok/s at
-128 output tokens from `scripts/bench.py`. A row is only meaningful with its
-precision, card count, and sampling mode; nothing here is comparable across
-those axes.
+Qwen3.8-Flash-Next and Qwen3.8-27B on V100-SXM2-32GB, one node, decode
+throughput in tok/s at 128 output tokens from `scripts/bench.py`. A row is only
+meaningful with its model, precision, card count, and sampling mode; nothing
+here is comparable across those axes.
 
-| Precision | Cards | Parallel | MTP | Sampling | Prompt | Decode | Source |
-|---|---|---|---|---|---|---|---|
-| FP8 | 8 | TP8 / EP8 | off | default | 76 | 40.0 | `recipes/flash-next-fp8-v100-tp8ep8-mtp.md` |
-| FP8 | 8 | TP8 / EP8 | 3/4 | temp 1, top-p 0.95, top-k 20 | 74 | 73.9 | `recipes/flash-next-fp8-v100-tp8ep8-mtp.md` |
-| FP8 | 8 | TP8 / EP8 | 3/4 | temperature 0 | 74 | 98.3—106.2 | `recipes/flash-next-fp8-v100-tp8ep8-mtp.md` |
-| NVFP4 | 4 | TP4, no EP | 3/4 | temperature 0 | 993 | 87.27 / 87.24 | receipt `evidence-6294562-nvfp4` |
-| NVFP4 | 4 | TP4, no EP | 3/4 | temperature 0 | 3473 | 72.43 / 90.68 | receipt `evidence-6294562-nvfp4` |
-| NVFP4 | 4 | TP4, no EP | 3/4 | temp 1, top-p 0.95, top-k 20 | 74 | 81.83 / 88.06 | receipt `evidence-6294562-nvfp4` |
+| Model | Precision | Cards | Parallel | MTP | Sampling | Prompt | Decode | Source |
+|---|---|---|---|---|---|---|---|---|
+| Flash-Next | FP8 | 8 | TP8 / EP8 | off | default | 76 | 40.0 | `recipes/flash-next-fp8-v100-tp8ep8-mtp.md` |
+| Flash-Next | FP8 | 8 | TP8 / EP8 | 3/4 | temp 1, top-p 0.95, top-k 20 | 74 | 73.9 | `recipes/flash-next-fp8-v100-tp8ep8-mtp.md` |
+| Flash-Next | FP8 | 8 | TP8 / EP8 | 3/4 | temperature 0 | 74 | 98.3—106.2 | `recipes/flash-next-fp8-v100-tp8ep8-mtp.md` |
+| Flash-Next | NVFP4 | 4 | TP4, no EP | 3/4 | temperature 0 | 993 | 87.27 / 87.24 | receipt `evidence-6294562-nvfp4` |
+| Flash-Next | NVFP4 | 4 | TP4, no EP | 3/4 | temperature 0 | 3473 | 72.43 / 90.68 | receipt `evidence-6294562-nvfp4` |
+| Flash-Next | NVFP4 | 4 | TP4, no EP | 3/4 | temp 1, top-p 0.95, top-k 20 | 74 | 81.83 / 88.06 | receipt `evidence-6294562-nvfp4` |
+| 27B | FP8 | 2 | TP2, no EP | 3/4 | temp 1, top-p 0.95, top-k 20 | 8037 | 69.30 / 63.24 | receipt `evidence-e5a5740-draft-extend` |
+| 27B | FP8 | 2 | TP2, no EP | 3/4 | temp 1, top-p 0.95, top-k 20 | 31109 | 44.59 / 45.79 | receipt `evidence-e5a5740-draft-extend` |
+
+The 27B rows need `SGLANG_V100_DRAFT_EXTEND_NATIVE=1` and
+`--speculative-draft-attention-backend tilelang_fa_v100`. Without them the same
+box measured 17.9 tok/s at 31.7k (issue #75).
 
 How to read it:
 
