@@ -97,8 +97,39 @@ if [[ -n "$BENCH_HOST" ]]; then
     echo "--model and --model-dir are required with --bench-host" >&2
     exit 2
   fi
+  # bench.py builds its URL as http://<host>, so accept a scheme here and strip
+  # it once for both the probe and the bench.
+  SERVER_HOST="${BENCH_HOST#http://}"
+  SERVER_HOST="${SERVER_HOST#https://}"
+  SERVER_HOST="${SERVER_HOST%/}"
+  # Record what the endpoint is actually serving. The bench numbers are only
+  # meaningful next to the spec-decoding setting: MTP off and MTP 3/4 differ by
+  # 3-4x at 32k, and a bundle without this cannot tell them apart.
+  # Write to a dotfile first: a plain redirect would leave a 0-byte
+  # server_info.json in the bundle when both endpoints refuse, which reads as
+  # "recorded" to anyone listing the archive.
+  for endpoint in /server_info /get_server_info; do
+    if "$PYTHON" -c 'import json, sys, urllib.request
+host, endpoint = sys.argv[1], sys.argv[2]
+with urllib.request.urlopen(f"http://{host}{endpoint}", timeout=30) as r:
+    json.dump(json.load(r), sys.stdout, indent=1, sort_keys=True)
+' "$SERVER_HOST" "$endpoint" > "$OUT/.server_info.tmp" 2>"$OUT/.server_info.err"; then
+      mv "$OUT/.server_info.tmp" "$OUT/server_info.json"
+      rm -f "$OUT/.server_info.err"
+      break
+    fi
+  done
+  if [[ ! -f "$OUT/server_info.json" ]]; then
+    {
+      echo "server_info unavailable from $SERVER_HOST"
+      echo "tried: /server_info, /get_server_info"
+      head -3 "$OUT/.server_info.err" 2>/dev/null || true
+    } > "$OUT/server_info.unavailable.txt"
+    rm -f "$OUT/.server_info.tmp" "$OUT/.server_info.err"
+  fi
+
   "$PYTHON" scripts/bench.py \
-    --host "$BENCH_HOST" \
+    --host "$SERVER_HOST" \
     --model "$MODEL" \
     --model-dir "$MODEL_DIR" \
     --contexts "$CONTEXTS" \
