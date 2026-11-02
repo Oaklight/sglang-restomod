@@ -63,7 +63,7 @@ def _supported(q, k, v, ssm_states, inplace_update: bool) -> bool:
 
     if not inplace_update:
         return False
-    if not torch.cuda.is_available():
+    if not torch.cuda.is_available() or not q.is_cuda:
         return False
     if torch.cuda.get_device_capability(q.device) != (7, 0):
         return False
@@ -122,7 +122,13 @@ def _ensure_track_guard() -> bool:
     global _GUARD_INSTALLED
     if _GUARD_INSTALLED:
         return True
-    from sglang.srt.layers.attention.linear import gdn_backend
+    try:
+        from sglang.srt.layers.attention.linear import gdn_backend
+    except Exception as exc:  # noqa: BLE001 - no engine means no guard
+        logger.warning(
+            "sglang-restomod: GDN tracking guard unavailable, staying on Triton: %s", exc
+        )
+        return False
 
     _GUARD_INSTALLED = True
     install_track_guard(gdn_backend.GDNAttnBackend)

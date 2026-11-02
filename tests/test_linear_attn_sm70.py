@@ -98,7 +98,7 @@ def test_min_tokens_is_validated(monkeypatch):
             gdn_tilelang._min_tokens()
 
 
-def test_unsupported_shapes_are_refused():
+def test_unsupported_shapes_are_refused(guard_ready):
     torch = pytest.importorskip("torch")
     q = torch.zeros(1, 4096, 8, 128, dtype=torch.float16)
     k = torch.zeros(1, 4096, 8, 128, dtype=torch.float16)
