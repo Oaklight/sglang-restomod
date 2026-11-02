@@ -72,7 +72,9 @@ number is deliberate, because the receipt binds the commit's tree, not the
 worktree.
 
 With `--bench-host`, the suite also stores the endpoint's `/server_info` as
-`server_info.json`. A benchmark row is only meaningful next to the serving
+`server_info.json`. If neither `/server_info` nor `/get_server_info` answers,
+the bundle gets `server_info.unavailable.txt` instead and no
+`server_info.json`: a zero-byte file would read as "recorded". A benchmark row is only meaningful next to the serving
 configuration: MTP off and MTP 3/4 differ by 3-4x at 32k on the 27B, so a bundle
 without `speculative_algorithm`, `speculative_num_steps` and
 `speculative_num_draft_tokens` cannot tell two rows apart. For a spec-decoding

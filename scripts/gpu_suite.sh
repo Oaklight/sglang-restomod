@@ -100,16 +100,28 @@ if [[ -n "$BENCH_HOST" ]]; then
   # Record what the endpoint is actually serving. The bench numbers are only
   # meaningful next to the spec-decoding setting: MTP off and MTP 3/4 differ by
   # 3-4x at 32k, and a bundle without this cannot tell them apart.
+  # Write to a dotfile first: a plain redirect would leave a 0-byte
+  # server_info.json in the bundle when both endpoints refuse, which reads as
+  # "recorded" to anyone listing the archive.
   for endpoint in /server_info /get_server_info; do
     if "$PYTHON" -c 'import json, sys, urllib.request
 host, endpoint = sys.argv[1], sys.argv[2]
 with urllib.request.urlopen(f"http://{host}{endpoint}", timeout=30) as r:
     json.dump(json.load(r), sys.stdout, indent=1, sort_keys=True)
-' "$BENCH_HOST" "$endpoint" > "$OUT/server_info.json" 2>"$OUT/server_info.err"; then
-      rm -f "$OUT/server_info.err"
+' "$BENCH_HOST" "$endpoint" > "$OUT/.server_info.tmp" 2>"$OUT/.server_info.err"; then
+      mv "$OUT/.server_info.tmp" "$OUT/server_info.json"
+      rm -f "$OUT/.server_info.err"
       break
     fi
   done
+  if [[ ! -f "$OUT/server_info.json" ]]; then
+    {
+      echo "server_info unavailable from $BENCH_HOST"
+      echo "tried: /server_info, /get_server_info"
+      head -3 "$OUT/.server_info.err" 2>/dev/null || true
+    } > "$OUT/server_info.unavailable.txt"
+    rm -f "$OUT/.server_info.tmp" "$OUT/.server_info.err"
+  fi
 
   "$PYTHON" scripts/bench.py \
     --host "$BENCH_HOST" \
