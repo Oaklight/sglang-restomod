@@ -71,13 +71,13 @@ from the engine.
 
 ## Staged plan
 
-| Stage | Scope | Unlocks | Rough size |
-|---|---|---|---|
-| done | `fp8_moe`, graph metadata | Flash-Next experts; 27B graph speedup | 2 PRs |
-| 1 | `fp8_dense`: vendor `sm70_turbomind_fp8.py`, hook `Fp8Config` | 27B block-FP8 quant from this layer | 1 file + 1 hook |
-| 2 | `attention_v100` stage 2: vendor `flash_attn_v100_backend.py` + `tilelang_fa_v100/`, register the backend name | 27B attention from this layer | ~3.9k lines vendored |
-| 3 | `qsa_v100`: QSA backend + `qsa/*` + the `.cu` | Flash-Next attention from this layer | ~3k lines + 651-line patch |
-| 4 | model hooks (`qwen3_5`, `qwen4_exp*`) | remove the last fork patches for our models | ~800 changed lines |
+| Stage | Scope | Unlocks | Rough size | Status |
+|---|---|---|---|---|
+| done | `fp8_moe`, graph metadata | Flash-Next experts; 27B graph speedup | 2 PRs | shipped |
+| 1 | `fp8_dense`: vendor `sm70_turbomind_fp8.py`, hook `Fp8Config` | 27B block-FP8 quant from this layer | 1 file + 1 hook | shipped |
+| 2 | `attention_v100` stage 2: vendor `flash_attn_v100_backend.py` + `tilelang_fa_v100/`, register the backend name | 27B attention from this layer | ~3.9k lines vendored | shipped and running: every 27B receipt since 2026-11-02 loads this component, and `tilelang_fa_v100` is a name the pin does not define on its own |
+| 3 | `qsa_v100`: QSA backend + `qsa/*` + the `.cu` | Flash-Next attention from this layer | ~3k lines + 651-line patch | partly: `qwen_sparse_attn_backend.py` and the `.cu` are vendored inside `attention_v100`, but Flash-Next still does not start at the pin (#92, #93) |
+| 4 | model hooks (`qwen3_5`, `qwen4_exp*`) | remove the last fork patches for our models | ~800 changed lines | not started; only `ple_sm70` is isolated |
 
 After stage 2 the 27B is served by `engine pin + components`; after stage 3/4
 the same holds for Flash-Next. Until then, Flash-Next runs as
@@ -90,6 +90,7 @@ Keep the engine as the fork, and shrink the *patch* surface stage by stage
 instead of reimplementing the engine here. Each stage is independently
 validated and receipted, and none of them requires the previous one.
 
-Stage 1 is next: it is one vendored file plus the same plugin hook `fp8_moe`
-already uses, and it makes the 27B's quantization a first-class citizen of this
-layer rather than a fork detail.
+Stages 1 and 2 have landed and the 27B runs on the pin through them, with
+receipts. What is left is Flash-Next: stage 3's remaining work is blocked behind
+the flashinfer/cutlass version chain at the pin (#92), and stage 4 needs a
+4-card box before it can be measured (#93, #95).
