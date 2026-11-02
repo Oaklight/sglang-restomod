@@ -90,6 +90,8 @@ decode 吞吐（tok/s），数据来自 `scripts/bench.py`。一行数据只有�
 - FP8 行是 8 卡，NVFP4 行是 4 卡；可比较的量是单卡吞吐，不是整行总和。
 - 新的签名 receipt 落地时更新此表，且只收录能引用 receipt 或 recipe 的数字。没有来源的行不得写入。
 
+哪些配置已验证、哪些仍在计划中，见 [`COMPATIBILITY.md`](COMPATIBILITY.md)：每种硬件与栈一行，每行都带收据或阻塞它的 issue。
+
 ## 快速开始
 
 ```bash

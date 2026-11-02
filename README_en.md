@@ -102,6 +102,10 @@ How to read it:
 - Update this table when a new signed receipt lands, and only with numbers that
   cite a receipt or a recipe. A row without a citation does not belong here.
 
+Which of those configurations is validated, and which are still planned, is
+[`COMPATIBILITY.md`](COMPATIBILITY.md): one row per hardware and stack, each
+carrying its receipt or its blocking issue.
+
 ## Quick start
 
 ```bash
