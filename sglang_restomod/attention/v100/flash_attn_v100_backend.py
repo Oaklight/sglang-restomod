@@ -382,6 +382,43 @@ class FlashAttnV100Backend(AttentionBackend):
             and self.model_runner.server_args.speculative_eagle_topk <= 1
         )
 
+    def _uses_native_draft_extend(self, forward_mode) -> bool:
+        """Route a draft worker's extend pass through the grouped verifier.
+
+        A draft extend has the shape a verify has: a few query rows over the
+        full prefix. The ordinary extend kernel gives it one CTA per head, so
+        each CTA walks the whole prefix and the draft's cost grows with context
+        (issue #75). Opt in with ``SGLANG_V100_DRAFT_EXTEND_NATIVE=1``.
+
+        Left off by default: the draft extend may run inside the same graph
+        capture as the verify, and the capture path still routes it to Triton.
+        """
+        if not forward_mode.is_draft_extend_v2():
+            return False
+        if not self.model_runner.is_draft_worker:
+            return False
+        flag = os.environ.get("SGLANG_V100_DRAFT_EXTEND_NATIVE", "0").strip().lower()
+        if flag in ("0", "false", "off", "no"):
+            return False
+        if flag not in ("1", "true", "on", "yes"):
+            raise ValueError(
+                "SGLANG_V100_DRAFT_EXTEND_NATIVE must be a boolean value, "
+                f"got {flag!r}."
+            )
+        if self.page_size != V100_PAGE_SIZE or self._uses_sm70_fp8_kv:
+            return False
+        spec_algorithm = self.model_runner.spec_algorithm
+        return (
+            spec_algorithm.is_eagle()
+            and self.model_runner.server_args.speculative_eagle_topk <= 1
+        )
+
+    def _uses_grouped_smallq(self, forward_mode) -> bool:
+        """True when this forward runs the grouped split-KV kernel."""
+        return self._uses_native_linear_verify(
+            forward_mode
+        ) or self._uses_native_draft_extend(forward_mode)
+
     def _smallq_partition_size(self) -> int:
         """Workspace partition envelope for native linear verification.
 
@@ -534,7 +571,7 @@ class FlashAttnV100Backend(AttentionBackend):
                 and not self._uses_fp8_prefill_scratch(mode)
             )
             or mode.is_decode_or_idle()
-            or mode.is_draft_extend_v2()
+            or (mode.is_draft_extend_v2() and not self._uses_native_draft_extend(mode))
             or (mode.is_target_verify() and not self._uses_native_linear_verify(mode))
         ):
             # Decode / spec paths run on the Triton backend.
@@ -542,7 +579,13 @@ class FlashAttnV100Backend(AttentionBackend):
             self.forward_metadata = None
             return
 
-        if self._uses_native_linear_verify(mode):
+        if self._uses_native_draft_extend(mode):
+            # A draft extend carries the rows in extend_seq_lens, unlike a
+            # verify, whose rows are a fixed draft_token_num.
+            prefix_lens = forward_batch.extend_prefix_lens
+            extend_seq_lens = forward_batch.extend_seq_lens
+            seq_lens = forward_batch.seq_lens
+        elif self._uses_native_linear_verify(mode):
             prefix_lens = forward_batch.seq_lens
             draft_token_num = int(forward_batch.spec_info.draft_token_num)
             extend_seq_lens = torch.full_like(prefix_lens, draft_token_num)
@@ -559,7 +602,7 @@ class FlashAttnV100Backend(AttentionBackend):
             extend_seq_lens,
             prefix_lens,
             causal=causal,
-            build_smallq=self._uses_native_linear_verify(mode),
+            build_smallq=self._uses_grouped_smallq(mode),
         )
         self.forward_metadata = md
         if self._uses_sm70_fp8_kv and (
@@ -1084,7 +1127,10 @@ class FlashAttnV100Backend(AttentionBackend):
                 forward_batch.forward_mode.is_target_verify()
                 and not self._uses_native_linear_verify(forward_batch.forward_mode)
             )
-            or forward_batch.forward_mode.is_draft_extend_v2()
+            or (
+                forward_batch.forward_mode.is_draft_extend_v2()
+                and not self._uses_native_draft_extend(forward_batch.forward_mode)
+            )
         ):
             # Tree verification and unsupported FP8 draft masks use Triton's
             # custom-mask path.
@@ -1207,7 +1253,7 @@ class FlashAttnV100Backend(AttentionBackend):
         )
         paged_kwargs.update(
             sliding_window_size=sliding_window_size,
-            linear_verify=self._uses_native_linear_verify(forward_batch.forward_mode),
+            linear_verify=self._uses_grouped_smallq(forward_batch.forward_mode),
             k_scale=prefill_k_scale,
             v_scale=prefill_v_scale,
             max_seq_len_hint=getattr(md, "smallq_max_seq_len", None),
