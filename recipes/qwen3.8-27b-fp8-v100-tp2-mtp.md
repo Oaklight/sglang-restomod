@@ -70,19 +70,31 @@ At 32k that kernel is 96.7 ms of a 168 ms step; the target verify costs 10.7 ms
 `SGLANG_V100_DRAFT_EXTEND_NATIVE=1` the draft extend moves off that kernel
 entirely.
 
-**GDN prefill needs `gdn_tilelang_sm70`.** The fork used
-`--linear-attn-prefill-backend tilelang`. That implementation was removed
-upstream before v0.5.22 — `srt/layers/attention/linear/kernels/` ships only
-`gdn_cutedsl`, `gdn_flashinfer` and `gdn_triton`, and
-`LINEAR_ATTN_KERNEL_BACKEND_CHOICES` has no `tilelang` entry — so on the bare pin
-the Triton chunk kernels take 63.9% of every 4096-token prefill chunk and
-prefill runs at 684.6 tok/s at 31.8k.
+**GDN prefill: the fork's TileLang kernel, or `gdn_tilelang_sm70` at the pin.**
+The fork runs it with `--linear-attn-prefill-backend tilelang`. That
+implementation was removed upstream before v0.5.22 —
+`srt/layers/attention/linear/kernels/` ships only `gdn_cutedsl`,
+`gdn_flashinfer` and `gdn_triton`, and `LINEAR_ATTN_KERNEL_BACKEND_CHOICES` has
+no `tilelang` entry.
 
-The component carries that kernel and answers `TritonGDNKernel.extend` on SM70;
-the flags above stay as they are. Same-commit A/B at 31,744 prompt tokens:
-prefill 1,648 / 1,637 tok/s against 684, and decode unchanged (45.74 / 48.14 /
-42.69 / 41.75 against 47.88 / 38.09 / 49.21 / 46.84). Without it, every other
-row in this recipe still holds but prefill is 2.4x slower.
+The flag in the block above therefore stays `triton`: it is the only value the
+pin accepts, and the component is what puts the TileLang kernel back, by
+answering `TritonGDNKernel.extend` on SM70. Add `gdn_tilelang_sm70` to
+`SGLANG_RESTOMOD_COMPONENTS`, the same variable "Non-greedy requests" uses
+below. Without it the launch is still valid and silent, and prefill runs on the
+Triton chunk kernels.
+
+Receipt `evidence-ad0addd-recipes` records the effect at this commit: prefill
+1,929.7 / 1,925.9 tok/s at 8,041 prompt tokens and 1,657.5 / 1,652.9 at 31,158,
+against 684.6 on the Triton chunk kernels. The 63.9% attribution for that
+baseline, and the kernel-level 3.2 ms against 75.2 ms, are in the lab note
+`notes/gdn-prefill-backends.md` and in issue #80.
+
+A 128-output-token A/B, four reps per arm and **unsigned**, is recorded in
+`sglang_restomod/linear_attn_sm70/PROVENANCE.md`: prefill 1,648.4 / 1,645.1 /
+1,639.0 / 1,637.4 against 684.7 / 684.2 / 684.4 / 684.3, and decode ranges that
+overlap (TileLang 41.75-48.14, Triton 38.09-49.21), so no decode difference is
+attributable to the component.
 
 ## Environment
 
