@@ -198,13 +198,14 @@ Prefill, warm process: 1,680-1,708 tok/s at 2k, 1,331-1,364 at 8k.
 
 ## Pick the spec setting by context
 
-> **Pin status, 2026-11-02.** The table below was measured on the fork build
-> with `draft-extend-native.patch` and `SGLANG_V100_DRAFT_NATIVE=1`. Neither
-> exists in this repository or in the pin deployment: the name appears only in
-> this file. On the pin, MTP measures 18.47 / 16.82 tok/s at a 31,756-token
-> prompt, and 17.89 / 17.86 with the draft on `tilelang_fa_v100` (pull request
-> #99). The crossover rule below therefore describes the fork, not what the pin
-> serves today; porting the patch is part of issue #87.
+> **Pin status, 2026-11-02.** The table below is a fork measurement, taken with
+> `draft-extend-native.patch` and `SGLANG_V100_DRAFT_NATIVE=1`. At the pin the
+> equivalent is `SGLANG_V100_DRAFT_EXTEND_NATIVE=1` with `spec_sm70`, described
+> above, and it changes the picture: with three draft steps and 40 KV splits the
+> 27B measures **53.37 tok/s at 31.1k against 35.44 with MTP off**, at an accept
+> length of 2.88-3.50. MTP therefore still wins at 32k on the pin, and this
+> crossover table should not be used to choose the setting there. Nothing above
+> 32k has been measured on the pin.
 
 **MTP wins below ~48k and loses above it.** The draft-row fix
 (`draft-extend-native.patch`, `SGLANG_V100_DRAFT_NATIVE=1`) removed the old
