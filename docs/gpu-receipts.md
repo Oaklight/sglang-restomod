@@ -71,6 +71,13 @@ The script records `dirty_files`; sign with `--allow-dirty` only when that
 number is deliberate, because the receipt binds the commit's tree, not the
 worktree.
 
+The suite inherits the environment, and `versions.txt` is written by the
+interpreter it runs, not by the server it benchmarks. Export `PYTHONPATH` to
+the engine under test before running it, or the bundle will name whatever
+`sglang` that interpreter finds first. A host can carry more than one install
+(for example a fork under `/var/tmp`), and then a correct benchmark is
+described by the wrong version line.
+
 Copy `/tmp/evidence.tgz` to the operator host, and upload it to an HTTPS
 location the verifier can reach (a release asset, an internal static host, or
 any signed public URL).
