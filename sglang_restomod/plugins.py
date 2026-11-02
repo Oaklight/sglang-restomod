@@ -66,6 +66,11 @@ COMPONENTS: dict[str, Component] = {
         module="sglang_restomod.spec.sm70_sampling",
         description="SM70 top-k/top-p renorm kernels for non-greedy EAGLE verify",
     ),
+    "gdn_tilelang_sm70": Component(
+        name="gdn_tilelang_sm70",
+        module="sglang_restomod.linear_attn_sm70",
+        description="SM70 TileLang GDN chunked prefill, replacing the Triton chunk kernels",
+    ),
 }
 
 
