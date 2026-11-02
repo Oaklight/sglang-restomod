@@ -7,7 +7,7 @@
 | Topology | TP2, no EP |
 | Context | 32,768 to 262,144 (measured at both) |
 | Engine | `dg1kjd/sglang-sxm2` @ `73abfe1` + the ten lab patches (`patches/sglang-sxm2/`) |
-| Components | `attention_v100`, `fp8_dense`, `spec_sm70` |
+| Components | `attention_v100`, `fp8_dense`, `spec_sm70`, `gdn_tilelang_sm70` |
 | Date | 2026-10-28 (KV dtype: e4m3; long context, HiCache) |
 
 ## Flags
@@ -70,13 +70,19 @@ At 32k that kernel is 96.7 ms of a 168 ms step; the target verify costs 10.7 ms
 `SGLANG_V100_DRAFT_EXTEND_NATIVE=1` the draft extend moves off that kernel
 entirely.
 
-**GDN prefill runs on Triton at the pin.** The fork used
+**GDN prefill needs `gdn_tilelang_sm70`.** The fork used
 `--linear-attn-prefill-backend tilelang`. That implementation was removed
-upstream before v0.5.22 — `srt/layers/attention/linear/kernels/` now ships only
+upstream before v0.5.22 — `srt/layers/attention/linear/kernels/` ships only
 `gdn_cutedsl`, `gdn_flashinfer` and `gdn_triton`, and
-`LINEAR_ATTN_KERNEL_BACKEND_CHOICES` has no `tilelang` entry. Triton is the only
-path that exists at the pin, so prefill numbers measured on the fork are not
-directly comparable to ones measured here.
+`LINEAR_ATTN_KERNEL_BACKEND_CHOICES` has no `tilelang` entry — so on the bare pin
+the Triton chunk kernels take 63.9% of every 4096-token prefill chunk and
+prefill runs at 684.6 tok/s at 31.8k.
+
+The component carries that kernel and answers `TritonGDNKernel.extend` on SM70;
+the flags above stay as they are. Same-commit A/B at 31,744 prompt tokens:
+prefill 1,648 / 1,637 tok/s against 684, and decode unchanged (45.74 / 48.14 /
+42.69 / 41.75 against 47.88 / 38.09 / 49.21 / 46.84). Without it, every other
+row in this recipe still holds but prefill is 2.4x slower.
 
 ## Environment
 
