@@ -7,7 +7,7 @@
 | Topology | TP2, no EP |
 | Context | 32,768 to 262,144 (measured at both) |
 | Engine | `dg1kjd/sglang-sxm2` @ `73abfe1` + the ten lab patches (`patches/sglang-sxm2/`) |
-| Components | none (the dense path needs no restomod component) |
+| Components | `attention_v100`, `fp8_dense`, `spec_sm70` |
 | Date | 2026-10-28 (KV dtype: e4m3; long context, HiCache) |
 
 ## Flags
@@ -25,7 +25,35 @@
 # SGLANG_27B_SPEC=auto in the launcher does exactly this.
 --speculative-algorithm NEXTN
 --speculative-num-steps 3 --speculative-eagle-topk 1 --speculative-num-draft-tokens 4
+--sampling-backend pytorch                    # see "Non-greedy requests"
+--speculative-use-rejection-sampling          # see "Non-greedy requests"
+--speculative-draft-attention-backend triton  # see "The draft backend"
 ```
+
+**Non-greedy requests need three things at the pin.** Without them the server
+either refuses to start or dies on the first temperature-1 request:
+
+1. `spec_sm70` in `SGLANG_RESTOMOD_COMPONENTS` and
+   `--sampling-backend pytorch`. Otherwise a temperature-1 request reaches
+   FlashInfer's sampler, which refuses SM70:
+   `RuntimeError: FlashInfer requires GPUs with sm75 or higher.`
+2. `--speculative-use-rejection-sampling`. Otherwise EAGLE verification builds
+   `sgl_kernel_jit_speculative_sampling`, and that build fails against CCCL:
+   `flashinfer/sampling.cuh(40): error: namespace "cuda" has no member "maximum"`.
+3. `--speculative-draft-attention-backend triton`. Otherwise MTP does not start
+   at all: `ValueError: EAGLE is not supported in decode attention backend
+   tilelang_fa_v100`, because `speculative/draft_utils.py:119` resolves the
+   draft backend by name from a map that does not hold `tilelang_fa_v100`.
+
+Greedy requests reach none of these paths, which is why a temperature-0
+benchmark passes while a default-sampling request kills the server.
+
+**The draft backend.** `triton` is the working choice today, but it puts the
+draft extend on the Triton extend kernel, which assigns one CTA per head and
+walks the whole prefix. At 32k that kernel is 96.7 ms of a 168 ms step; the
+target verify costs 10.7 ms (issue #75). `tilelang_fa_v100` becomes selectable
+for the draft once pull request #99 lands, and the draft's prefill pass then
+stops running on Triton: 442 to 684 tok/s at 32k in that change's measurement.
 
 **GDN prefill runs on Triton at the pin.** The fork used
 `--linear-attn-prefill-backend tilelang`. That implementation was removed
@@ -81,6 +109,14 @@ Decode tok/s, graph on, same harness for every row:
 Prefill, warm process: 1,680-1,708 tok/s at 2k, 1,331-1,364 at 8k.
 
 ## Pick the spec setting by context
+
+> **Pin status, 2026-11-02.** The table below was measured on the fork build
+> with `draft-extend-native.patch` and `SGLANG_V100_DRAFT_NATIVE=1`. Neither
+> exists in this repository or in the pin deployment: the name appears only in
+> this file. On the pin, MTP measures 18.47 / 16.82 tok/s at a 31,756-token
+> prompt, and 17.89 / 17.86 with the draft on `tilelang_fa_v100` (pull request
+> #99). The crossover rule below therefore describes the fork, not what the pin
+> serves today; porting the patch is part of issue #87.
 
 **MTP wins below ~48k and loses above it.** The draft-row fix
 (`draft-extend-native.patch`, `SGLANG_V100_DRAFT_NATIVE=1`) removed the old
