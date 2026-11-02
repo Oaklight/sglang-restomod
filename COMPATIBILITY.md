@@ -1,13 +1,17 @@
 # Compatibility matrix
 
-Two components ship (`fp8_moe`, `attention_v100`); both are opt-in and the
-patch queue is empty. A row becomes "validated" only after a recorded run.
+Six components ship (`fp8_moe`, `fp8_dense`, `fp4_moe`, `attention_v100`,
+`ple_sm70`, `spec_sm70`); all are opt-in. A row becomes "validated" only after
+a recorded run.
 
 | Hardware | Architecture | Path | Status |
 |---|---|---|---|
 | Tesla V100-SXM2 (2x) | sm70 | `dg1kjd/sglang-sxm2` @ `73abfe1` + 3 local patches, block FP8 | Validated 2026-10-25: Qwen3.8-27B-FP8, TP2, 28K — [run](docs/runs/2026-10-25-qwen3.8-27b-fp8-lambda12.md) |
 | Tesla V100-SXM2 (2x) | sm70 | same, CUDA graph + MTP | Validated 2026-10-26: 27B decode 67-79 tok/s at 1-2.7K, 42-45 at 8K — [run](docs/runs/2026-10-26-qwen3.8-27b-mtp-lambda12.md) |
 | Tesla V100-SXM2 (8x) | sm70 | same + `fp8_moe`, TP8/EP8, CUDA graph + MTP | Validated 2026-10-26: Qwen3.8-Flash-Next-FP8 end to end, 83-86 tok/s decode — [lab record](https://github.com/Oaklight/lambda-v100-lab/blob/main/benchmarks/flash-next-fp8-sglang-lambda4-tp8.md) |
+| Tesla V100-SXM2 (2x) | sm70 | pin v0.5.22 + `attention_v100`, `fp8_dense`, `spec_sm70`, TP2, MTP 3/4 | Validated 2026-11-02: Qwen3.8-27B-FP8, 60.40-64.50 tok/s at 8.2K and 41.48-44.71 at 31.7K — receipt `evidence-e5a5740-draft-extend` |
+| Tesla V100-SXM2 (2x) | sm70 | same, fp16 KV | Validated 2026-11-02: the same model without the draft-extend fix measures 17.89-17.86 tok/s at 31.7K — issue #75 |
+| Tesla V100-SXM2 (4x) | sm70 | pin v0.5.22 + `fp4_moe`, `attention_v100`, `ple_sm70`, TP4, MTP 3/4 | Validated 2026-11-02: Qwen3.8-Flash-Next-NVFP4, decode 84.69-99.43 tok/s at 31.7K, prefill 1,599-1,600 tok/s — [lab record](https://github.com/Oaklight/lambda-v100-lab/blob/main/notes/flash-next-nvfp4-context-ladder.md) |
 | Tesla T4 | sm75 | upstream SGLang 0.5.22 | Planned |
 | RTX 4070 Super | sm89 | upstream SGLang 0.5.22 | Planned |
 | H100 | sm90 | upstream SGLang 0.5.22 | Planned |
