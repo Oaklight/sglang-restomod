@@ -37,3 +37,7 @@ def register() -> None:
     from .method import register as _install
 
     _install()
+
+    from .wna16_capability import install as install_wna16_gate
+
+    install_wna16_gate()

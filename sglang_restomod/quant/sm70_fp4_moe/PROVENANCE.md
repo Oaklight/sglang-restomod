@@ -37,3 +37,14 @@ Apache-2.0.
 
 The extension source and its build output stay outside this repository. The
 component only requires `SM70_MARLIN_DIR` to point at the built libraries.
+
+## WNA16 capability gate (2026-11-02)
+
+`CompressedTensorsWNA16.get_min_capability()` returns 80 upstream, so a W4A16
+checkpoint is rejected on Volta before the Marlin backend is consulted.
+`wna16_capability.py` wraps the classmethod and answers 70 when the device is
+sm70 and this component's extension is loadable; every other device keeps the
+upstream 80, so nothing changes on Ampere and up.
+
+Measured by unit test only: no W4A16 checkpoint has been served through this
+path on a V100 yet, so `COMPATIBILITY.md` is unchanged. Issue #39.
