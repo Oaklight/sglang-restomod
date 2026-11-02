@@ -57,6 +57,25 @@ hit) and the 32k path that requests mamba state checkpoints.
 The TileLang rows are the signed run behind `evidence-55cb6e7-gdn-tilelang`
 (`scripts/gpu_suite.sh` on lambda12 at `55cb6e7`, `versions.txt` = sglang
 0.5.22, the pin); the Triton rows are the earlier `bench.py` runs on the same
-box with the same launcher. Decode is unchanged: 43.72 / 40.77
-tok/s at 31,796 prompt tokens with 128 output tokens, against 46.67 / 46.63 on
-Triton, which is inside the run-to-run spread.
+box with the same launcher.
+
+Decode does not go through this component: `packed_decode` and the fork's
+persistent decode kernel are not vendored. A same-commit A/B at 31,744 prompt
+tokens, 128 output tokens, 4 reps per arm, one server restart apart:
+
+| arm | prefill tok/s | decode tok/s |
+|---|---|---|
+| `gdn_tilelang_sm70` | 1,648.4 / 1,645.1 / 1,639.0 / 1,637.4 | 45.74 / 48.14 / 42.69 / 41.75 |
+| Triton only | 684.7 / 684.2 / 684.4 / 684.3 | 47.88 / 38.09 / 49.21 / 46.84 |
+
+Prefill is 2.40x with a spread under 1% on both arms. The decode ranges overlap
+and the Triton arm alone spans 38.09 to 49.21, so no difference is attributable
+to the component in either direction; two-rep decode numbers on this box are
+not a stable estimate.
+
+## Dependency note
+
+`tilelang` is not declared in `pyproject.toml`. It arrives with the pinned
+engine environment (0.1.8 was the version measured here), and the kernel import
+is guarded: if it is absent, the component logs once and leaves every call on
+Triton.
