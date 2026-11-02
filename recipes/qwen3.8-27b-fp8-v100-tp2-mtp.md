@@ -47,6 +47,25 @@ path still routes a draft extend to Triton; on this model the draft extend runs
 eagerly, so the capture path is not exercised. Receipt
 `evidence-e5a5740-draft-extend` covers the sampled run at the same commit.
 
+**Three draft steps, not two or four.** With the draft extend fixed, the draft
+phase is the largest term in a step, so the depth was swept at 31.1k with 40 KV
+splits, 128 output tokens and four reps:
+
+| steps / draft tokens | accept length | decode tok/s |
+|---|---|---|
+| 2 / 3 | 2.40-2.60 | 48.69 |
+| 3 / 4 | 2.88-3.50 | **53.37** |
+| 4 / 5 | 2.90-3.92 | 52.11 |
+
+Two steps saves a third of the draft cost and gives up 22% of the accept
+length; four steps buys 0.06 of accept for one more full draft step. Keep
+`--speculative-num-steps 3 --speculative-num-draft-tokens 4`.
+
+The 4/5 row was also the only one that needed `--mem-fraction-static 0.80`: at
+0.85 the launch dies while loading weights, on a 136 MiB allocation with 117 MiB
+free.
+
+
 **Non-greedy requests need three things at the pin.** Without them the server
 either refuses to start or dies on the first temperature-1 request:
 
@@ -96,6 +115,12 @@ log-probability shift of 0.0016 nats against the default (rms 0.0039, worst
 prompt. The KV dtype change already in use measures 0.0383 to 0.0627 on the same
 metric. Keep the flag off jobs that need byte-identical output, and measure
 below ~8k before making it the default.
+
+That last measurement is done: at 2,019 prompt tokens the two arms measure 69.69
+against 71.97 tok/s mean, at 4,023 63.58 against 66.26, with the spreads
+overlapping completely and prefill identical in every row. Below 8k the flag is
+a no-regression, not a gain; its measurable win is at 32k.
+
 
 The trace, the three profiles and the log-probability comparison are in the lab
 note `notes/mtp-long-context-attribution.md`.
