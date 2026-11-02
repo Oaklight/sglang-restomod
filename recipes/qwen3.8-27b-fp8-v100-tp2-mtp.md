@@ -6,7 +6,7 @@
 | Hardware | 2x Tesla V100-SXM2-32GB (sm70) |
 | Topology | TP2, no EP |
 | Context | 32,768 to 262,144 (measured at both) |
-| Engine | `dg1kjd/sglang-sxm2` @ `73abfe1` + the ten lab patches (`patches/sglang-sxm2/`) |
+| Engine | Two stacks, and the text says which rows are which. The fork tables were measured on `dg1kjd/sglang-sxm2` @ `73abfe1` plus the lab patch set (`patches/sglang-sxm2/` in `Oaklight/lambda-v100-lab`). Every figure marked "at the pin", and every component row, was measured on `sgl-project/sglang` `v0.5.22` @ `baa9befa` with this layer installed. |
 | Components | `attention_v100`, `fp8_dense`, `spec_sm70`, `gdn_tilelang_sm70` |
 | Date | 2026-10-28 (KV dtype: e4m3; long context, HiCache) |
 
