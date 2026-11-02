@@ -31,7 +31,7 @@
 | `fp4_moe` | 经 `marlin_v100` 扩展实现的 NVFP4 expert GEMM：加载期 repack、SM70 scale 编码、GEMM 桥接。SGLang 随包的 Marlin 内核在 SM80 以下是空实现。 |
 | `ple_sm70` | fp8 PLE host-embedding gather 的 SM70 版本。固定 pin 的内核会 cast 到 `tl.float8e4nv`，在 SM70 上无法编译。 |
 | `spec_sm70` | top-k/top-p renorm 替换，使非贪心 EAGLE verify 不再触到 FlashInfer 的 sm75 下限。 |
-| `gdn_tilelang_sm70` | SM70 上的 TileLang GDN 分块预填内核。pin 的 Triton 分块内核占 27B 单次预填分块的 63.9%；本组件用 TileLang 内核接管同一次调用，31.8k token 时预填速率提升 2.4 倍（2026-11-02 实测，凭证待签）。 |
+| `gdn_tilelang_sm70` | SM70 上的 TileLang GDN 分块预填内核。pin 的 Triton 分块内核占 27B 单次预填分块的 63.9%；本组件用 TileLang 内核接管同一次调用：8,041 token 时 1,930.7 / 1,926.9 tok/s，31,145 token 时 1,658.4 / 1,657.0，Triton 下分别为 719.9 与 684.6（凭证 `evidence-e63a27e-gdn-tilelang`）。 |
 
 ```bash
 SGLANG_RESTOMOD_COMPONENTS=fp8_moe,attention_v100

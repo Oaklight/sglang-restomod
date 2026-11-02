@@ -12,6 +12,12 @@ component only answers the prefill call, and only when the call matches what
 the TileLang kernel supports. Everything else -- decode, verify, non-FP16
 activations, a non-SM70 device, a short batch, or a caller that asks for
 ``inplace_update=False`` -- falls through to the Triton kernel untouched.
+
+The first ``extend`` call of a process always runs on Triton: it is the call
+that installs the tracking guard (see ``_ensure_track_guard``), and until that
+guard exists the kernel cannot tell whether its per-chunk states will be read.
+The server's own warmup takes that hit, so a served request starts on the fast
+path; a launch with ``--skip-server-warmup`` pays Triton for its first chunk.
 """
 
 from __future__ import annotations
@@ -77,6 +83,7 @@ def _supported(q, k, v, ssm_states, inplace_update: bool) -> bool:
         return False
     if v.ndim != 4 or v.shape[-1] != _VALUE_DIM:
         return False
+    # The pool is [slot, heads, value_dim, key_dim], so the last axis is K.
     if ssm_states.shape[-1] != _KEY_DIM or ssm_states.shape[-2] != _VALUE_DIM:
         return False
     return q.shape[1] >= _min_tokens()
@@ -137,8 +144,19 @@ def _ensure_track_guard() -> bool:
 
 
 def _tracking_needed(backend) -> bool:
+    """Mirror the condition the engine uses to read the third return value.
+
+    ``gdn_backend.py`` requires a track mask, at least one unaligned row, and a
+    kernel that cannot snapshot them itself. The snapshot term is included even
+    though ``_needs_engine_features`` would already divert such a call, because
+    a reader of this predicate has to be able to compare it with the engine's.
+    """
     meta = getattr(backend, "forward_metadata", None)
     if meta is None or not getattr(meta, "has_mamba_track_mask", False):
+        return False
+    dispatcher = getattr(backend, "kernel_dispatcher", None)
+    kernel = getattr(dispatcher, "extend_kernel", None)
+    if getattr(kernel, "supports_track_state_snapshot", False):
         return False
     source = getattr(meta, "track_ssm_h_src", None)
     return source is not None and source.numel() > 0

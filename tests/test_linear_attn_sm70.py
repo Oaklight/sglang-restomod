@@ -140,6 +140,26 @@ def test_tracking_needs_a_mask_and_rows():
     assert gdn_tilelang._tracking_needed(object()) is False
 
 
+def test_snapshot_capable_kernels_do_not_need_h():
+    class Meta:
+        has_mamba_track_mask = True
+        track_ssm_h_src = _Idx(2)
+
+    class Kernel:
+        supports_track_state_snapshot = True
+
+    class Dispatcher:
+        extend_kernel = Kernel()
+
+    class Backend:
+        forward_metadata = Meta()
+        kernel_dispatcher = Dispatcher()
+
+    assert gdn_tilelang._tracking_needed(Backend()) is False
+    Kernel.supports_track_state_snapshot = False
+    assert gdn_tilelang._tracking_needed(Backend()) is True
+
+
 def test_track_guard_scopes_the_flag():
     class Meta:
         has_mamba_track_mask = True
