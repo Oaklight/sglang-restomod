@@ -8,7 +8,7 @@
 | Context | 32,768 to 262,144 (measured at both) |
 | Engine | Two stacks, and the text says which rows are which. The fork tables were measured on `dg1kjd/sglang-sxm2` @ `73abfe1` plus the lab patch set (`patches/sglang-sxm2/` in `Oaklight/lambda-v100-lab`). Every figure marked "at the pin", and every component row, was measured on `sgl-project/sglang` `v0.5.22` @ `baa9befa` with this layer installed. |
 | Components | `attention_v100`, `fp8_dense`, `spec_sm70`, `gdn_tilelang_sm70` |
-| Date | 2026-10-28 (KV dtype: e4m3; long context, HiCache) |
+| Date | 2026-11-02 (KV dtype: e4m3 at the fork, fp16 at the pin — see "KV dtype") |
 
 ## Flags
 
@@ -16,7 +16,8 @@
 --dtype float16 --quantization fp8
 --attention-backend tilelang_fa_v100
 --linear-attn-prefill-backend triton --linear-attn-decode-backend triton
---kv-cache-dtype fp8_e4m3             # 1 byte; required for 256k. See "KV dtype".
+# --kv-cache-dtype fp8_e5m2           # optional 1-byte cache for 256k; costs
+                                      # 1.38x decode at the pin. See "KV dtype".
 --tp-size 2 --context-length 262144   # max_position_embeddings
 --mem-fraction-static 0.85 --max-running-requests 4
 --chunked-prefill-size 4096 --max-prefill-tokens 8192
@@ -309,7 +310,26 @@ what the model says.
 
 ## KV dtype
 
-`fp8_e4m3` is the recommendation. It is the same size as e5m2, runs at the same
+> **Pin status, 2026-11-02.** `--kv-cache-dtype fp8_e4m3` does not start on sm70
+> at this pin. The grouped decode kernel
+> (`sglang/kernels/ops/attention/decode_attention.py:853`,
+> `_decode_grouped_att_m_fwd`) compiles for `fp8e4nv`, and Triton refuses:
+> `type fp8e4nv not supported in this architecture. The supported fp8 dtypes are
+> ('fp8e4b15', 'fp8e5')`. The server dies before the model loads, so no
+> attention backend choice avoids it.
+>
+> `fp8_e5m2` does start, and at 32k it costs **1.38x decode** against fp16 for
+> the same prefill: 29.02 / 32.24 / 30.92 / 34.55 tok/s against 41.52 / 48.11 /
+> 41.62 / 43.66, four 128-output-token reps, one server restart apart. On this
+> launch it allocated a 305,280-token pool.
+>
+> So **fp16 KV is the pin default**, and the 1-byte cache is a capacity trade for
+> 256k rather than a free win. The comparison below was measured on the fork and
+> stands as the reason to keep the format on the roadmap, not as a reason to
+> pass the flag today.
+
+`fp8_e4m3` is the recommendation where the decode kernel supports it. It is the
+same size as e5m2, runs at the same
 speed in the SM70 decode kernel, and moves the model's own next-token
 distribution less.
 
