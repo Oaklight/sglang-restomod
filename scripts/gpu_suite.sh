@@ -103,12 +103,15 @@ if [[ -n "$BENCH_HOST" ]]; then
   # Write to a dotfile first: a plain redirect would leave a 0-byte
   # server_info.json in the bundle when both endpoints refuse, which reads as
   # "recorded" to anyone listing the archive.
+  SERVER_HOST="${BENCH_HOST#http://}"
+  SERVER_HOST="${SERVER_HOST#https://}"
+  SERVER_HOST="${SERVER_HOST%/}"
   for endpoint in /server_info /get_server_info; do
     if "$PYTHON" -c 'import json, sys, urllib.request
 host, endpoint = sys.argv[1], sys.argv[2]
 with urllib.request.urlopen(f"http://{host}{endpoint}", timeout=30) as r:
     json.dump(json.load(r), sys.stdout, indent=1, sort_keys=True)
-' "$BENCH_HOST" "$endpoint" > "$OUT/.server_info.tmp" 2>"$OUT/.server_info.err"; then
+' "$SERVER_HOST" "$endpoint" > "$OUT/.server_info.tmp" 2>"$OUT/.server_info.err"; then
       mv "$OUT/.server_info.tmp" "$OUT/server_info.json"
       rm -f "$OUT/.server_info.err"
       break
@@ -116,7 +119,7 @@ with urllib.request.urlopen(f"http://{host}{endpoint}", timeout=30) as r:
   done
   if [[ ! -f "$OUT/server_info.json" ]]; then
     {
-      echo "server_info unavailable from $BENCH_HOST"
+      echo "server_info unavailable from $SERVER_HOST"
       echo "tried: /server_info, /get_server_info"
       head -3 "$OUT/.server_info.err" 2>/dev/null || true
     } > "$OUT/server_info.unavailable.txt"
