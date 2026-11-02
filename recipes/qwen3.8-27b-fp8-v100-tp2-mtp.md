@@ -27,8 +27,23 @@
 --speculative-num-steps 3 --speculative-eagle-topk 1 --speculative-num-draft-tokens 4
 --sampling-backend pytorch                    # see "Non-greedy requests"
 --speculative-use-rejection-sampling          # see "Non-greedy requests"
---speculative-draft-attention-backend triton  # see "The draft backend"
+--speculative-draft-attention-backend tilelang_fa_v100  # see "The draft backend"
 ```
+
+Add `SGLANG_V100_DRAFT_EXTEND_NATIVE=1` to the environment to put the draft
+extend on the same grouped split-KV kernel the target verify uses. It is the
+single largest decode change on this model at long context:
+
+| prompt tokens | MTP decode, flag off | flag on |
+|---|---:|---:|
+| 8,204 | 42.99 / 46.16 tok/s | **60.40 / 64.50** |
+| 31,756 | 17.89 / 17.86 tok/s | **41.48 / 44.71** |
+
+Greedy, 128 output tokens, two reps, lambda12, accept length 2.73-3.12 in both
+arms. Prefill is unchanged. The flag defaults off because the CUDA graph capture
+path still routes a draft extend to Triton; on this model the draft extend runs
+eagerly, so the capture path is not exercised. Receipt
+`evidence-e5a5740-draft-extend` covers the sampled run at the same commit.
 
 **Non-greedy requests need three things at the pin.** Without them the server
 either refuses to start or dies on the first temperature-1 request:
@@ -48,12 +63,12 @@ either refuses to start or dies on the first temperature-1 request:
 Greedy requests reach none of these paths, which is why a temperature-0
 benchmark passes while a default-sampling request kills the server.
 
-**The draft backend.** `triton` is the working choice today, but it puts the
-draft extend on the Triton extend kernel, which assigns one CTA per head and
-walks the whole prefix. At 32k that kernel is 96.7 ms of a 168 ms step; the
-target verify costs 10.7 ms (issue #75). `tilelang_fa_v100` becomes selectable
-for the draft once pull request #99 lands, and the draft's prefill pass then
-stops running on Triton: 442 to 684 tok/s at 32k in that change's measurement.
+**The draft backend.** `triton` also works, but it puts the draft extend on the
+Triton extend kernel, which assigns one CTA per head and walks the whole prefix.
+At 32k that kernel is 96.7 ms of a 168 ms step; the target verify costs 10.7 ms
+(issue #75). `tilelang_fa_v100` is selectable since pull request #99, and with
+`SGLANG_V100_DRAFT_EXTEND_NATIVE=1` the draft extend moves off that kernel
+entirely.
 
 **GDN prefill runs on Triton at the pin.** The fork used
 `--linear-attn-prefill-backend tilelang`. That implementation was removed
