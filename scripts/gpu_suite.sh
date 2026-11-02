@@ -90,6 +90,11 @@ fi
   "$PYTHON" -c 'import sglang; print("sglang", sglang.__version__)' 2>&1 || true
   "$PYTHON" -c 'import torch; print("torch", torch.__version__)' 2>&1 || true
   "$OOB" --version 2>&1 || true
+  # The launch configuration of the server under test. /server_info covers the
+  # topology and the speculative settings; the component list exists only in
+  # the launcher's environment, so the operator declares it here.
+  echo "plugins=${SGLANG_PLUGINS:-<unset>}"
+  echo "components=${SGLANG_RESTOMOD_COMPONENTS:-<unset>}"
 } > "$OUT/versions.txt"
 
 if [[ -n "$BENCH_HOST" ]]; then
