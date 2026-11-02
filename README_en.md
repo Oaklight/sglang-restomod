@@ -22,7 +22,7 @@ tests. The repository is not a fork of SGLang or of any V100 project.
 
 ## Status
 
-Six components ship, all opt-in via `SGLANG_RESTOMOD_COMPONENTS`:
+Seven components ship, all opt-in via `SGLANG_RESTOMOD_COMPONENTS`:
 
 | component | what it does |
 |---|---|
@@ -32,6 +32,7 @@ Six components ship, all opt-in via `SGLANG_RESTOMOD_COMPONENTS`:
 | `fp4_moe` | NVFP4 expert GEMM through the `marlin_v100` extension: load-time repack, SM70 scale encoding, and the GEMM bridge. The Marlin kernel SGLang ships is an empty body below SM80. |
 | `ple_sm70` | SM70 decode for the fp8 PLE host-embedding gather, which the pinned kernel cannot compile because it casts to `tl.float8e4nv`. |
 | `spec_sm70` | top-k/top-p renorm replacements so non-greedy EAGLE verify does not reach FlashInfer's sm75 floor. |
+| `gdn_tilelang_sm70` | SM70 TileLang GDN chunked prefill. The pin's Triton chunk kernels take 63.9% of a 27B prefill chunk; this component answers the same call with a TileLang kernel: 1,933.6 / 1,924.9 tok/s at 8,041 prompt tokens and 1,658.3 / 1,655.1 at 31,158, against 719.9 and 684.6 on Triton (receipt `evidence-55cb6e7-gdn-tilelang`). |
 
 ```bash
 SGLANG_RESTOMOD_COMPONENTS=fp8_moe,attention_v100
