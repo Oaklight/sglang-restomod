@@ -71,6 +71,14 @@ The script records `dirty_files`; sign with `--allow-dirty` only when that
 number is deliberate, because the receipt binds the commit's tree, not the
 worktree.
 
+With `--bench-host`, the suite also stores the endpoint's `/server_info` as
+`server_info.json`. A benchmark row is only meaningful next to the serving
+configuration: MTP off and MTP 3/4 differ by 3-4x at 32k on the 27B, so a bundle
+without `speculative_algorithm`, `speculative_num_steps` and
+`speculative_num_draft_tokens` cannot tell two rows apart. For a spec-decoding
+regression check, bench at 8k and 32k against the launch under test and read the
+32k decode rate against the recipe's expected floor.
+
 The suite inherits the environment, and `versions.txt` is written by the
 interpreter it runs, not by the server it benchmarks. Export `PYTHONPATH` to
 the engine under test before running it, or the bundle will name whatever
