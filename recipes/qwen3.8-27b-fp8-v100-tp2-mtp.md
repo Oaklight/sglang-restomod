@@ -6,8 +6,8 @@
 | Hardware | 2x Tesla V100-SXM2-32GB (sm70) |
 | Topology | TP2, no EP |
 | Context | 32,768 to 262,144 (measured at both) |
-| Engine | `dg1kjd/sglang-sxm2` @ `73abfe1` + the ten lab patches (`patches/sglang-sxm2/`) |
-| Components | `attention_v100`, `fp8_dense`, `spec_sm70` |
+| Engine | Two stacks, and the text says which rows are which. The fork tables were measured on `dg1kjd/sglang-sxm2` @ `73abfe1` plus the lab patch set (`patches/sglang-sxm2/` in `Oaklight/lambda-v100-lab`). Every figure marked "at the pin", and every component row, was measured on `sgl-project/sglang` `v0.5.22` @ `baa9befa` with this layer installed. |
+| Components | `attention_v100`, `fp8_dense`, `spec_sm70`, `gdn_tilelang_sm70` |
 | Date | 2026-10-28 (KV dtype: e4m3; long context, HiCache) |
 
 ## Flags
@@ -70,13 +70,31 @@ At 32k that kernel is 96.7 ms of a 168 ms step; the target verify costs 10.7 ms
 `SGLANG_V100_DRAFT_EXTEND_NATIVE=1` the draft extend moves off that kernel
 entirely.
 
-**GDN prefill runs on Triton at the pin.** The fork used
-`--linear-attn-prefill-backend tilelang`. That implementation was removed
-upstream before v0.5.22 — `srt/layers/attention/linear/kernels/` now ships only
-`gdn_cutedsl`, `gdn_flashinfer` and `gdn_triton`, and
-`LINEAR_ATTN_KERNEL_BACKEND_CHOICES` has no `tilelang` entry. Triton is the only
-path that exists at the pin, so prefill numbers measured on the fork are not
-directly comparable to ones measured here.
+**GDN prefill: the fork's TileLang kernel, or `gdn_tilelang_sm70` at the pin.**
+The fork runs it with `--linear-attn-prefill-backend tilelang`. That
+implementation was removed upstream before v0.5.22 —
+`srt/layers/attention/linear/kernels/` ships only `gdn_cutedsl`,
+`gdn_flashinfer` and `gdn_triton`, and `LINEAR_ATTN_KERNEL_BACKEND_CHOICES` has
+no `tilelang` entry.
+
+The flag in the block above therefore stays `triton`: it is the only value the
+pin accepts, and the component is what puts the TileLang kernel back, by
+answering `TritonGDNKernel.extend` on SM70. Add `gdn_tilelang_sm70` to
+`SGLANG_RESTOMOD_COMPONENTS`, the same variable "Non-greedy requests" uses
+below. Without it the launch is still valid and silent, and prefill runs on the
+Triton chunk kernels.
+
+Receipt `evidence-ad0addd-recipes` records the effect at this commit: prefill
+1,929.7 / 1,925.9 tok/s at 8,041 prompt tokens and 1,657.5 / 1,652.9 at 31,158,
+against 684.6 on the Triton chunk kernels. The 63.9% attribution for that
+baseline, and the kernel-level 3.2 ms against 75.2 ms, are in the lab note
+`notes/gdn-prefill-backends.md` and in issue #80.
+
+A 128-output-token A/B, four reps per arm and **unsigned**, is recorded in
+`sglang_restomod/linear_attn_sm70/PROVENANCE.md`: prefill 1,648.4 / 1,645.1 /
+1,639.0 / 1,637.4 against 684.7 / 684.2 / 684.4 / 684.3, and decode ranges that
+overlap (TileLang 41.75-48.14, Triton 38.09-49.21), so no decode difference is
+attributable to the component.
 
 ## Environment
 
