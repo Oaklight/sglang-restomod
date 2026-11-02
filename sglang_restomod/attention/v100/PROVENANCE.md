@@ -73,5 +73,18 @@ Still read from the engine checkout:
   needs it. Vendoring it is what makes the component independent of the fork.
 - `sglang.srt.environ.envs` for `SGLANG_SM70_QSA_COMBINE`.
 
-Not yet done: the component has not been run on a GPU through its own module
-path. Every V100 number in `recipes/` and `docs/runs/` was produced by the fork.
+Validated through its own module path. Since 2026-11-02 every 27B measurement in
+this repository runs this component rather than the fork: the launchers set
+`SGLANG_RESTOMOD_COMPONENTS=attention_v100,fp8_dense,spec_sm70,gdn_tilelang_sm70`
+with `PYTHONPATH` pointing at the component tree, `--attention-backend
+tilelang_fa_v100` is a name the pin does not define on its own, and the
+receipts' `versions.txt` records that component list next to `sglang 0.5.22`.
+
+Receipts: `evidence-2649742-gdn-tilelang`, `evidence-153a4c2-kv-splits`,
+`evidence-4a1ea84-pin-kv`, `evidence-e9ef57f-spec-depth`. What they cover is the
+TP2 27B-FP8 path at up to 32k, with MTP and the four components.
+
+Still fork runs: the 128k and 256k rows in `recipes/` and `docs/runs/`, and every
+Flash-Next number. Those need a 4-card or 256k launch through this component and
+are tracked in #92, #93 and #95.
+
