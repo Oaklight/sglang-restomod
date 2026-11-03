@@ -312,6 +312,31 @@ Prefill is the weak term now, and it still falls with context (2,963 at 32k to
 2,021 at 256k). That is the gather-and-recompute path rather than attention,
 and it is the next thing worth attacking.
 
+## Serving throughput
+
+The rows above are one request at a time. A server is judged on several.
+27B-FP8 TP2, e5m2 KV, MTP 5/4, 40 KV splits, greedy, 128 output tokens,
+`--fresh` so every request prefills cold, two reps after one warmup. The rate
+is the decode window only (earliest first token to latest last token) over the
+`completion_tokens` the server reports.
+
+| prompt | concurrency | aggregate tok/s | per request |
+|---|---:|---:|---:|
+| 8k | 1 | 65.0 / 72.3 | 65.0 / 72.3 |
+| 8k | 2 | 184.3 / 159.3 | 92.1 / 79.6 |
+| 8k | 4 | 201.5 / 225.7 | 50.4 / 56.4 |
+| 8k | 8 | 171.6 / 157.6 | 21.4 / 19.7 |
+| 32k | 1 | 62.87 | 62.87 |
+| 32k | 2 | 76.3 / 93.8 | 38.1 / 46.9 |
+| 32k | 4 | 96.9 / 94.0 | 24.2 / 23.5 |
+
+Four requests is the knee on two cards: ~200-226 tok/s aggregate at 8k and ~95
+at 32k, and eight requests only add queueing. At 8k a second request costs
+almost nothing — weights are read once per step for the whole batch — so its
+per-request rate (80-92) is above the single-stream one (65-72).
+
+`scripts/gpu_suite.sh --concurrency 1,2,4` reproduces the ladder in one bundle.
+
 ## Host KV tier
 
 `SGLANG_27B_HICACHE_GB=N` (`--enable-hierarchical-cache --hicache-size N`) is
