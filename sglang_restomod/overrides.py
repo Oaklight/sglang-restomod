@@ -131,7 +131,7 @@ def _install_wna16_min_capability() -> bool:
     def get_min_capability(cls) -> int:
         if _sm70_marlin_v100_available():
             return 70
-        return original(cls)
+        return original()
 
     get_min_capability._restomod_sm70 = True
     config_cls.get_min_capability = classmethod(get_min_capability)
