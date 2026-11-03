@@ -133,6 +133,42 @@ with urllib.request.urlopen(f"http://{host}{endpoint}", timeout=30) as r:
     rm -f "$OUT/.server_info.tmp" "$OUT/.server_info.err"
   fi
 
+  # A component that fails to register is skipped silently by the plugin
+  # loader, and the launch then serves with the engine's own backend under the
+  # same flag. The endpoint's own view is the only thing that can tell the two
+  # apart, so record it and fail when the selection is not the one that served.
+  if [[ -f "$OUT/server_info.json" ]]; then
+    check_rc=0
+    "$PYTHON" - "$OUT/server_info.json" "${SGLANG_RESTOMOD_COMPONENTS:-}" \
+      > "$OUT/launch_check.txt" 2>&1 <<'PY' || check_rc=$?
+import json
+import sys
+
+path, components = sys.argv[1], sys.argv[2]
+with open(path) as fh:
+    info = json.load(fh)
+selected = {c.strip() for c in components.split(",") if c.strip()}
+expected = {}
+if "attention_v100" in selected:
+    expected["attention_backend"] = "tilelang_fa_v100"
+if "spec_sm70" in selected:
+    expected["speculative_draft_attention_backend"] = "tilelang_fa_v100"
+mismatched = 0
+for key, want in expected.items():
+    got = info.get(key)
+    status = "ok" if got == want else "MISMATCH"
+    mismatched += got != want
+    print(f"{status}\t{key}\twant={want}\tgot={got}")
+if not expected:
+    print("ok\tno component in the selection maps to a server_info field")
+sys.exit(1 if mismatched else 0)
+PY
+    if [[ "$check_rc" -ne 0 ]]; then
+      echo "error: the serving configuration does not match SGLANG_RESTOMOD_COMPONENTS; see $OUT/launch_check.txt" >&2
+      exit 1
+    fi
+  fi
+
   "$PYTHON" scripts/bench.py \
     --host "$SERVER_HOST" \
     --model "$MODEL" \
