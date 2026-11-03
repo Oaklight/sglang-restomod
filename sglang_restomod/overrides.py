@@ -95,6 +95,49 @@ def _install_fp8_min_capability() -> bool:
     return True
 
 
+def _sm70_marlin_v100_available() -> bool:
+    """Whether the marlin_v100 extension can serve a dense WNA16 GEMM here."""
+    from sglang_restomod.quant.sm70_marlin_v100 import available
+
+    return available()
+
+
+def _install_wna16_min_capability() -> bool:
+    """Let a WNA16 (int4) quantization config load on sm70.
+
+    ``CompressedTensorsWNA16.get_min_capability`` reports 80, so the config is
+    refused before any weight is read. The V100 build of marlin_v100 exports
+    ``gptq_marlin_repack`` and ``marlin_gemm``, which is what the WNA16 path
+    needs, so the floor does not describe that build.
+
+    This only admits the config: the dense GEMM still has to be wired into the
+    linear method (issue #40). On a host without the extension, or on anything
+    that is not an SM70 device, the upstream answer is returned unchanged.
+    """
+    try:
+        from sglang.srt.layers.quantization.compressed_tensors.schemes import (
+            compressed_tensors_wNa16,
+        )
+    except Exception:  # noqa: BLE001 - absent module means nothing to patch
+        return False
+
+    config_cls = getattr(compressed_tensors_wNa16, "CompressedTensorsWNA16", None)
+    if config_cls is None:
+        return False
+    original = config_cls.get_min_capability
+    if getattr(original, "_restomod_sm70", False):
+        return False
+
+    def get_min_capability(cls) -> int:
+        if _sm70_marlin_v100_available():
+            return 70
+        return original(cls)
+
+    get_min_capability._restomod_sm70 = True
+    config_cls.get_min_capability = classmethod(get_min_capability)
+    return True
+
+
 def _install_disable_small_copy() -> bool:
     """Disable the Triton small-copy fast path on sm70.
 
@@ -535,6 +578,7 @@ def install() -> None:
     changed = _install_profiler() or changed
     changed = _install_disable_hc_mix_persistent() or changed
     changed = _install_fp4_min_capability() or changed
+    changed = _install_wna16_min_capability() or changed
     _INSTALLED = True
     if changed:
         logger.info("sglang-restomod: capability floor lowered to sm70")
