@@ -319,16 +319,18 @@ The rows above are one request at a time. A server is judged on several.
 every request prefills cold, two reps after one warmup, sampling at the bench
 default of temperature 1. The rate is the decode window only (earliest first
 token to latest last token) over the `completion_tokens` the server reports.
-Prompts are 8,037-8,041 and 31,359-31,372 tokens after the chat template.
+Prompts are 8,034-8,037 and 31,372-31,385 tokens after the chat template.
+The rows are the `bench.log` of the signed bundle
+`evidence-6f10d3a-serving`.
 
 | prompt | concurrency | aggregate tok/s | per request |
 |---|---:|---:|---:|
-| 8k | 1 | 58.7 / 77.0 | 58.7 / 77.0 |
-| 8k | 2 | 110.1 / 126.0 | 55.1 / 63.0 |
-| 8k | 4 | 103.0 / 103.9 | 25.8 / 26.0 |
-| 32k | 1 | 54.9 / 45.3 | 54.9 / 45.3 |
-| 32k | 2 | 81.7 / 85.8 | 40.8 / 42.9 |
-| 32k | 4 | 124.7 / 120.1 | 31.2 / 30.0 |
+| 8k | 1 | 55.9 / 78.5 | 55.9 / 78.5 |
+| 8k | 2 | 118.3 / 104.6 | 59.2 / 52.3 |
+| 8k | 4 | 108.3 / 110.0 | 27.1 / 27.5 |
+| 32k | 1 | 59.5 / 50.8 | 59.5 / 50.8 |
+| 32k | 2 | 87.9 / 77.5 | 44.0 / 38.7 |
+| 32k | 4 | 108.3 / 114.3 | 27.1 / 28.6 |
 
 Two requests already take 8k to its ceiling: the third and fourth add queueing
 and not throughput. At 32k the aggregate keeps rising to four requests, because
