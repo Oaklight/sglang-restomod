@@ -58,6 +58,10 @@ def quantize_lm_head(model) -> bool:
     head.weight_scale_inv = torch.nn.Parameter(scale, requires_grad=False)
     head.weight_block_size = [BLOCK, BLOCK]
     head.orig_dtype = torch.float16
+    # ParallelLMHead is a weight holder, not a Linear; the fp8 apply path reads
+    # these two sizes.
+    head.output_size_per_partition = q.shape[0]
+    head.input_size_per_partition = q.shape[1]
     head.quant_method = method
     method.process_weights_after_loading(head)
     logger.info(
