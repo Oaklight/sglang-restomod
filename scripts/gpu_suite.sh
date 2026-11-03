@@ -189,6 +189,14 @@ PY
   : > "$OUT/bench.log"
   for c in ${CONCURRENCY_LIST//,/ }; do
     echo "== concurrency $c" >> "$OUT/bench.log"
+    # A cold prefix only at one request. Above that, every stream shares the
+    # prefix so the batch starts together and the all-active window is real;
+    # with cold prefills the later streams are still prefilling long after the
+    # first one decodes, and the rate collapses into the prefill stagger.
+    FRESH=""
+    if [[ "$c" == "1" ]]; then
+      FRESH="--fresh"
+    fi
     "$PYTHON" scripts/bench.py \
       --host "$SERVER_HOST" \
       --model "$MODEL" \
@@ -196,7 +204,7 @@ PY
       --contexts "$CONTEXTS" \
       --output-tokens "$OUTPUT_TOKENS" \
       --concurrency "$c" \
-      --chat --no-think --fresh --reps 2 --warmups 1 \
+      --chat --no-think $FRESH --reps 2 --warmups 1 \
       >> "$OUT/bench.log" 2>&1 || echo "bench failed for concurrency $c; see bench.log" >> "$OUT/bench.log"
   done
 fi
