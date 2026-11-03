@@ -482,7 +482,9 @@ is required.
 
 Two settings decide whether the disk tier does anything at all. 24 distinct
 30,720-token documents (737k tokens) against a 397k-token device pool and an
-**8 GB** host tier (8.4 documents), two passes in order:
+**8 GB** host tier (8.4 documents), two passes in order. **All three rows are
+lambda4** (503 GB RAM); the last section of this block is the lambda12 result
+for the same launcher:
 
 | arm | round 1 | round 2 |
 |---|---|---|
@@ -506,6 +508,29 @@ also decodes at the same rate as a freshly prefilled one (median 32.63 vs
 32.58 tok/s at 32k, no MTP, over 16 documents) and greedy output is
 byte-identical, so the win is not paid for during generation and does not change
 what the model says.
+
+**Not portable to lambda12.** The same launcher on lambda12 (125 GB RAM), same
+24 documents, same 8 GB host tier, gives **0/23 disk hits** on the second pass:
+documents 1-23 take 18.44-18.73 s each, against 17.3-18.3 s to re-prefill, and
+the file backend does write (`/tmp/hicache` grew by ~90k files). On lambda12
+`--hicache-host-memory-mode buffer_only` is 4x better than `write_back` for the
+same workload:
+
+| arm, lambda12, 24 documents, 8 GB tier | fill pass | second pass |
+|---|---|---|
+| `write_back`, `cache` | 18.5-18.9 s | 0/23 hits, 18.44-18.73 s |
+| `write_through`, `buffer_only` | 2.0-7.9 s | 5/23 at 1.70-2.10 s, 18 at 3.47-7.11 s |
+
+The cause of the host difference is unconfirmed; restomod #84 tracks it. Treat
+the disk tier as a lambda4 result until that issue closes, and do not apply the
+`write_back` row to another host without re-measuring.
+
+`--hicache-host-memory-mode buffer_only` cannot be combined with `write_back`:
+the pin resolves the policy to `write_through` and logs
+`buffer_only resolves --hicache-write-policy write_back to write_through`
+(`sglang/srt/arg_groups/hicache_hook.py:238-249`), because a staging buffer has
+no write-back target. In that mode `--hicache-size` sizes the staging pool, not
+a cache tier.
 
 ## KV dtype
 
