@@ -28,7 +28,7 @@ Seven components ship, all opt-in via `SGLANG_RESTOMOD_COMPONENTS`:
 |---|---|
 | `fp8_moe` | block-FP8 expert GEMM on sm70. The TurboMind library SGLang ships for SM70 exports `fp8_moe_gemm_sm70_out` but never registers it with torch; this resolves the symbol with a small `dlopen`/`dlsym` shim and exposes a typed surface. This is what makes the official block-FP8 MoE checkpoints runnable on V100. |
 | `fp8_dense` | SM70 W8A16 dense FP8 linear kernels for the pinned engine. |
-| `attention_v100` | implements `init_forward_metadata_out_graph` on the V100 attention backend, which the graph runner calls and the base class leaves as a no-op. Without it a decode CUDA graph cannot capture. |
+| `attention_v100` | V100 full attention for the pin. Vendors `flash_attn_v100_backend.py`, the SM70 QSA backend and the `tilelang_fa_v100` kernels, registers the `tilelang_fa_v100` backend name (the pin does not define it), and implements `init_forward_metadata_out_graph` on the backend, which the graph runner calls and the base class leaves as a no-op. Without the last one a decode CUDA graph cannot capture; without the first two the launch does not start. |
 | `fp4_moe` | NVFP4 expert GEMM through the `marlin_v100` extension: load-time repack, SM70 scale encoding, and the GEMM bridge. The Marlin kernel SGLang ships is an empty body below SM80. |
 | `ple_sm70` | SM70 decode for the fp8 PLE host-embedding gather, which the pinned kernel cannot compile because it casts to `tl.float8e4nv`. |
 | `spec_sm70` | top-k/top-p renorm replacements so non-greedy EAGLE verify does not reach FlashInfer's sm75 floor. |
