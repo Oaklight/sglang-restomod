@@ -358,17 +358,22 @@ over the `completion_tokens` the server reports. The burst column is the same
 run over the earliest-first to latest-last window; it carries the stagger of
 the later requests' prefill and is what a cold batch costs end to end.
 
+Prompts are 8,034-8,041 and 31,359-31,385 tokens after the chat template. The
+rows are the `bench.log` of the signed bundle `evidence-65c99d5-fp8-moe`, which
+runs the recommended launch: `fp8_moe` in the component list and 1024-token
+chunks.
+
 | prompt | concurrency | aggregate tok/s | per request | burst tok/s |
 |---|---:|---:|---:|---:|
-| 8k | 1 | 57.5 / 62.7 | 57.5 / 62.7 | same |
-| 8k | 2 | 107.1 / 106.4 | 53.6 / 53.2 | 105.5 / 104.7 |
-| 8k | 4 | 181.8 / 181.3 | 45.5 / 45.3 | 169.4 / 171.8 |
-| 32k | 1 | 46.8 / 49.0 | 46.8 / 49.0 | same |
-| 32k | 2 | 80.7 / 82.6 | 40.3 / 41.3 | 76.1 / 80.4 |
-| 32k | 4 | 117.8 / 125.4 | 29.5 / 31.4 | 111.5 / 120.0 |
+| 8k | 1 | 63.0 / 66.6 | 63.0 / 66.6 | same |
+| 8k | 2 | 120.5 / 110.2 | 60.2 / 55.1 | 117.6 / 107.7 |
+| 8k | 4 | 195.6 / 187.7 | 48.9 / 46.9 | 187.6 / 180.7 |
+| 32k | 1 | 54.8 / 55.0 | 54.8 / 55.0 | same |
+| 32k | 2 | 86.4 / 84.4 | 43.2 / 42.2 | 83.9 / 81.9 |
+| 32k | 4 | 114.2 / 120.3 | 28.5 / 30.1 | 107.1 / 112.1 |
 
-At 8k batching is close to linear: 57 to 107 to 181 tok/s, 1.9x and 3.2x the
-single stream. At 32k it flattens to 1.7x and 2.6x, because every step reads
+At 8k batching is close to linear: 63 to 120 to 196 tok/s, 1.9x and 3.1x the
+single stream. At 32k it flattens to 1.6x and 2.1x, because every step reads
 the whole prefix once per row. Per-request rate falls in both cases, so
 concurrency buys throughput at the cost of latency.
 
