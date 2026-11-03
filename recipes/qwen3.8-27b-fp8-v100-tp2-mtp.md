@@ -348,6 +348,20 @@ state.
 
 `scripts/gpu_suite.sh --concurrency 1,2,4` reproduces the ladder in one bundle.
 
+Longer context moves the ceiling. On the 256k launch (`--context-length
+262144`, mem 0.82, same MTP and KV), 512 output tokens, one rep:
+
+| prompt tokens | concurrency | decode tok/s | prefill tok/s | TTFT |
+|---:|---:|---:|---:|---:|
+| 64,263 | 1 | 41.6 | 1,321 | 48.6 s |
+| 64,263 | 2 | 56.7 aggregate | same | same |
+| 128,564 | 1 | 29.7 | 1,017 | 126.5 s |
+
+Long-context concurrency is bounded by the KV pool, not by the scheduler. Four
+64k requests are 256k KV tokens, and that run returned no tokens: the server
+process died. Two at 64k fit, and one at 128k fits. Size long-context
+concurrency from the pool, not from the 32k ladder.
+
 ## Host KV tier
 
 `SGLANG_27B_HICACHE_GB=N` (`--enable-hierarchical-cache --hicache-size N`) is
