@@ -74,12 +74,16 @@ decode 吞吐（tok/s），数据来自 `scripts/bench.py`。一行数据只有�
 | 27B | FP8 | 2 | TP2，无 EP | 3/4 | temp 1, top-p 0.95, top-k 20 | 31109 | 44.59 / 45.79 | receipt `evidence-e5a5740-draft-extend` |
 | 27B | FP8 | 2 | TP2，无 EP，40 KV splits | 3/4 | temp 1, top-p 0.95, top-k 20 | 8037 | 73.33 / 66.43 | receipt `evidence-153a4c2-kv-splits` |
 | 27B | FP8 | 2 | TP2，无 EP，40 KV splits | 3/4 | temp 1, top-p 0.95, top-k 20 | 31158 | 54.42 / 47.13 | receipt `evidence-153a4c2-kv-splits` |
+| 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits | 3/4 | temp 1, top-p 0.95, top-k 20 | 8030 | 67.11 / 65.54 | receipt `evidence-7e15a2b-fp8-draft-extend` |
+| 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits | 3/4 | temp 1, top-p 0.95, top-k 20 | 32112 | 54.39 / 46.69 | receipt `evidence-7e15a2b-fp8-draft-extend` |
 
 27B 行需要 `SGLANG_V100_DRAFT_EXTEND_NATIVE=1` 与
 `--speculative-draft-attention-backend tilelang_fa_v100`。缺少这两项时，
 同一台机器在 31.7k 上测得 17.9 tok/s（issue #75）。
 
 40 splits 的行是独立配置：它加了 `--triton-attention-num-kv-splits 40`，把 draft 解码内核从 16 个 CTA 提到 80 个。代价见配方的 log-probability 一节；这些行不能当作「只改了代码」与默认行比较。
+
+e5m2 的行是同一套启动参数加上 `--kv-cache-dtype fp8_e5m2`，KV 字节减半。这些行需要 #129 的 draft-extend 路由修复：修复前，fp8 cache 会把 draft extend 送去 Triton extend 内核，32k decode 掉到 36.4 tok/s。本次测量中 32k 与 fp16 行持平，8k 低 5-10%；prefill 不变。
 
 读法：
 

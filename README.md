@@ -78,6 +78,8 @@ here is comparable across those axes.
 | 27B | FP8 | 2 | TP2, no EP | 3/4 | temp 1, top-p 0.95, top-k 20 | 31109 | 44.59 / 45.79 | receipt `evidence-e5a5740-draft-extend` |
 | 27B | FP8 | 2 | TP2, no EP, 40 KV splits | 3/4 | temp 1, top-p 0.95, top-k 20 | 8037 | 73.33 / 66.43 | receipt `evidence-153a4c2-kv-splits` |
 | 27B | FP8 | 2 | TP2, no EP, 40 KV splits | 3/4 | temp 1, top-p 0.95, top-k 20 | 31158 | 54.42 / 47.13 | receipt `evidence-153a4c2-kv-splits` |
+| 27B | FP8, e5m2 KV | 2 | TP2, no EP, 40 KV splits | 3/4 | temp 1, top-p 0.95, top-k 20 | 8030 | 67.11 / 65.54 | receipt `evidence-7e15a2b-fp8-draft-extend` |
+| 27B | FP8, e5m2 KV | 2 | TP2, no EP, 40 KV splits | 3/4 | temp 1, top-p 0.95, top-k 20 | 32112 | 54.39 / 46.69 | receipt `evidence-7e15a2b-fp8-draft-extend` |
 
 The 27B rows need `SGLANG_V100_DRAFT_EXTEND_NATIVE=1` and
 `--speculative-draft-attention-backend tilelang_fa_v100`. Without them the same
@@ -87,6 +89,12 @@ The 40-split rows are a separate configuration: they add
 `--triton-attention-num-kv-splits 40`, which raises the draft decode kernel from
 16 CTAs to 80. The recipe says what it costs in log-probability; do not compare
 those rows against the default ones as if only the code changed.
+
+The e5m2 rows are the same launch with `--kv-cache-dtype fp8_e5m2`, which halves
+the KV bytes. They need the draft-extend routing fix in #129: before it, the fp8
+cache sent the draft extend to the Triton extend kernel and 32k decode fell to
+36.4 tok/s. At 32k they measure the same as the fp16 rows; at 8k they are 5-10%
+lower. Prefill does not move.
 
 How to read it:
 
