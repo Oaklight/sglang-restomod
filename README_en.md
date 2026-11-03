@@ -80,6 +80,8 @@ here is comparable across those axes.
 | 27B | FP8 | 2 | TP2, no EP, 40 KV splits | 3/4 | temp 1, top-p 0.95, top-k 20 | 31158 | 54.42 / 47.13 | receipt `evidence-153a4c2-kv-splits` |
 | 27B | FP8, e5m2 KV | 2 | TP2, no EP, 40 KV splits | 3/4 | temp 1, top-p 0.95, top-k 20 | 8030 | 67.11 / 65.54 | receipt `evidence-7e15a2b-fp8-draft-extend` |
 | 27B | FP8, e5m2 KV | 2 | TP2, no EP, 40 KV splits | 3/4 | temp 1, top-p 0.95, top-k 20 | 32112 | 54.39 / 46.69 | receipt `evidence-7e15a2b-fp8-draft-extend` |
+| 27B | FP8, e5m2 KV | 2 | TP2, no EP, 40 KV splits | 5/4 | temp 1, top-p 0.95, top-k 20 | 8034 | 80.01 / 66.98 | receipt `evidence-5097450-spec-steps` |
+| 27B | FP8, e5m2 KV | 2 | TP2, no EP, 40 KV splits | 5/4 | temp 1, top-p 0.95, top-k 20 | 32138 | 61.62 / 46.39 | receipt `evidence-5097450-spec-steps` |
 | 27B | FP8, e5m2 KV | 2 | TP2, no EP, 40 KV splits, 128k ctx | 3/4 | temp 1, top-p 0.95, top-k 20 | 127463 | 28.71 / 30.06 | receipt `evidence-dccc907-long-context` |
 | 27B | FP8, e5m2 KV | 2 | TP2, no EP, 40 KV splits, 256k ctx | 3/4 | temp 1, top-p 0.95, top-k 20 | 254914 | 17.60 / 18.84 | receipt `evidence-dccc907-long-context` |
 
@@ -104,6 +106,10 @@ free after graph capture, which is not enough for the first generation on cards
 that already carry another tenant. 0.80 gives a 257,120-token pool, less than a
 262k request. Decode falls as the prefix grows (54 at 32k, 29 at 128k, 18 at
 256k) because every draft and verify row streams the whole prefix.
+The MTP 5/4 rows are the same e5m2 launch with `--speculative-num-steps 5` and
+`--mem-fraction-static 0.80`; five steps measure 62.87 mean / 63.40 median
+against 58.41 / 58.56 at 3/4 over eight fresh reps each (#140). The 32k row's
+two values straddle that: 61.62 and 46.39.
 
 How to read it:
 
