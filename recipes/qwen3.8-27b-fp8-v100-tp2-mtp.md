@@ -20,7 +20,8 @@
                                       # decode at 32k since #129. See "KV dtype".
 --tp-size 2 --context-length 262144   # max_position_embeddings
 --mem-fraction-static 0.85 --max-running-requests 4
---chunked-prefill-size 4096 --max-prefill-tokens 8192
+--chunked-prefill-size 1024 --max-prefill-tokens 8192
+                                      # one chunk is one decode stall; see "Prefill chunks"
 --disable-prefill-cuda-graph          # decode graph stays on
 # MTP only up to ~48k: see "Pick the spec setting by context" below.
 # SGLANG_27B_SPEC=auto in the launcher does exactly this.
@@ -354,6 +355,22 @@ stagger at 128 tokens, and the draft needs the longer decode to reach steady
 state.
 
 `scripts/gpu_suite.sh --concurrency 1,2,4` reproduces the ladder in one bundle.
+
+### Prefill chunks
+
+A decode batch freezes for about one prefill chunk when a new request arrives.
+Three requests decoding 8k prompts, then a fourth arrives with an 8k prompt:
+
+| `--chunked-prefill-size` | newcomer prefill | decoder gap during it |
+|---:|---:|---:|
+| 4096 (default) | 4.26 s | 1,032 ms median, 1,990 ms max |
+| 1024 | 4.41 s | 289 ms median, 507 ms max |
+| 512 | 4.84 s | 277 ms median, 277 ms max |
+
+The steady decode gap is 73 ms at every setting. 1024 is the knee: 3.6x less
+stall for 3% more prefill time, while 512 buys 4% more stall reduction for 10%
+more prefill. Prefill throughput barely moves across the three, so pick the
+chunk for the latency budget.
 
 Longer context moves the ceiling. On the 256k launch (`--context-length
 262144`, mem 0.82, same MTP and KV), 512 output tokens, one rep:
