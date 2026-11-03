@@ -80,6 +80,8 @@ here is comparable across those axes.
 | 27B | FP8 | 2 | TP2, no EP, 40 KV splits | 3/4 | temp 1, top-p 0.95, top-k 20 | 31158 | 54.42 / 47.13 | receipt `evidence-153a4c2-kv-splits` |
 | 27B | FP8, e5m2 KV | 2 | TP2, no EP, 40 KV splits | 3/4 | temp 1, top-p 0.95, top-k 20 | 8030 | 67.11 / 65.54 | receipt `evidence-7e15a2b-fp8-draft-extend` |
 | 27B | FP8, e5m2 KV | 2 | TP2, no EP, 40 KV splits | 3/4 | temp 1, top-p 0.95, top-k 20 | 32112 | 54.39 / 46.69 | receipt `evidence-7e15a2b-fp8-draft-extend` |
+| 27B | FP8, e5m2 KV | 2 | TP2, no EP, 40 KV splits, 128k ctx | 3/4 | temp 1, top-p 0.95, top-k 20 | 127463 | 28.71 / 30.06 | receipt `evidence-dccc907-long-context` |
+| 27B | FP8, e5m2 KV | 2 | TP2, no EP, 40 KV splits, 256k ctx | 3/4 | temp 1, top-p 0.95, top-k 20 | 254914 | 17.60 / 18.84 | receipt `evidence-dccc907-long-context` |
 
 The 27B rows need `SGLANG_V100_DRAFT_EXTEND_NATIVE=1` and
 `--speculative-draft-attention-backend tilelang_fa_v100`. Without them the same
@@ -95,6 +97,13 @@ the KV bytes. They need the draft-extend routing fix in #129: before it, the fp8
 cache sent the draft extend to the Triton extend kernel and 32k decode fell to
 36.4 tok/s. At 32k they measure the same as the fp16 rows; at 8k they are 5-10%
 lower. Prefill does not move.
+
+The two long-context rows need `--context-length 262144 --mem-fraction-static 0.82`:
+the pool is 278,432 tokens there, and 0.85 allocates 303,232 but leaves 5.34 GB
+free after graph capture, which is not enough for the first generation on cards
+that already carry another tenant. 0.80 gives a 257,120-token pool, less than a
+262k request. Decode falls as the prefix grows (54 at 32k, 29 at 128k, 18 at
+256k) because every draft and verify row streams the whole prefix.
 
 How to read it:
 
