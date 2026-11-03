@@ -177,6 +177,37 @@ def install() -> bool:
     logger.info("SM70 WNA16: GPTQ marlin GEMM routed to marlin_v100")
 
     _install_repack(repack)
+    _install_scales()
+    return True
+
+
+def _install_scales() -> bool:
+    """Keep the WNA16 scales in their natural [K/group, N] order.
+
+    ``marlin_permute_scales`` reorders them for the Ampere tile layout. The
+    SM70 kernel reads them unpermuted: a GEMM fed the permuted tensor returns
+    values that look plausible and are wrong, which is how this was found.
+    """
+    try:
+        from sglang.srt.layers.quantization import marlin_utils
+        from sglang.srt.layers.quantization.compressed_tensors.schemes import (
+            compressed_tensors_wNa16 as scheme,
+        )
+    except Exception as exc:  # noqa: BLE001 - absent module means nothing to patch
+        logger.warning("SM70 WNA16: scale permute not routed (%s)", exc)
+        return False
+
+    original = getattr(scheme, "marlin_permute_scales", None)
+    if original is None or getattr(original, "_restomod_sm70", False):
+        return False
+
+    def marlin_permute_scales(s, size_k, size_n, group_size):
+        return s.reshape((-1, size_n)).contiguous()
+
+    marlin_permute_scales._restomod_sm70 = True
+    scheme.marlin_permute_scales = marlin_permute_scales
+    marlin_utils.marlin_permute_scales = marlin_permute_scales
+    logger.info("SM70 WNA16: scales kept in natural order for the SM70 kernel")
     return True
 
 
