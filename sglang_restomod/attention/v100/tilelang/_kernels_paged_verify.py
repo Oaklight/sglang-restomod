@@ -102,7 +102,6 @@ def _paged_verify_partial_kernel(
             P_shared = T.alloc_shared([block_M, block_N], T.float16)
 
             acc_s = T.alloc_fragment([block_M, block_N], T.float32)
-            acc_s_cast = T.alloc_fragment([block_M, block_N], T.float16)
             acc_o = T.alloc_fragment([block_M, dim], T.float32)
             m_i = T.alloc_fragment([block_M], T.float32)
             m_prev = T.alloc_fragment([block_M], T.float32)
@@ -143,11 +142,16 @@ def _paged_verify_partial_kernel(
                 T.fill(m_i, -T.infinity(T.float32))
                 T.fill(l_i, 0)
 
+                # Zero the shared K/V tiles once. Every in-range page overwrites
+                # its rows, and a position past split_end is masked to -inf in
+                # acc_s, so a stale value is never observed - but it must not be
+                # uninitialised memory.
+                T.clear(K_shared)
+                T.clear(V_shared)
                 for tile_i in T.Pipelined(
                     T.ceildiv(split_end - split_start, block_N), num_stages=0
                 ):
                     tile_start = split_start + tile_i * block_N
-                    T.clear(K_shared)
                     for n, d in T.Parallel(block_N, dim):
                         kv_i = tile_start + n
                         logical_page = T.floordiv(kv_i, page_block_size)
@@ -204,7 +208,6 @@ def _paged_verify_partial_kernel(
                     for row in T.Parallel(block_M):
                         l_i[row] += row_sum[row]
 
-                    T.clear(V_shared)
                     for n, d in T.Parallel(block_N, dim):
                         kv_i = tile_start + n
                         logical_page = T.floordiv(kv_i, page_block_size)
@@ -221,9 +224,8 @@ def _paged_verify_partial_kernel(
 
                     for row, n in T.Parallel(block_M, block_N):
                         P_shared[row, n] = T.cast(acc_s[row, n], T.float16)
-                    T.copy(P_shared, acc_s_cast)
                     T.gemm(
-                        acc_s_cast,
+                        P_shared,
                         V_shared,
                         acc_o,
                         policy=T.GemmWarpPolicy.Square,
