@@ -78,6 +78,8 @@ decode 吞吐（tok/s），数据来自 `scripts/bench.py`。一行数据只有�
 | 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits | 3/4 | temp 1, top-p 0.95, top-k 20 | 32112 | 54.39 / 46.69 | receipt `evidence-7e15a2b-fp8-draft-extend` |
 | 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits | 5/6 | temp 1, top-p 0.95, top-k 20 | 8034 | 80.01 / 66.98 | receipt `evidence-5097450-spec-steps` |
 | 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits | 5/6 | temp 1, top-p 0.95, top-k 20 | 32138 | 61.62 / 46.39 | receipt `evidence-5097450-spec-steps` |
+| 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits，`fp8_moe` | 5/6 | temp 1, default | 8041 | 62.99 / 66.55（512 输出 token） | receipt `evidence-65c99d5-fp8-moe` |
+| 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits，`fp8_moe` | 5/6 | temp 1, default | 31359 | 54.83 / 54.98（512 输出 token） | receipt `evidence-65c99d5-fp8-moe` |
 | 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits | 5/6 | temp 1, default | 8041 | 107.1 / 106.4（2 请求，512 输出 token，合计） | receipt `evidence-e1924f3-serving-active` |
 | 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits | 5/6 | temp 1, default | 8041 | 181.8 / 181.3（4 请求，512 输出 token，合计） | receipt `evidence-e1924f3-serving-active` |
 | 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits | 5/6 | temp 1, default | 31372 | 80.7 / 82.6（2 请求，512 输出 token，合计） | receipt `evidence-e1924f3-serving-active` |
