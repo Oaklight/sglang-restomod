@@ -89,6 +89,13 @@ bench. A component that raises while registering is skipped by the loader and
 the launch then serves under the same flag with the engine's own backend, which
 is the failure this catches.
 
+The suite also runs the GPU-marked component tests (`pytest -m gpu tests/`) and
+records them as `gpu_tests.txt`. The bench measures speed and the launch check
+measures routing; these are the only step that measures whether a kernel still
+computes what it claims. A failure fails the suite after the bundle is packed,
+so the evidence still explains it. `--skip-gpu-tests` exists for a host without
+the SM70 environment, and a bundle made with it says so by its absence.
+
 The suite inherits the environment, and `versions.txt` is written by the
 interpreter it runs, not by the server it benchmarks. Export `PYTHONPATH` to
 the engine under test before running it, or the bundle will name whatever
