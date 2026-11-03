@@ -17,12 +17,28 @@ Patches applied before the build, taken from `heislera763/sglang-v100-plus`:
 
 Build:
 
+The shipped `.so` files were built inside `cuda_12.8.0-devel-ubuntu24.04.sif`
+with torch 2.9.1+cu128 and CUTLASS v4.2.1, by this command — the same one the
+lab keeps as `marlin_build.sh`, reproduced here so the recipe is not one host's
+private script:
+
 ```bash
-CUTLASS_DIR=/homes/pding/cutlass TORCH_CUDA_ARCH_LIST=7.0 \
-  python setup.py build_ext --inplace
+singularity exec --nv cuda_12.8.0-devel-ubuntu24.04.sif env \
+  CUDA_HOME=/usr/local/cuda \
+  TORCH_CUDA_ARCH_LIST=7.0 \
+  CUTLASS_DIR=/path/to/cutlass \
+  MAX_JOBS=32 CMAKE_BUILD_PARALLEL_LEVEL=32 \
+  CMAKE_ARGS="-DMARLIN_V100_NVFP4_ONLY=ON -DCMAKE_CUDA_ARCHITECTURES=70 \
+    -DCMAKE_CUDA_FLAGS=-gencode=arch=compute_70,code=sm_70" \
+  PATH="$ENV_BIN:/usr/local/cuda/bin:/usr/local/bin:/usr/bin:/bin" \
+  "$ENV_BIN/python3.12" setup.py build_ext --inplace
 ```
 
-inside `cuda_12.8.0-devel-ubuntu24.04.sif` with torch 2.9.1+cu128 and CUTLASS v4.2.1.
+The three patches listed above are applied to the source tree before the build;
+`git apply --check --reverse` against the built tree confirms it, and the same
+check reports that the fourth patch in that directory,
+`marlin-v100-sm70-mxfp8.patch`, is **not** applied in the tree that produced the
+shipped binaries.
 
 ## What this component uses
 
