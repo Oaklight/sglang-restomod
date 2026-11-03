@@ -119,7 +119,7 @@ def install() -> bool:
     if original is None or getattr(original, "_restomod_sm70", False):
         return False
 
-    _, gemm = ops()
+    repack, gemm = ops()
 
     def gptq_marlin_gemm(
         a,
@@ -171,6 +171,37 @@ def install() -> bool:
     gptq_marlin_gemm._restomod_sm70 = True
     marlin_utils.gptq_marlin_gemm = gptq_marlin_gemm
     logger.info("SM70 WNA16: GPTQ marlin GEMM routed to marlin_v100")
+
+    _install_repack(repack)
+    return True
+
+
+def _install_repack(repack) -> bool:
+    """Route the weight repack to the extension as well.
+
+    The engine packs the WNA16 weight with its own ``gptq_marlin_repack``,
+    whose output layout is the one its GEMM reads. The marlin_v100 build packs
+    for SM70 (``_pack_sm70_native_tile`` in its tests), so a weight packed by
+    the engine's kernel and read by this one is garbage. Both sides have to
+    come from the same build.
+    """
+    try:
+        from sglang.srt.layers.quantization.compressed_tensors.schemes import (
+            compressed_tensors_wNa16 as scheme,
+        )
+    except Exception:  # noqa: BLE001 - absent module means nothing to patch
+        return False
+
+    original = getattr(scheme, "gptq_marlin_repack", None)
+    if original is None or getattr(original, "_restomod_sm70", False):
+        return False
+
+    def gptq_marlin_repack(b_q_weight, perm, size_k, size_n, num_bits):
+        return repack(b_q_weight, perm, size_k, size_n, num_bits, False)
+
+    gptq_marlin_repack._restomod_sm70 = True
+    scheme.gptq_marlin_repack = gptq_marlin_repack
+    logger.info("SM70 WNA16: WNA16 repack routed to marlin_v100")
     return True
 
 
