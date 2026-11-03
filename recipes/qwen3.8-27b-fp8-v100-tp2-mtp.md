@@ -297,6 +297,19 @@ distinct 30,720-token documents (492k tokens) against the 397k-token pool:
 The tier is 1,029,904 tokens (16.87 GB) of host KV per rank plus 15.14 GB of
 host Mamba state, 2.6x the device pool.
 
+**Decode after a restore.** The copy costs TTFT, not steady state. Measured
+2026-11-03 on lambda12, same launch, 14 distinct 30k-token documents against a
+30k prompt, greedy: the restored prefix answers its first token in 0.43 / 0.33 s
+and decodes at 43.84 / 42.77 tok/s, against 43.25 / 49.36 with a cold prefill.
+The spread between two cold reps is as wide as the gap, so a restored prefix
+decodes like a prefilled one; the difference is the ~480 MB per rank that
+crosses PCIe before the first token.
+
+**Sizing.** `--hicache-size` is per rank, and SGLang cannot bound it
+automatically in this container (`Cannot determine cgroup memory headroom`).
+Size it as (working set - GPU pool) / ranks, and keep the total under an eighth
+of host RAM: 503 GB here, so 32 GB per rank is 13%.
+
 ### The disk tier: `write_back` plus `wait_complete`
 
 `--hicache-storage-backend file` needs the native hash extension, which
