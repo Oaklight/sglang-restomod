@@ -81,6 +81,14 @@ without `speculative_algorithm`, `speculative_num_steps` and
 regression check, bench at 8k and 32k against the launch under test and read the
 32k decode rate against the recipe's expected floor.
 
+The suite also compares the declared component list against that
+`server_info.json` and writes `launch_check.txt`: the two components whose
+effect reaches a server argument (`attention_v100`,
+`spec_sm70`) are checked by value, and a mismatch stops the run before the
+bench. A component that raises while registering is skipped by the loader and
+the launch then serves under the same flag with the engine's own backend, which
+is the failure this catches.
+
 The suite inherits the environment, and `versions.txt` is written by the
 interpreter it runs, not by the server it benchmarks. Export `PYTHONPATH` to
 the engine under test before running it, or the bundle will name whatever
