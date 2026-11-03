@@ -111,12 +111,16 @@ def install() -> bool:
     extension, which the engine leaves empty.
     """
     if not available():
+        logger.warning("SM70 WNA16: the marlin_v100 extension did not load; GPTQ stays on the JIT path")
         return False
 
     from sglang.srt.layers.quantization import marlin_utils
 
     original = getattr(marlin_utils, "gptq_marlin_gemm", None)
-    if original is None or getattr(original, "_restomod_sm70", False):
+    if original is None:
+        logger.warning("SM70 WNA16: marlin_utils has no gptq_marlin_gemm; nothing routed")
+        return False
+    if getattr(original, "_restomod_sm70", False):
         return False
 
     repack, gemm = ops()
@@ -189,11 +193,15 @@ def _install_repack(repack) -> bool:
         from sglang.srt.layers.quantization.compressed_tensors.schemes import (
             compressed_tensors_wNa16 as scheme,
         )
-    except Exception:  # noqa: BLE001 - absent module means nothing to patch
+    except Exception as exc:  # noqa: BLE001 - absent module means nothing to patch
+        logger.warning("SM70 WNA16: the WNA16 scheme module is not importable (%s)", exc)
         return False
 
     original = getattr(scheme, "gptq_marlin_repack", None)
-    if original is None or getattr(original, "_restomod_sm70", False):
+    if original is None:
+        logger.warning("SM70 WNA16: the WNA16 scheme has no gptq_marlin_repack; repack not routed")
+        return False
+    if getattr(original, "_restomod_sm70", False):
         return False
 
     def gptq_marlin_repack(b_q_weight, perm, size_k, size_n, num_bits):
