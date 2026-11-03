@@ -56,6 +56,11 @@ COMPONENTS: dict[str, Component] = {
         module="sglang_restomod.attention.v100",
         description="V100 full-attention backend and its CUDA graph metadata hooks",
     ),
+    "sm70_marlin_v100": Component(
+        name="sm70_marlin_v100",
+        module="sglang_restomod.quant.sm70_marlin_v100",
+        description="Dense WNA16 (int4 GPTQ) linear GEMM through the marlin_v100 extension",
+    ),
     "fp4_moe": Component(
         name="fp4_moe",
         module="sglang_restomod.quant.sm70_fp4_moe",
