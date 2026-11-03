@@ -315,25 +315,34 @@ and it is the next thing worth attacking.
 ## Serving throughput
 
 The rows above are one request at a time. A server is judged on several.
-27B-FP8 TP2, e5m2 KV, MTP 5/4, 40 KV splits, greedy, 128 output tokens,
-`--fresh` so every request prefills cold, two reps after one warmup. The rate
-is the decode window only (earliest first token to latest last token) over the
-`completion_tokens` the server reports.
+27B-FP8 TP2, e5m2 KV, MTP 5/4, 40 KV splits, 128 output tokens, `--fresh` so
+every request prefills cold, two reps after one warmup, sampling at the bench
+default of temperature 1. The rate is the decode window only (earliest first
+token to latest last token) over the `completion_tokens` the server reports.
+Prompts are 8,037-8,041 and 31,359-31,372 tokens after the chat template.
 
 | prompt | concurrency | aggregate tok/s | per request |
 |---|---:|---:|---:|
-| 8k | 1 | 65.0 / 72.3 | 65.0 / 72.3 |
-| 8k | 2 | 184.3 / 159.3 | 92.1 / 79.6 |
-| 8k | 4 | 201.5 / 225.7 | 50.4 / 56.4 |
-| 8k | 8 | 171.6 / 157.6 | 21.4 / 19.7 |
-| 32k | 1 | 62.87 | 62.87 |
-| 32k | 2 | 76.3 / 93.8 | 38.1 / 46.9 |
-| 32k | 4 | 96.9 / 94.0 | 24.2 / 23.5 |
+| 8k | 1 | 58.7 / 77.0 | 58.7 / 77.0 |
+| 8k | 2 | 110.1 / 126.0 | 55.1 / 63.0 |
+| 8k | 4 | 103.0 / 103.9 | 25.8 / 26.0 |
+| 32k | 1 | 54.9 / 45.3 | 54.9 / 45.3 |
+| 32k | 2 | 81.7 / 85.8 | 40.8 / 42.9 |
+| 32k | 4 | 124.7 / 120.1 | 31.2 / 30.0 |
 
-Four requests is the knee on two cards: ~200-226 tok/s aggregate at 8k and ~95
-at 32k, and eight requests only add queueing. At 8k a second request costs
-almost nothing — weights are read once per step for the whole batch — so its
-per-request rate (80-92) is above the single-stream one (65-72).
+Two requests already take 8k to its ceiling: the third and fourth add queueing
+and not throughput. At 32k the aggregate keeps rising to four requests, because
+a longer row amortises the weight reads over more work per step. Per-request
+rate falls in every column.
+
+Sampling is at temperature 1, which costs MTP acceptance, so the single-stream
+rows here sit below the greedy figures quoted above. At temperature 0 the same
+8k ladder measured 104-113 tok/s at two and four requests, inside the spread
+below.
+
+Runs vary. Repeating a point on the same launch moves it by up to 20%, and an
+ad-hoc 8-request run at 8k landed at 77-115 tok/s, never above the four-request
+figure. Size for four.
 
 `scripts/gpu_suite.sh --concurrency 1,2,4` reproduces the ladder in one bundle.
 
