@@ -176,30 +176,19 @@ answering `TritonGDNKernel.extend` on SM70. Add `gdn_tilelang_sm70` to
 below. Without it the launch is still valid and silent, and prefill runs on the
 Triton chunk kernels.
 
-**The experts want `fp8_moe`.** A decode step at 8k spends 12.5 ms of 45.6 in
-55 f16 cutlass GEMM launches, and the checkpoint's experts are block-FP8. Add
-`fp8_moe` to `SGLANG_RESTOMOD_COMPONENTS` and they run on the TurboMind FP8
-MoE kernel. Same launch, 1024-token chunks, temperature 1, 512 output tokens:
+**`fp8_moe` changes nothing on this launch.** The component exists to put the
+experts on the TurboMind FP8 MoE GEMM, but with
+`SGLANG_SM70_FP8_BACKEND=turbomind` the engine already routes them there. A
+20-step decode trace is identical with and without it: 55 f16 cutlass launches,
+4,140 and 1,380 TurboMind GEMM launches, 680 `main_kernel` launches, 906.6 ms
+of kernel time against 911.7 ms.
 
-| | without | with `fp8_moe` |
-|---|---:|---:|
-| 8k decode tok/s | 57.5 / 62.7 | 65.9 / 70.4 |
-| 32k decode tok/s | 46.8 / 49.0 | 48.1-56.7, four reps |
-| 8k, 4 requests, aggregate | 181.8 / 181.3 | 192.7 / 195.2 |
-| 8k prefill tok/s | 1,904 / 1,902 | 1,825 / 1,819 |
-| 32k prefill tok/s | 1,642 | 1,544 |
-
-Decode gains 9-16% and serving 7%; prefill pays 4-6%. The component's GPU
-tests compare the kernel against a dequantized reference within 5e-2, and the
-suite runs them.
-
-End to end the perturbation is small. Three fixed prompts, greedy, 32 tokens
-each, per-token log-probability of the emitted token, `fp8_moe` against the f16
-expert path: 96 of 96 tokens align, mean absolute shift 0.0017 nats, worst
-token 0.0227. The KV-dtype study measures 0.0383 for e4m3 and 0.0627 for e5m2
-against fp16, and the 40-split change 0.0016, so the expert kernel sits in the
-split-change class. A 64-token greedy run flipped one near-tie on one of the
-three prompts; the other two were byte-identical.
+Four reps each at 8k, 512 output tokens: 64.3 / 60.8 / 66.1 / 65.6 without the
+component and 61.1 / 66.8 / 67.7 / 65.8 with it. Four requests aggregate 186.1
+against 192.8, and the two ranges overlap. An earlier revision of this recipe
+claimed 9-16% from the component; that was the spread between two two-rep
+samples, not the component. Add it only if the launch does not already set
+`SGLANG_SM70_FP8_BACKEND=turbomind`.
 
 Receipt `evidence-ad0addd-recipes` records the effect at this commit: prefill
 1,929.7 / 1,925.9 tok/s at 8,041 prompt tokens and 1,657.5 / 1,652.9 at 31,158,
@@ -359,9 +348,8 @@ run over the earliest-first to latest-last window; it carries the stagger of
 the later requests' prefill and is what a cold batch costs end to end.
 
 Prompts are 8,034-8,041 and 31,359-31,385 tokens after the chat template. The
-rows are the `bench.log` of the signed bundle `evidence-65c99d5-fp8-moe`, which
-runs the recommended launch: `fp8_moe` in the component list and 1024-token
-chunks.
+rows are the `bench.log` of the signed bundle `evidence-65c99d5-fp8-moe`, run
+with 1024-token chunks.
 
 | prompt | concurrency | aggregate tok/s | per request | burst tok/s |
 |---|---:|---:|---:|---:|
