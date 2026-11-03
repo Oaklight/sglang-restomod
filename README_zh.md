@@ -76,12 +76,12 @@ decode 吞吐（tok/s），数据来自 `scripts/bench.py`。一行数据只有�
 | 27B | FP8 | 2 | TP2，无 EP，40 KV splits | 3/4 | temp 1, top-p 0.95, top-k 20 | 31158 | 54.42 / 47.13 | receipt `evidence-153a4c2-kv-splits` |
 | 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits | 3/4 | temp 1, top-p 0.95, top-k 20 | 8030 | 67.11 / 65.54 | receipt `evidence-7e15a2b-fp8-draft-extend` |
 | 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits | 3/4 | temp 1, top-p 0.95, top-k 20 | 32112 | 54.39 / 46.69 | receipt `evidence-7e15a2b-fp8-draft-extend` |
-| 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits | 5/4 | temp 1, top-p 0.95, top-k 20 | 8034 | 80.01 / 66.98 | receipt `evidence-5097450-spec-steps` |
-| 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits | 5/4 | temp 1, top-p 0.95, top-k 20 | 32138 | 61.62 / 46.39 | receipt `evidence-5097450-spec-steps` |
-| 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits | 5/4 | temp 1, default | 8041 | 107.1 / 106.4（2 请求，512 输出 token，合计） | receipt `evidence-e1924f3-serving-active` |
-| 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits | 5/4 | temp 1, default | 8041 | 181.8 / 181.3（4 请求，512 输出 token，合计） | receipt `evidence-e1924f3-serving-active` |
-| 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits | 5/4 | temp 1, default | 31372 | 80.7 / 82.6（2 请求，512 输出 token，合计） | receipt `evidence-e1924f3-serving-active` |
-| 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits | 5/4 | temp 1, default | 31372 | 117.8 / 125.4（4 请求，512 输出 token，合计） | receipt `evidence-e1924f3-serving-active` |
+| 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits | 5/6 | temp 1, top-p 0.95, top-k 20 | 8034 | 80.01 / 66.98 | receipt `evidence-5097450-spec-steps` |
+| 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits | 5/6 | temp 1, top-p 0.95, top-k 20 | 32138 | 61.62 / 46.39 | receipt `evidence-5097450-spec-steps` |
+| 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits | 5/6 | temp 1, default | 8041 | 107.1 / 106.4（2 请求，512 输出 token，合计） | receipt `evidence-e1924f3-serving-active` |
+| 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits | 5/6 | temp 1, default | 8041 | 181.8 / 181.3（4 请求，512 输出 token，合计） | receipt `evidence-e1924f3-serving-active` |
+| 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits | 5/6 | temp 1, default | 31372 | 80.7 / 82.6（2 请求，512 输出 token，合计） | receipt `evidence-e1924f3-serving-active` |
+| 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits | 5/6 | temp 1, default | 31372 | 117.8 / 125.4（4 请求，512 输出 token，合计） | receipt `evidence-e1924f3-serving-active` |
 | 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits，128k 上下文 | 3/4 | temp 1, top-p 0.95, top-k 20 | 127463 | 28.71 / 30.06 | receipt `evidence-dccc907-long-context` |
 | 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits，256k 上下文 | 3/4 | temp 1, top-p 0.95, top-k 20 | 254914 | 17.60 / 18.84 | receipt `evidence-dccc907-long-context` |
 
@@ -96,7 +96,7 @@ e5m2 的行是同一套启动参数加上 `--kv-cache-dtype fp8_e5m2`，KV 字�
 0.85 能分到 303,232，但图捕获后只剩 5.34 GB，在已被其他租户占用部分显存的卡上不足以完成首次生成；
 0.80 只有 257,120 个 token，装不下 262k 请求。decode 随前缀增长而下降（32k 为 54，128k 为 29，256k 为 18），
 因为每个 draft 行与 verify 行都要读完整前缀。
-MTP 5/4 的行是同一套 e5m2 启动加上 `--speculative-num-steps 5` 与 `--mem-fraction-static 0.80`；
+MTP 5/6 的行是同一套 e5m2 启动加上 `--speculative-num-steps 5` 与 `--mem-fraction-static 0.80`；
 八次新测中五步的均值 62.87、中位数 63.40，3/4 为 58.41 / 58.56（#140）。32k 行两个值即 61.62 与 46.39。
 
 读法：
