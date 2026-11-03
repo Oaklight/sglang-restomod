@@ -405,8 +405,13 @@ class FlashAttnV100Backend(AttentionBackend):
                 "SGLANG_V100_DRAFT_EXTEND_NATIVE must be a boolean value, "
                 f"got {flag!r}."
             )
-        if self.page_size != V100_PAGE_SIZE or self._uses_sm70_fp8_kv:
+        if self.page_size != V100_PAGE_SIZE:
             return False
+        # fp8 KV is not a reason to refuse: the grouped verifier this path
+        # reuses is the byte-decoding one, and it already serves the fp8
+        # target verify. Leaving the refusal here cost 1.47x decode on e5m2
+        # (36.44 against 58.81 tok/s at 32k) because the draft extend fell
+        # back to the Triton extend kernel at 31.2 ms per launch.
         spec_algorithm = self.model_runner.spec_algorithm
         return (
             spec_algorithm.is_eagle()
@@ -566,9 +571,13 @@ class FlashAttnV100Backend(AttentionBackend):
         mode = forward_batch.forward_mode
         if (
             (
+                # A draft extend is decided by _uses_native_draft_extend below;
+                # without the third clause this sent every fp8 mode to Triton
+                # before that decision was reached.
                 self._uses_sm70_fp8_kv
                 and not self._uses_native_linear_verify(mode)
                 and not self._uses_fp8_prefill_scratch(mode)
+                and not self._uses_native_draft_extend(mode)
             )
             or mode.is_decode_or_idle()
             or (mode.is_draft_extend_v2() and not self._uses_native_draft_extend(mode))
@@ -627,9 +636,13 @@ class FlashAttnV100Backend(AttentionBackend):
         mode = forward_batch.forward_mode
         if (
             (
+                # A draft extend is decided by _uses_native_draft_extend below;
+                # without the third clause this sent every fp8 mode to Triton
+                # before that decision was reached.
                 self._uses_sm70_fp8_kv
                 and not self._uses_native_linear_verify(mode)
                 and not self._uses_fp8_prefill_scratch(mode)
+                and not self._uses_native_draft_extend(mode)
             )
             or mode.is_decode_or_idle()
             or mode.is_draft_extend_v2()
@@ -1119,9 +1132,12 @@ class FlashAttnV100Backend(AttentionBackend):
         )
         if (
             (
+                # Same clause as init_forward_metadata: an fp8 draft extend
+                # that the gate accepts must not be pre-empted here.
                 self._uses_sm70_fp8_kv
                 and not self._uses_native_linear_verify(forward_batch.forward_mode)
                 and not use_fp8_prefill_scratch
+                and not self._uses_native_draft_extend(forward_batch.forward_mode)
             )
             or (
                 forward_batch.forward_mode.is_target_verify()
