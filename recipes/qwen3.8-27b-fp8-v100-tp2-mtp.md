@@ -315,36 +315,36 @@ and it is the next thing worth attacking.
 ## Serving throughput
 
 The rows above are one request at a time. A server is judged on several.
-27B-FP8 TP2, e5m2 KV, MTP 5/4, 40 KV splits, 128 output tokens, `--fresh` so
-every request prefills cold, two reps after one warmup, sampling at the bench
-default of temperature 1. The rate is the decode window only (earliest first
-token to latest last token) over the `completion_tokens` the server reports.
-Prompts are 8,034-8,037 and 31,372-31,385 tokens after the chat template.
-The rows are the `bench.log` of the signed bundle
-`evidence-6f10d3a-serving`.
+27B-FP8 TP2, e5m2 KV, MTP 5/4, 40 KV splits, 512 output tokens, two reps after
+one warmup, sampling at the bench default of temperature 1. The single-stream
+row prefills cold. The concurrent rows share one prefix, so every request is
+decoding when the rate is taken.
 
-| prompt | concurrency | aggregate tok/s | per request |
-|---|---:|---:|---:|
-| 8k | 1 | 55.9 / 78.5 | 55.9 / 78.5 |
-| 8k | 2 | 118.3 / 104.6 | 59.2 / 52.3 |
-| 8k | 4 | 108.3 / 110.0 | 27.1 / 27.5 |
-| 32k | 1 | 59.5 / 50.8 | 59.5 / 50.8 |
-| 32k | 2 | 87.9 / 77.5 | 44.0 / 38.7 |
-| 32k | 4 | 108.3 / 114.3 | 27.1 / 28.6 |
+The rate is the all-active window, latest first token to earliest last token,
+over the `completion_tokens` the server reports. The burst column is the same
+run over the earliest-first to latest-last window; it carries the stagger of
+the later requests' prefill and is what a cold batch costs end to end.
 
-Two requests already take 8k to its ceiling: the third and fourth add queueing
-and not throughput. At 32k the aggregate keeps rising to four requests, because
-a longer row amortises the weight reads over more work per step. Per-request
-rate falls in every column.
+| prompt | concurrency | aggregate tok/s | per request | burst tok/s |
+|---|---:|---:|---:|---:|
+| 8k | 1 | 57.5 / 62.7 | 57.5 / 62.7 | same |
+| 8k | 2 | 107.1 / 106.4 | 53.6 / 53.2 | 105.5 / 104.7 |
+| 8k | 4 | 181.8 / 181.3 | 45.5 / 45.3 | 169.4 / 171.8 |
+| 32k | 1 | 46.8 / 49.0 | 46.8 / 49.0 | same |
+| 32k | 2 | 80.7 / 82.6 | 40.3 / 41.3 | 76.1 / 80.4 |
+| 32k | 4 | 117.8 / 125.4 | 29.5 / 31.4 | 111.5 / 120.0 |
 
-Sampling is at temperature 1, which costs MTP acceptance, so the single-stream
-rows here sit below the greedy figures quoted above. At temperature 0 the same
-8k ladder measured 104-113 tok/s at two and four requests, inside the spread
-below.
+At 8k batching is close to linear: 57 to 107 to 181 tok/s, 1.9x and 3.2x the
+single stream. At 32k it flattens to 1.7x and 2.6x, because every step reads
+the whole prefix once per row. Per-request rate falls in both cases, so
+concurrency buys throughput at the cost of latency.
 
-Runs vary. Repeating a point on the same launch moves it by up to 20%, and an
-ad-hoc 8-request run at 8k landed at 77-115 tok/s, never above the four-request
-figure. Size for four.
+The two reps agree within 1% at 8k and within 7% at 32k.
+
+Earlier revisions of this table quoted a 128-token run over the burst window,
+which read four 8k requests at about 108 tok/s. That window is mostly prefill
+stagger at 128 tokens, and the draft needs the longer decode to reach steady
+state.
 
 `scripts/gpu_suite.sh --concurrency 1,2,4` reproduces the ladder in one bundle.
 
