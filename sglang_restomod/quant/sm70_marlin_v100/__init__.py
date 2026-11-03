@@ -101,6 +101,53 @@ def ops() -> Tuple[object, object]:
     return resolved
 
 
+def gemm_args(
+    a,
+    c,
+    b_q_weight,
+    b_scales,
+    global_scale,
+    b_zeros,
+    g_idx,
+    perm,
+    workspace,
+    b_q_type,
+    size_m,
+    size_n,
+    size_k,
+    is_k_full,
+    use_atomic_add,
+    use_fp32_reduce,
+    is_zp_float,
+) -> tuple:
+    """Map the engine's GPTQ call onto ``_C::marlin_gemm``.
+
+    The extension takes a bias and an activation-scale slot the engine does not
+    have, at positions 3 and 5, so the arguments cannot be passed through.
+    """
+    return (
+        a,
+        c,
+        b_q_weight,
+        None,
+        b_scales,
+        None,
+        global_scale,
+        b_zeros,
+        g_idx,
+        perm,
+        workspace,
+        b_q_type.id,
+        size_m,
+        size_n,
+        size_k,
+        is_k_full,
+        use_atomic_add,
+        use_fp32_reduce,
+        is_zp_float,
+    )
+
+
 def install() -> bool:
     """Route the engine's GPTQ marlin call to the marlin_v100 kernel.
 
@@ -151,25 +198,11 @@ def install() -> bool:
                 c = torch.empty((size_m, size_n), dtype=a.dtype, device=a.device)
             return c
         return gemm(
-            a,
-            c,
-            b_q_weight,
-            None,
-            b_scales,
-            None,
-            global_scale,
-            b_zeros,
-            g_idx,
-            perm,
-            workspace,
-            b_q_type.id,
-            size_m,
-            size_n,
-            size_k,
-            is_k_full,
-            use_atomic_add,
-            use_fp32_reduce,
-            is_zp_float,
+            *gemm_args(
+                a, c, b_q_weight, b_scales, global_scale, b_zeros, g_idx, perm,
+                workspace, b_q_type, size_m, size_n, size_k, is_k_full,
+                use_atomic_add, use_fp32_reduce, is_zp_float,
+            )
         )
 
     gptq_marlin_gemm._restomod_sm70 = True
