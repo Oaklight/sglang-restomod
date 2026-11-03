@@ -16,8 +16,8 @@
 --dtype float16 --quantization fp8
 --attention-backend tilelang_fa_v100
 --linear-attn-prefill-backend triton --linear-attn-decode-backend triton
-# --kv-cache-dtype fp8_e5m2           # optional 1-byte cache for 256k; costs
-                                      # 1.38x decode at the pin. See "KV dtype".
+# --kv-cache-dtype fp8_e5m2           # optional 1-byte cache for 256k; equal
+                                      # decode at 32k since #129. See "KV dtype".
 --tp-size 2 --context-length 262144   # max_position_embeddings
 --mem-fraction-static 0.85 --max-running-requests 4
 --chunked-prefill-size 4096 --max-prefill-tokens 8192
@@ -344,15 +344,27 @@ what the model says.
 > ('fp8e4b15', 'fp8e5')`. The server dies before the model loads, so no
 > attention backend choice avoids it.
 >
-> `fp8_e5m2` does start, and at 32k it costs **1.38x decode** against fp16 for
-> the same prefill: 29.02 / 32.24 / 30.92 / 34.55 tok/s against 41.52 / 48.11 /
-> 41.62 / 43.66, four 128-output-token reps, one server restart apart. On this
-> launch it allocated a 305,280-token pool.
+> `fp8_e5m2` does start, and until #129 it cost **1.38x decode** against fp16 at
+> 32k, because the fp8 clauses in `attention_v100` sent the draft extend to the
+> Triton extend kernel (31.2 ms per launch, 32 launches) instead of the native
+> grouped path. #129 defers to the draft-extend gate in all four dispatch sites,
+> and with `SGLANG_V100_DRAFT_EXTEND_NATIVE=1` on, as above, the cost is gone:
 >
-> So **fp16 KV is the pin default**, and the 1-byte cache is a capacity trade for
-> 256k rather than a free win. The comparison below was measured on the fork and
-> stands as the reason to keep the format on the roadmap, not as a reason to
-> pass the flag today.
+> | arm, 32k, greedy | decode tok/s, four 128-token reps | mean |
+> |---|---|---:|
+> | fp16 KV | 53.32 / 56.00 / 49.75 / 54.64 | 53.43 |
+> | e5m2 KV, before #129 | 38.20 / 34.93 / 39.31 / 33.32 | 36.44 |
+> | e5m2 KV, after #129 | 61.69 / 57.37 / 58.83 / 57.33 | 58.81 |
+>
+> The signed bundle for #129, at temperature 1, agrees at 32k: 54.39 / 46.69
+> against the fp16 40-split rows' 54.42 / 47.13, and 67.11 / 65.54 at 8k against
+> 73.33 / 66.43. So the 1-byte cache is now a capacity win at 32k with a 5-10%
+> cost at 8k, not a 1.4x decode penalty. It still passes a 262k request on the
+> same cards that fp16 cannot.
+>
+> **fp16 KV stays the default** because it is exact and faster at 8k; pass
+> `fp8_e5m2` when the context needs the capacity. The comparison further down
+> was measured on the fork and stands as provenance, not as guidance.
 
 `fp8_e4m3` is the recommendation where the decode kernel supports it. It is the
 same size as e5m2, runs at the same
