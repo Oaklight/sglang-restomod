@@ -176,6 +176,23 @@ answering `TritonGDNKernel.extend` on SM70. Add `gdn_tilelang_sm70` to
 below. Without it the launch is still valid and silent, and prefill runs on the
 Triton chunk kernels.
 
+**The experts want `fp8_moe`.** A decode step at 8k spends 12.5 ms of 45.6 in
+55 f16 cutlass GEMM launches, and the checkpoint's experts are block-FP8. Add
+`fp8_moe` to `SGLANG_RESTOMOD_COMPONENTS` and they run on the TurboMind FP8
+MoE kernel. Same launch, 1024-token chunks, temperature 1, 512 output tokens:
+
+| | without | with `fp8_moe` |
+|---|---:|---:|
+| 8k decode tok/s | 57.5 / 62.7 | 65.9 / 70.4 |
+| 32k decode tok/s | 46.8 / 49.0 | 48.1-56.7, four reps |
+| 8k, 4 requests, aggregate | 181.8 / 181.3 | 192.7 / 195.2 |
+| 8k prefill tok/s | 1,904 / 1,902 | 1,825 / 1,819 |
+| 32k prefill tok/s | 1,642 | 1,544 |
+
+Decode gains 9-16% and serving 7%; prefill pays 4-6%. The component's GPU
+tests compare the kernel against a dequantized reference within 5e-2, and the
+suite runs them.
+
 Receipt `evidence-ad0addd-recipes` records the effect at this commit: prefill
 1,929.7 / 1,925.9 tok/s at 8,041 prompt tokens and 1,657.5 / 1,652.9 at 31,158,
 against 684.6 on the Triton chunk kernels. The 63.9% attribution for that
