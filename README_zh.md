@@ -82,6 +82,10 @@ decode 吞吐（tok/s），数据来自 `scripts/bench.py`。一行数据只有�
 | 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits | 5/6 | temp 1, default | 8041 | 181.8 / 181.3（4 请求，512 输出 token，合计） | receipt `evidence-e1924f3-serving-active` |
 | 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits | 5/6 | temp 1, default | 31372 | 80.7 / 82.6（2 请求，512 输出 token，合计） | receipt `evidence-e1924f3-serving-active` |
 | 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits | 5/6 | temp 1, default | 31372 | 117.8 / 125.4（4 请求，512 输出 token，合计） | receipt `evidence-e1924f3-serving-active` |
+| 27B | FP8，e5m2 KV，fp8 head | 2 | TP2，无 EP，40 KV splits | 5/6 | temp 1, default | 8041 | 120.26 / 122.89（2 请求，512 输出 token，合计） | receipt `evidence-e3b28bb-fp8-lm-head` |
+| 27B | FP8，e5m2 KV，fp8 head | 2 | TP2，无 EP，40 KV splits | 5/6 | temp 1, default | 8041 | 212.12 / 200.68（4 请求，512 输出 token，合计） | receipt `evidence-e3b28bb-fp8-lm-head` |
+| 27B | FP8，e5m2 KV，fp8 head | 2 | TP2，无 EP，40 KV splits | 5/6 | temp 1, default | 31372 | 95.71 / 97.68（2 请求，512 输出 token，合计） | receipt `evidence-e3b28bb-fp8-lm-head` |
+| 27B | FP8，e5m2 KV，fp8 head | 2 | TP2，无 EP，40 KV splits | 5/6 | temp 1, default | 31372 | 135.40 / 131.73（4 请求，512 输出 token，合计） | receipt `evidence-e3b28bb-fp8-lm-head` |
 | 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits，128k 上下文 | 3/4 | temp 1, top-p 0.95, top-k 20 | 127463 | 28.71 / 30.06 | receipt `evidence-dccc907-long-context` |
 | 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits，256k 上下文 | 3/4 | temp 1, top-p 0.95, top-k 20 | 254914 | 17.60 / 18.84 | receipt `evidence-dccc907-long-context` |
 
@@ -90,6 +94,8 @@ decode 吞吐（tok/s），数据来自 `scripts/bench.py`。一行数据只有�
 同一台机器在 31.7k 上测得 17.9 tok/s（issue #75）。
 
 40 splits 的行是独立配置：它加了 `--triton-attention-num-kv-splits 40`，把 draft 解码内核从 16 个 CTA 提到 80 个。代价见配方的 log-probability 一节；这些行不能当作「只改了代码」与默认行比较。
+
+fp8 head 的行是 e5m2 启动加上组件列表里的 `fp8_lm_head`，LM head 由 f16 改成块 FP8。这些行不能与上面的 serving 行比较：那批数据在 bench 于 1 以上并发改用共享前缀之前取得，其窗口仍包含 prefill。
 
 e5m2 的行是同一套启动参数加上 `--kv-cache-dtype fp8_e5m2`，KV 字节减半。这些行需要 #129 的 draft-extend 路由修复：修复前，fp8 cache 会把 draft extend 送去 Triton extend 内核，32k decode 掉到 36.4 tok/s。本次测量中 32k 与 fp16 行持平，8k 低 5-10%；prefill 不变。
 两个长上下文行需要 `--context-length 262144 --mem-fraction-static 0.82`：此时池为 278,432 个 token；

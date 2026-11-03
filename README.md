@@ -86,6 +86,10 @@ here is comparable across those axes.
 | 27B | FP8, e5m2 KV | 2 | TP2, no EP, 40 KV splits | 5/6 | temp 1, default | 8041 | 181.8 / 181.3 (4 requests, 512 tokens, aggregate) | receipt `evidence-e1924f3-serving-active` |
 | 27B | FP8, e5m2 KV | 2 | TP2, no EP, 40 KV splits | 5/6 | temp 1, default | 31372 | 80.7 / 82.6 (2 requests, 512 tokens, aggregate) | receipt `evidence-e1924f3-serving-active` |
 | 27B | FP8, e5m2 KV | 2 | TP2, no EP, 40 KV splits | 5/6 | temp 1, default | 31372 | 117.8 / 125.4 (4 requests, 512 tokens, aggregate) | receipt `evidence-e1924f3-serving-active` |
+| 27B | FP8, e5m2 KV, fp8 head | 2 | TP2, no EP, 40 KV splits | 5/6 | temp 1, default | 8041 | 120.26 / 122.89 (2 requests, 512 tokens, aggregate) | receipt `evidence-e3b28bb-fp8-lm-head` |
+| 27B | FP8, e5m2 KV, fp8 head | 2 | TP2, no EP, 40 KV splits | 5/6 | temp 1, default | 8041 | 212.12 / 200.68 (4 requests, 512 tokens, aggregate) | receipt `evidence-e3b28bb-fp8-lm-head` |
+| 27B | FP8, e5m2 KV, fp8 head | 2 | TP2, no EP, 40 KV splits | 5/6 | temp 1, default | 31372 | 95.71 / 97.68 (2 requests, 512 tokens, aggregate) | receipt `evidence-e3b28bb-fp8-lm-head` |
+| 27B | FP8, e5m2 KV, fp8 head | 2 | TP2, no EP, 40 KV splits | 5/6 | temp 1, default | 31372 | 135.40 / 131.73 (4 requests, 512 tokens, aggregate) | receipt `evidence-e3b28bb-fp8-lm-head` |
 | 27B | FP8, e5m2 KV | 2 | TP2, no EP, 40 KV splits, 128k ctx | 3/4 | temp 1, top-p 0.95, top-k 20 | 127463 | 28.71 / 30.06 | receipt `evidence-dccc907-long-context` |
 | 27B | FP8, e5m2 KV | 2 | TP2, no EP, 40 KV splits, 256k ctx | 3/4 | temp 1, top-p 0.95, top-k 20 | 254914 | 17.60 / 18.84 | receipt `evidence-dccc907-long-context` |
 
@@ -97,6 +101,11 @@ The 40-split rows are a separate configuration: they add
 `--triton-attention-num-kv-splits 40`, which raises the draft decode kernel from
 16 CTAs to 80. The recipe says what it costs in log-probability; do not compare
 those rows against the default ones as if only the code changed.
+
+The fp8-head rows are the e5m2 launch with `fp8_lm_head` in the component
+list, so the LM head is block FP8 instead of f16. They are not comparable with
+the serving rows above: those were taken before the bench sent a shared prefix
+above one request, so their windows still carried the prefill.
 
 The e5m2 rows are the same launch with `--kv-cache-dtype fp8_e5m2`, which halves
 the KV bytes. They need the draft-extend routing fix in #129: before it, the fp8
