@@ -86,10 +86,10 @@ here is comparable across those axes.
 | 27B | FP8, e5m2 KV | 2 | TP2, no EP, 40 KV splits | 5/6 | temp 1, default | 8041 | 181.8 / 181.3 (4 requests, 512 tokens, aggregate) | receipt `evidence-e1924f3-serving-active` |
 | 27B | FP8, e5m2 KV | 2 | TP2, no EP, 40 KV splits | 5/6 | temp 1, default | 31372 | 80.7 / 82.6 (2 requests, 512 tokens, aggregate) | receipt `evidence-e1924f3-serving-active` |
 | 27B | FP8, e5m2 KV | 2 | TP2, no EP, 40 KV splits | 5/6 | temp 1, default | 31372 | 117.8 / 125.4 (4 requests, 512 tokens, aggregate) | receipt `evidence-e1924f3-serving-active` |
-| 27B | FP8, e5m2 KV, fp8 head | 2 | TP2, no EP, 40 KV splits | 5/6 | temp 1, default | 8041 | 67.56 / 69.11 (1 request, 512 tokens) | receipt `evidence-e85e1e6-fp8-head-suite` |
+| 27B | FP8, e5m2 KV, fp8 head | 2 | TP2, no EP, 40 KV splits | 5/6 | temp 1, default | 8037 | 75.76 / 68.45 (1 request, 512 tokens) | receipt `evidence-8b7aaef-inner-loop` |
 | 27B | FP8, e5m2 KV, fp8 head | 2 | TP2, no EP, 40 KV splits | 5/6 | temp 1, default | 8041 | 120.26 / 122.89 (2 requests, 512 tokens, aggregate) | receipt `evidence-e3b28bb-fp8-lm-head` |
 | 27B | FP8, e5m2 KV, fp8 head | 2 | TP2, no EP, 40 KV splits | 5/6 | temp 1, default | 8041 | 212.12 / 200.68 (4 requests, 512 tokens, aggregate) | receipt `evidence-e3b28bb-fp8-lm-head` |
-| 27B | FP8, e5m2 KV, fp8 head | 2 | TP2, no EP, 40 KV splits | 5/6 | temp 1, default | 31372 | 56.46 / 60.28 (1 request, 512 tokens) | receipt `evidence-e85e1e6-fp8-head-suite` |
+| 27B | FP8, e5m2 KV, fp8 head | 2 | TP2, no EP, 40 KV splits | 5/6 | temp 1, default | 31372 | 66.22 / 55.34 (1 request, 512 tokens) | receipt `evidence-8b7aaef-inner-loop` |
 | 27B | FP8, e5m2 KV, fp8 head | 2 | TP2, no EP, 40 KV splits | 5/6 | temp 1, default | 31372 | 95.71 / 97.68 (2 requests, 512 tokens, aggregate) | receipt `evidence-e3b28bb-fp8-lm-head` |
 | 27B | FP8, e5m2 KV, fp8 head | 2 | TP2, no EP, 40 KV splits | 5/6 | temp 1, default | 31372 | 135.40 / 131.73 (4 requests, 512 tokens, aggregate) | receipt `evidence-e3b28bb-fp8-lm-head` |
 | 27B | FP8, e5m2 KV | 2 | TP2, no EP, 40 KV splits, 128k ctx | 3/4 | temp 1, top-p 0.95, top-k 20 | 127463 | 28.71 / 30.06 | receipt `evidence-dccc907-long-context` |
