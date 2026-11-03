@@ -40,6 +40,7 @@ def stream_request(url, payload, timeout):
     t0 = time.perf_counter()
     first_t = None
     n_tok = 0
+    chunk_t = []
     usage = None
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         for raw in resp:
@@ -63,11 +64,14 @@ def stream_request(url, payload, timeout):
             delta = choice.get("delta") or {}
             txt = choice.get("text") or delta.get("content") or delta.get("reasoning_content") or ""
             if txt:
+                now = time.perf_counter()
                 if first_t is None:
-                    first_t = time.perf_counter()
+                    first_t = now
                 n_tok += 1
+                chunk_t.append(now)
     end_t = time.perf_counter()
-    return {"t0": t0, "first_t": first_t, "end_t": end_t, "n_tok": n_tok, "usage": usage}
+    return {"t0": t0, "first_t": first_t, "end_t": end_t, "n_tok": n_tok,
+            "chunk_t": chunk_t, "usage": usage}
 
 
 def summarize(r, label):
@@ -189,22 +193,57 @@ def main():
                 # tokens in one chunk, so it undercounts; use the usage block.
                 # The window starts at the earliest first token and ends at the
                 # latest final token, which keeps prefill out of the rate.
+                # Two windows, because they answer different questions.
+                # burst: earliest first token to latest last token. It is what
+                # a cold batch costs end to end, and it carries the stagger of
+                # the later requests' prefill.
+                # active: latest first token to earliest last token. Every
+                # request is decoding inside it, so its rate is what the server
+                # sustains with the batch full.
+                # Tokens come from the usage block, since MTP packs several
+                # accepted tokens into one chunk and the chunk count undercounts.
+                # They cannot be timestamped, so the active window counts chunks
+                # and scales each request by its own tokens-per-chunk ratio.
                 done = [o for o in out if o and o["first_t"] is not None]
+                tot = 0
+                burst_s = 0.0
+                active_s = 0.0
+                active_tot = 0.0
                 if done:
-                    tot = sum(
-                        ((o["usage"] or {}).get("completion_tokens") or o["n_tok"]) - 1
-                        for o in done
+                    for o in done:
+                        o["tokens"] = max(
+                            ((o["usage"] or {}).get("completion_tokens")
+                             or o["n_tok"]) - 1,
+                            0,
+                        )
+                    tot = sum(o["tokens"] for o in done)
+                    burst_s = max(o["end_t"] for o in done) - min(
+                        o["first_t"] for o in done
                     )
-                    dec = max(o["end_t"] for o in done) - min(o["first_t"] for o in done)
-                else:
-                    tot, dec = 0, 1e-6
-                dec = max(dec, 1e-6)
+                    b_start = max(o["first_t"] for o in done)
+                    b_end = min(o["end_t"] for o in done)
+                    active_s = b_end - b_start
+                    if active_s > 0:
+                        for o in done:
+                            inside = sum(1 for t in o["chunk_t"] if b_start <= t <= b_end)
+                            if o["n_tok"]:
+                                active_tot += o["tokens"] * inside / o["n_tok"]
+                    else:
+                        active_s = 0.0
+                burst_s = max(burst_s, 1e-6)
                 s = {"label": f"ctx{ctx} C{args.concurrency} rep{rep+1}",
                      "requests": args.concurrency,
                      "tokens": tot,
-                     "aggregate_decode_tps": round(tot / dec, 2),
-                     "per_request_tps": round(tot / max(len(done), 1) / dec, 2),
-                     "decode_s": round(dec, 3),
+                     "aggregate_decode_tps": (
+                         round(active_tot / active_s, 2) if active_s > 0 else None
+                     ),
+                     "per_request_tps": (
+                         round(active_tot / active_s / max(len(done), 1), 2)
+                         if active_s > 0 else None
+                     ),
+                     "active_s": round(active_s, 3),
+                     "burst_decode_tps": round(tot / burst_s, 2),
+                     "burst_s": round(burst_s, 3),
                      "wall_s": round(wall, 3)}
                 results.append(s)
                 print(json.dumps(s))

@@ -78,10 +78,10 @@ decode 吞吐（tok/s），数据来自 `scripts/bench.py`。一行数据只有�
 | 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits | 3/4 | temp 1, top-p 0.95, top-k 20 | 32112 | 54.39 / 46.69 | receipt `evidence-7e15a2b-fp8-draft-extend` |
 | 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits | 5/4 | temp 1, top-p 0.95, top-k 20 | 8034 | 80.01 / 66.98 | receipt `evidence-5097450-spec-steps` |
 | 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits | 5/4 | temp 1, top-p 0.95, top-k 20 | 32138 | 61.62 / 46.39 | receipt `evidence-5097450-spec-steps` |
-| 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits | 5/4 | temp 1, default | 8037 | 118.3 / 104.6（2 请求，合计） | receipt `evidence-6f10d3a-serving` |
-| 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits | 5/4 | temp 1, default | 8037 | 108.3 / 110.0（4 请求，合计） | receipt `evidence-6f10d3a-serving` |
-| 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits | 5/4 | temp 1, default | 31372 | 87.9 / 77.5（2 请求，合计） | receipt `evidence-6f10d3a-serving` |
-| 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits | 5/4 | temp 1, default | 31372 | 108.3 / 114.3（4 请求，合计） | receipt `evidence-6f10d3a-serving` |
+| 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits | 5/4 | temp 1, default | 8041 | 107.1 / 106.4（2 请求，合计） | receipt `evidence-e1924f3-serving-active` |
+| 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits | 5/4 | temp 1, default | 8041 | 181.8 / 181.3（4 请求，合计） | receipt `evidence-e1924f3-serving-active` |
+| 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits | 5/4 | temp 1, default | 31372 | 80.7 / 82.6（2 请求，合计） | receipt `evidence-e1924f3-serving-active` |
+| 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits | 5/4 | temp 1, default | 31372 | 117.8 / 125.4（4 请求，合计） | receipt `evidence-e1924f3-serving-active` |
 | 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits，128k 上下文 | 3/4 | temp 1, top-p 0.95, top-k 20 | 127463 | 28.71 / 30.06 | receipt `evidence-dccc907-long-context` |
 | 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits，256k 上下文 | 3/4 | temp 1, top-p 0.95, top-k 20 | 254914 | 17.60 / 18.84 | receipt `evidence-dccc907-long-context` |
 
