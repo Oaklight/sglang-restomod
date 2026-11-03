@@ -20,10 +20,15 @@ not only the quant method name.
 | `compressed-tensors` WNA16 (INT4 W4A16) | Marlin v100 after the capability patch | `moe_wna16` / Marlin MoE | 27B W4A16 measured 8.6 tok/s |
 | unquantized FP16 | cuBLAS | `SM70FP16MoEMethod` | Baseline fallback |
 
-KV dtype is orthogonal: the attention backend accepts fp16, and the tilelang
-FA-V100 decode kernels have an E5M2 bridge. E5M2 is **not usable yet**: the
-partial-decode kernel it enables corrupts output (#51). fp16 is the validated
-choice.
+KV dtype is orthogonal to the weight format, and the state differs by engine:
+
+- The tilelang FA-V100 decode kernels carry an E5M2 bridge, and the corruption in
+  #51 is fixed and closed.
+- At the pin, `fp8_e4m3` does not start: the grouped decode kernel compiles for
+  `fp8e4nv`, which Volta does not implement (#112). `fp8_e5m2` runs and costs
+  1.38x decode at 32k against fp16, measured with four 128-token reps.
+- fp16 is therefore the validated choice at the pin and what every receipted run
+  uses. The 1-byte formats buy pool capacity for 256k, not throughput.
 
 ## Selection rules
 
