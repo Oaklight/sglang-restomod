@@ -15,6 +15,10 @@
 #   OOB      path to oob (default: oob from PATH)
 #   PYTHON   interpreter with torch (default: python3)
 #   GPUS     CUDA_VISIBLE_DEVICES for the probe (default: 0)
+#
+# The suite runs `pytest -m gpu tests/` and records the result as
+# gpu_tests.txt; a failure fails the suite after the bundle is packed. Use
+# --skip-gpu-tests on a host without the SM70 environment.
 set -euo pipefail
 
 OUT=evidence
@@ -24,6 +28,7 @@ MODEL_DIR=""
 CONTEXTS="8192,32768"
 OUTPUT_TOKENS=128
 SKIP_GPU_PROBE=0
+SKIP_GPU_TESTS=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -34,6 +39,7 @@ while [[ $# -gt 0 ]]; do
     --contexts) CONTEXTS="$2"; shift 2 ;;
     --output-tokens) OUTPUT_TOKENS="$2"; shift 2 ;;
     --skip-gpu-probe) SKIP_GPU_PROBE=1; shift ;;
+    --skip-gpu-tests) SKIP_GPU_TESTS=1; shift ;;
     -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -179,9 +185,21 @@ PY
     > "$OUT/bench.log" 2>&1 || echo "bench failed; see bench.log" >> "$OUT/bench.log"
 fi
 
+# Component tests that need a card. The bench measures speed, the launch check
+# measures routing, and only these measure whether a kernel still computes what
+# it claims. Recorded even when they fail, so the bundle explains a failed run.
+GPU_TEST_RC=0
+if [[ "$SKIP_GPU_TESTS" != "1" ]]; then
+  "$PYTHON" -m pytest -q -m gpu tests/ > "$OUT/gpu_tests.txt" 2>&1 || GPU_TEST_RC=$?
+fi
+
 PACK="${OUT%/}.tgz"
 "$OOB" pack --evidence-dir "$OUT" --out "$PACK"
 echo "evidence: $PACK"
+if [[ "$GPU_TEST_RC" -ne 0 ]]; then
+  echo "error: a GPU test failed; see $OUT/gpu_tests.txt" >&2
+  exit 1
+fi
 if [[ "$DIRTY" != "0" ]]; then
   echo "warning: worktree is dirty ($DIRTY files); sign with --allow-dirty or clean it first" >&2
 fi
