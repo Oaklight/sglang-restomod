@@ -83,8 +83,16 @@ prefill unchanged at 1,633-1,656 tok/s in every arm. The per-rep spread is
 
 It costs memory for the captured graphs: at 0.85 only 3 steps start (4 steps
 OOMs on a 136 MiB allocation), 5 steps needs `--mem-fraction-static 0.80`
-(263,952 tokens of pool) and 6 needs 0.78 (237,856). So:
-`--speculative-num-steps 5` when `--kv-cache-dtype fp8_e5m2` is set, 3 on fp16.
+(263,952 tokens of pool) and 6 needs 0.78 (237,856).
+
+**And it stops paying past 64k.** Every draft row reads the whole prefix, so a
+step costs `prefix` bytes; the same launch at 5 steps measures 34.80 / 32.86
+tok/s at 130k against 36.19 / 29.66 at 3 (inside the spread), and 18.54 at 260k
+against 20.24. Capacity is not the reason — 5 steps at 262k context and mem
+0.82 starts with 280,832 tokens of pool — the per-step cost is.
+
+So: `--speculative-num-steps 5` with `--kv-cache-dtype fp8_e5m2` up to 64k, 3
+steps from 128k up, and 3 on fp16 at any context.
 
 
 **Non-greedy requests need three things at the pin.** Without them the server
