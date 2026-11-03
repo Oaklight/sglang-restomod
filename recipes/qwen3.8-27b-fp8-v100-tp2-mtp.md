@@ -94,6 +94,13 @@ against 20.24. Capacity is not the reason — 5 steps at 262k context and mem
 So: `--speculative-num-steps 5` with `--kv-cache-dtype fp8_e5m2` up to 64k, 3
 steps from 128k up, and 3 on fp16 at any context.
 
+The engine raises the draft-token count itself. It logs
+`speculative_num_draft_tokens is adjusted to speculative_num_steps + 1 when
+speculative_eagle_topk == 1`, so `--speculative-num-steps 5
+--speculative-num-draft-tokens 4` runs as 5 steps and 6 draft tokens, and
+`/get_server_info` reports 6. A 3-step launch asks 4 and stays at 4. Quote the
+engine's number: 3/4 and 5/6.
+
 
 **Non-greedy requests need three things at the pin.** Without them the server
 either refuses to start or dies on the first temperature-1 request:
@@ -315,7 +322,7 @@ and it is the next thing worth attacking.
 ## Serving throughput
 
 The rows above are one request at a time. A server is judged on several.
-27B-FP8 TP2, e5m2 KV, MTP 5/4, 40 KV splits, 512 output tokens, two reps after
+27B-FP8 TP2, e5m2 KV, MTP 5/6, 40 KV splits, 512 output tokens, two reps after
 one warmup, sampling at the bench default of temperature 1. The single-stream
 row prefills cold. The concurrent rows share one prefix, so every request is
 decoding when the rate is taken.
