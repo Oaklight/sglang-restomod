@@ -30,6 +30,18 @@ binds an `Oaklight/sglang-restomod` commit and a signed evidence bundle, and
 those runs predate both, so they cannot be receipted after the fact. The
 Flash-Next TP4 row is the one pin cell still on a lab record, because a bundle
 for it needs four idle cards (#95).
+
+## Known failures
+
+A cell that does not run is a result. Each row names the stage it stops at and
+where the log excerpt lives.
+
+| cell | stage | error | where |
+|---|---|---|---|
+| Flash-Next FP8, TP8/EP8, pin | dependency resolution, before the model loads | `AttributeError: module 'cutlass.cute' has no attribute 'FastDivmodDivisorV2'` (flashinfer 0.7.1 against the env's nvidia-cutlass-dsl) | #93 |
+| Flash-Next FP8, 2x V100, pin | first forward: the dense FP8 compute path | recorded in the issue | #92 |
+| 27B, `--kv-cache-dtype fp8_e4m3`, pin | grouped decode-attention kernel compile, before the model loads | `ValueError: type fp8e4nv not supported in this architecture. The supported fp8 dtypes are ('fp8e4b15', 'fp8e5')` | #112 |
+| 27B, DFLASH2 draft, SM70 | draft load succeeds, then the draft's bf16 activations and graph capture | recorded in the issue | #63 |
 | DGX Spark | sm121 / aarch64 | upstream SGLang 0.5.22 | Planned |
 
 Notes:
