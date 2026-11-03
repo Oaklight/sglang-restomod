@@ -89,6 +89,11 @@ bench. A component that raises while registering is skipped by the loader and
 the launch then serves under the same flag with the engine's own backend, which
 is the failure this catches.
 
+`--concurrency` takes a comma list (`--concurrency 1,2,4`). The bench runs
+once per value and appends to `bench.log`, so one bundle carries the
+single-stream rate and what batching buys on the same launch. Without it the
+bench runs at concurrency 1, as before.
+
 The suite also runs the GPU-marked component tests (`pytest -m gpu tests/`) and
 records them as `gpu_tests.txt`. The bench measures speed and the launch check
 measures routing; these are the only step that measures whether a kernel still
