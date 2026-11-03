@@ -185,11 +185,26 @@ def main():
                 for t in ts:
                     t.join()
                 wall = time.perf_counter() - t0
-                tot = sum(o["n_tok"] for o in out if o)
-                agg = tot / wall
+                # n_tok counts streamed chunks, and MTP puts several accepted
+                # tokens in one chunk, so it undercounts; use the usage block.
+                # The window starts at the earliest first token and ends at the
+                # latest final token, which keeps prefill out of the rate.
+                done = [o for o in out if o and o["first_t"] is not None]
+                if done:
+                    tot = sum(
+                        ((o["usage"] or {}).get("completion_tokens") or o["n_tok"]) - 1
+                        for o in done
+                    )
+                    dec = max(o["end_t"] for o in done) - min(o["first_t"] for o in done)
+                else:
+                    tot, dec = 0, 1e-6
+                dec = max(dec, 1e-6)
                 s = {"label": f"ctx{ctx} C{args.concurrency} rep{rep+1}",
                      "requests": args.concurrency,
-                     "aggregate_decode_tps": round(agg, 2),
+                     "tokens": tot,
+                     "aggregate_decode_tps": round(tot / dec, 2),
+                     "per_request_tps": round(tot / max(len(done), 1) / dec, 2),
+                     "decode_s": round(dec, 3),
                      "wall_s": round(wall, 3)}
                 results.append(s)
                 print(json.dumps(s))
