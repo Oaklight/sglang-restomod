@@ -7,7 +7,14 @@ component quantizes it once after the model loads and hands it to the
 ``fp8_dense`` method, which routes it to the TurboMind FP8 GEMM.
 
 Measured on one V100, M=6, the TP2 shard shape: f16 linear 2.001 ms against
-fp8 0.793 ms. Five head calls a step, so about 6 ms of a 45.6 ms step.
+fp8 0.793 ms. Five head calls a step. In the engine, against the same launch
+without this component: 8k decode 63.08 -> 70.37 tok/s (three fresh reps,
+512 output tokens), and 32k unchanged within the no-head spread.
+
+The component needs ``fp8_dense``: it reuses that component's patched
+``process_weights_after_loading`` and ``apply``. Without it the head would be
+quantized into a method that has no kernel for the prepared layout, so the
+install refuses instead.
 """
 
 from __future__ import annotations
@@ -52,7 +59,7 @@ def quantize_lm_head(model) -> bool:
 
     method = Fp8LinearMethod.__new__(Fp8LinearMethod)
     method.quant_config = _Config()
-    method.use_sm70_turbomind = True
+    method.use_sm70_turbomind = True  # install() checked fp8_dense and the kernel
 
     head.weight = torch.nn.Parameter(q, requires_grad=False)
     head.weight_scale_inv = torch.nn.Parameter(scale, requires_grad=False)
@@ -73,7 +80,17 @@ def quantize_lm_head(model) -> bool:
 
 def install() -> bool:
     """Quantize the LM head once, after the model weights are loaded."""
+    from sglang.srt.layers.quantization.fp8 import Fp8LinearMethod
     from sglang.srt.model_executor.model_runner import ModelRunner
+
+    from sglang_restomod.quant.sm70_fp8_dense import _method as kernels
+
+    if not getattr(Fp8LinearMethod.apply, "_restomod_sm70", False):
+        logger.warning("sm70_fp8_lm_head: fp8_dense is not installed, skipped")
+        return False
+    if not kernels.can_use_sm70_turbomind_fp8([BLOCK, BLOCK]):
+        logger.warning("sm70_fp8_lm_head: the TurboMind FP8 kernel is unavailable, skipped")
+        return False
 
     original = ModelRunner.load_model
     if getattr(original, "_restomod_fp8_lm_head", False):
