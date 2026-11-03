@@ -7,7 +7,7 @@
 | Topology | TP2, no EP |
 | Context | 32,768 to 262,144 (measured at both) |
 | Engine | Two stacks, and the text says which rows are which. The fork tables were measured on `dg1kjd/sglang-sxm2` @ `73abfe1` plus the lab patch set (`patches/sglang-sxm2/` in `Oaklight/lambda-v100-lab`). Every figure marked "at the pin", and every component row, was measured on `sgl-project/sglang` `v0.5.22` @ `baa9befa` with this layer installed. |
-| Components | `attention_v100`, `fp8_dense`, `spec_sm70`, `gdn_tilelang_sm70` |
+| Components | `attention_v100`, `fp8_dense`, `fp8_lm_head`, `spec_sm70`, `gdn_tilelang_sm70` |
 | Date | 2026-11-02 (KV dtype: e4m3 at the fork, fp16 at the pin — see "KV dtype") |
 
 ## Flags
@@ -201,6 +201,45 @@ A 128-output-token A/B, four reps per arm and **unsigned**, is recorded in
 1,639.0 / 1,637.4 against 684.7 / 684.2 / 684.4 / 684.3, and decode ranges that
 overlap (TileLang 41.75-48.14, Triton 38.09-49.21), so no decode difference is
 attributable to the component.
+
+**`fp8_lm_head` buys about 7% at 8k.** The checkpoint keeps `lm_head` in
+`ignored_layers`, so the head stays f16: 1.27 GB per card per call at TP2, five
+calls a step (four draft, one verify; the draft shares the target head). The
+component quantizes the head to 128x128 block FP8 after load and routes it to
+the same TurboMind kernel `fp8_dense` uses, at half the weight bytes. It is
+W8A16, so only the weights move.
+
+Two A/B rounds on one host, one component toggled, 8k prompt, 512 output
+tokens, one warmup and fresh reps:
+
+| round | without | with | delta |
+|---|---|---|---|
+| 1 (3 reps) | 63.45 / 62.28 / 63.50, mean 63.08 | 71.08 / 69.90 / 70.12, mean 70.37 | +11.6% |
+| 2 (4 reps) | 72.82 / 63.19 / 62.01 / 69.17, mean 66.80 | 68.35 / 68.14 / 64.28 / 75.09, mean 68.97 | +3.2% |
+| pooled (7 reps) | mean 65.20 | mean 69.57 | +6.7% |
+
+The accept length is 3.2-3.4 in every arm, so acceptance does not explain any
+row. The run-to-run spread on this host is the same order as the effect: read
++6.7% as the estimate and +11.6% as the top of the measured range.
+
+At 32k the two arms of round 1 read 56.08 / 53.89 / 50.92 (mean 53.63) against
+54.63 / 54.31 / 54.39 (mean 54.44), inside the no-head spread. Why the head does
+not move 32k is unconfirmed. The likely reason is that it leaves the critical
+path there: the TurboMind GEMM total is flat at 19.0 ms from 8k to 32k while the
+attention kernels grow 3.8x.
+
+Quality, same two launches, one greedy prompt: the top-8 tokens keep their order
+and the largest shift is 0.12 nats, against the 0.0383-0.0627 that the e5m2 KV
+cache already costs. Two short factual answers are byte-identical.
+
+Add `fp8_lm_head` after `fp8_dense` in `SGLANG_RESTOMOD_COMPONENTS`. It reuses
+that component's patched `process_weights_after_loading` and `apply`; without
+`fp8_dense`, or without the TurboMind FP8 kernel, it refuses to install and logs
+a warning, so the launch stays on the f16 head.
+
+Receipt `evidence-e3b28bb-fp8-lm-head` records the serving ladder of that launch:
+8k 82.84 / 75.96 at one request, 120.26 / 122.89 at two and 212.12 / 200.68 at
+four; 32k 56.73 / 57.82, 95.71 / 97.68 and 135.40 / 131.73.
 
 ## Environment
 
