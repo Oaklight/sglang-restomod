@@ -193,6 +193,14 @@ Decode gains 9-16% and serving 7%; prefill pays 4-6%. The component's GPU
 tests compare the kernel against a dequantized reference within 5e-2, and the
 suite runs them.
 
+End to end the perturbation is small. Three fixed prompts, greedy, 32 tokens
+each, per-token log-probability of the emitted token, `fp8_moe` against the f16
+expert path: 96 of 96 tokens align, mean absolute shift 0.0017 nats, worst
+token 0.0227. The KV-dtype study measures 0.0383 for e4m3 and 0.0627 for e5m2
+against fp16, and the 40-split change 0.0016, so the expert kernel sits in the
+split-change class. A 64-token greedy run flipped one near-tie on one of the
+three prompts; the other two were byte-identical.
+
 Receipt `evidence-ad0addd-recipes` records the effect at this commit: prefill
 1,929.7 / 1,925.9 tok/s at 8,041 prompt tokens and 1,657.5 / 1,652.9 at 31,158,
 against 684.6 on the Triton chunk kernels. The 63.9% attribution for that
