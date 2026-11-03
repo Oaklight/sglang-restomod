@@ -46,6 +46,11 @@ COMPONENTS: dict[str, Component] = {
         module="sglang_restomod.quant.sm70_fp8_dense",
         description="SM70 W8A16 dense FP8 linear kernels for the pinned engine",
     ),
+    "fp8_lm_head": Component(
+        name="fp8_lm_head",
+        module="sglang_restomod.quant.sm70_fp8_lm_head",
+        description="Quantize the LM head to block FP8 after load, for the TurboMind kernel",
+    ),
     "attention_v100": Component(
         name="attention_v100",
         module="sglang_restomod.attention.v100",
