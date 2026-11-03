@@ -65,6 +65,27 @@ The 4/5 row was also the only one that needed `--mem-fraction-static 0.80`: at
 0.85 the launch dies while loading weights, on a 136 MiB allocation with 117 MiB
 free.
 
+**With an fp8 KV cache the optimum moves to five.** The table above is fp16 KV
+with 8 splits. On `fp8_e5m2` with #129's native draft extend the draft step is
+cheaper, so depth is worth more; the same sweep at 31.7k with 40 splits, four
+reps per arm and eight for the two that matter:
+
+| steps | decode tok/s, mean of 4 | mean of 8 | median of 8 |
+|---:|---:|---:|---:|
+| 3 | 56.32 | 58.41 | 58.56 |
+| 4 | 61.07 | — | — |
+| 5 | 66.06 | **62.87** | **63.40** |
+| 6 | 60.10 | — | — |
+
+Five steps is +7.6% on the mean and +8.3% on the median against three, with
+prefill unchanged at 1,633-1,656 tok/s in every arm. The per-rep spread is
+10-15 tok/s in both arms, so read the medians.
+
+It costs memory for the captured graphs: at 0.85 only 3 steps start (4 steps
+OOMs on a 136 MiB allocation), 5 steps needs `--mem-fraction-static 0.80`
+(263,952 tokens of pool) and 6 needs 0.78 (237,856). So:
+`--speculative-num-steps 5` when `--kv-cache-dtype fp8_e5m2` is set, 3 on fp16.
+
 
 **Non-greedy requests need three things at the pin.** Without them the server
 either refuses to start or dies on the first temperature-1 request:
