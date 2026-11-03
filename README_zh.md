@@ -82,10 +82,10 @@ decode 吞吐（tok/s），数据来自 `scripts/bench.py`。一行数据只有�
 | 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits | 5/6 | temp 1, default | 8041 | 181.8 / 181.3（4 请求，512 输出 token，合计） | receipt `evidence-e1924f3-serving-active` |
 | 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits | 5/6 | temp 1, default | 31372 | 80.7 / 82.6（2 请求，512 输出 token，合计） | receipt `evidence-e1924f3-serving-active` |
 | 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits | 5/6 | temp 1, default | 31372 | 117.8 / 125.4（4 请求，512 输出 token，合计） | receipt `evidence-e1924f3-serving-active` |
-| 27B | FP8，e5m2 KV，fp8 head | 2 | TP2，无 EP，40 KV splits | 5/6 | temp 1, default | 8041 | 67.56 / 69.11（1 请求，512 输出 token） | receipt `evidence-e85e1e6-fp8-head-suite` |
+| 27B | FP8，e5m2 KV，fp8 head | 2 | TP2，无 EP，40 KV splits | 5/6 | temp 1, default | 8037 | 75.76 / 68.45（1 请求，512 输出 token） | receipt `evidence-8b7aaef-inner-loop` |
 | 27B | FP8，e5m2 KV，fp8 head | 2 | TP2，无 EP，40 KV splits | 5/6 | temp 1, default | 8041 | 120.26 / 122.89（2 请求，512 输出 token，合计） | receipt `evidence-e3b28bb-fp8-lm-head` |
 | 27B | FP8，e5m2 KV，fp8 head | 2 | TP2，无 EP，40 KV splits | 5/6 | temp 1, default | 8041 | 212.12 / 200.68（4 请求，512 输出 token，合计） | receipt `evidence-e3b28bb-fp8-lm-head` |
-| 27B | FP8，e5m2 KV，fp8 head | 2 | TP2，无 EP，40 KV splits | 5/6 | temp 1, default | 31372 | 56.46 / 60.28（1 请求，512 输出 token） | receipt `evidence-e85e1e6-fp8-head-suite` |
+| 27B | FP8，e5m2 KV，fp8 head | 2 | TP2，无 EP，40 KV splits | 5/6 | temp 1, default | 31372 | 66.22 / 55.34（1 请求，512 输出 token） | receipt `evidence-8b7aaef-inner-loop` |
 | 27B | FP8，e5m2 KV，fp8 head | 2 | TP2，无 EP，40 KV splits | 5/6 | temp 1, default | 31372 | 95.71 / 97.68（2 请求，512 输出 token，合计） | receipt `evidence-e3b28bb-fp8-lm-head` |
 | 27B | FP8，e5m2 KV，fp8 head | 2 | TP2，无 EP，40 KV splits | 5/6 | temp 1, default | 31372 | 135.40 / 131.73（4 请求，512 输出 token，合计） | receipt `evidence-e3b28bb-fp8-lm-head` |
 | 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits，128k 上下文 | 3/4 | temp 1, top-p 0.95, top-k 20 | 127463 | 28.71 / 30.06 | receipt `evidence-dccc907-long-context` |
