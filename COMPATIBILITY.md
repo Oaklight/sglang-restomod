@@ -18,6 +18,7 @@ what the row claims.
 | Tesla V100-SXM2 (2x) | sm70 | pin v0.5.22 + `attention_v100`, `fp8_dense`, `spec_sm70`, TP2, MTP 3/4 | Validated 2026-11-02: Qwen3.8-27B-FP8, 60.40-64.50 tok/s at 8.2K and 41.48-44.71 at 31.7K — receipt `evidence-e5a5740-draft-extend` |
 | Tesla V100-SXM2 (2x) | sm70 | same, fp16 KV | Validated 2026-11-02: the same model without the draft-extend fix measures 17.89-17.86 tok/s at 31.7K — issue #75 |
 | Tesla V100-SXM2 (2x) | sm70 | pin v0.5.22 + `attention_v100`, `fp8_dense`, `spec_sm70`, `gdn_tilelang_sm70`, TP2, MTP 3/4, 40 KV splits | Validated 2026-11-02: Qwen3.8-27B-FP8, prefill 1,933.5 / 1,925.7 tok/s at 8.0K and 1,658.7 / 1,651.5 at 31.1K; decode 73.12 / 63.40 and 45.98 / 46.07, indicative only — receipt `evidence-e9ef57f-spec-depth`, whose `server_info.json` records `tp_size` 2, `speculative_num_steps` 3, `speculative_num_draft_tokens` 4 and `triton_attention_num_kv_splits` 40, and whose `versions.txt` records the component list |
+| Tesla V100-SXM2 (2x) | sm70 | pin v0.5.22 + `attention_v100`, `fp8_dense`, `spec_sm70`, `gdn_tilelang_sm70`, TP2, MTP 3/4, 40 KV splits, `fp8_e5m2` KV, 262k context, mem fraction 0.82 | Validated 2026-11-03: Qwen3.8-27B-FP8, prefill 1,029.3 / 1,028.4 tok/s and decode 28.71 / 30.06 at 127,463 prompt tokens, prefill 688.6 / 688.7 and decode 17.60 / 18.84 at 254,914 — receipt `evidence-dccc907-long-context`, 10 files including `gpu_tests.txt` (6 passed) |
 | Tesla V100-SXM2 (4x) | sm70 | pin v0.5.22 + `fp4_moe`, `attention_v100`, `ple_sm70`, TP4, MTP 3/4 | Validated 2026-11-02: Qwen3.8-Flash-Next-NVFP4, decode 84.69-99.43 tok/s at 31.7K, prefill 1,599-1,600 tok/s — [lab record](https://github.com/Oaklight/lambda-v100-lab/blob/main/notes/flash-next-nvfp4-context-ladder.md) |
 | Tesla T4 | sm75 | upstream SGLang 0.5.22 | Planned |
 | RTX 4070 Super | sm89 | upstream SGLang 0.5.22 | Planned |
@@ -55,8 +56,10 @@ Notes:
   "KV dtype" section. The
   [E5M2 run](docs/runs/2026-10-25-qwen3.8-27b-fp8-e5m2-kv-lambda12.md) is the
   record of the pre-fix failure.
-- **At the pin neither holds.** `fp8_e4m3` does not start: the grouped decode
-  kernel compiles for `fp8e4nv`, which Volta does not implement (#112).
-  `fp8_e5m2` starts and costs 1.38x decode at 32k against fp16 for the same
-  prefill. fp16 is the pin default and what every receipted 27B run uses; the
-  1-byte formats buy pool capacity for 256k, not throughput.
+- **At the pin, e4m3 does not start and e5m2 does.** `fp8_e4m3` fails because
+  the grouped decode kernel compiles for `fp8e4nv`, which Volta does not
+  implement (#112). `fp8_e5m2` cost 1.38x decode at 32k until #129: the fp8
+  dispatch clauses sent the draft extend to the Triton extend kernel. With the
+  routing fixed it measures 58.81 against 53.43 tok/s at 32k, greedy, and is
+  what the receipted 128k and 256k cells use. fp16 stays the pin default
+  because it is exact and faster at 8k.
