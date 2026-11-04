@@ -80,6 +80,12 @@ def install_topk_fallback() -> bool:
     import succeeds and the kernel refuses at call time
     (``FlashInfer requires GPUs with sm75 or higher``), so replace the module
     attribute before the model module is imported.
+
+    The replacement is process-wide because the binding happens at import time.
+    Three other callers share the symbol: ``speculative/uno_tree.py``,
+    ``speculative/uno_utils.py`` and ``layers/attention/dsa/dsa_topk_backend.py``.
+    On sm70 the kernel refuses there too, so the fallback replaces a failure; on
+    sm75 and newer the original is called unchanged.
     """
     try:
         import flashinfer
