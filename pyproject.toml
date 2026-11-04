@@ -48,6 +48,7 @@ include = ["sglang_restomod*"]
 "sglang_restomod.attention.v100" = ["kernels/*.cu", "kernels/SHA256SUMS", "PROVENANCE.md"]
 "sglang_restomod.quant.sm70_fp8_moe" = ["*.cpp", "README.md"]
 "sglang_restomod.quant.sm70_fp4_moe" = ["PROVENANCE.md"]
+"sglang_restomod.quant.sm70_fp4_dense" = ["PROVENANCE.md"]
 
 [tool.ruff]
 line-length = 100

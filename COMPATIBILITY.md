@@ -1,7 +1,7 @@
 # Compatibility matrix
 
-Seven components ship (`fp8_moe`, `fp8_dense`, `fp4_moe`, `attention_v100`,
-`ple_sm70`, `spec_sm70`, `gdn_tilelang_sm70`); all are opt-in. A row becomes "validated" only after
+Eight components ship (`fp8_moe`, `fp8_dense`, `fp4_moe`, `fp4_dense`,
+`attention_v100`, `ple_sm70`, `spec_sm70`, `gdn_tilelang_sm70`); all are opt-in. A row becomes "validated" only after
 a recorded run.
 
 Some rows carry decode figures from 64-output-token runs. On one unchanged

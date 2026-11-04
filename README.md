@@ -22,7 +22,7 @@ tests. The repository is not a fork of SGLang or of any V100 project.
 
 ## Status
 
-Seven components ship, all opt-in via `SGLANG_RESTOMOD_COMPONENTS`:
+Eight components ship, all opt-in via `SGLANG_RESTOMOD_COMPONENTS`:
 
 | component | what it does |
 |---|---|
@@ -30,6 +30,7 @@ Seven components ship, all opt-in via `SGLANG_RESTOMOD_COMPONENTS`:
 | `fp8_dense` | SM70 W8A16 dense FP8 linear kernels for the pinned engine. |
 | `attention_v100` | V100 full attention for the pin. Vendors `flash_attn_v100_backend.py`, the SM70 QSA backend and the `tilelang_fa_v100` kernels, registers the `tilelang_fa_v100` backend name (the pin does not define it), and implements `init_forward_metadata_out_graph` on the backend, which the graph runner calls and the base class leaves as a no-op. Without the last one a decode CUDA graph cannot capture; without the first two the launch does not start. |
 | `fp4_moe` | NVFP4 expert GEMM through the `marlin_v100` extension: load-time repack, SM70 scale encoding, and the GEMM bridge. The Marlin kernel SGLang ships is an empty body below SM80. |
+| `fp4_dense` | Dense NVFP4 (W4A16) linear GEMM through the `marlin_v100` extension. With `--fp4-gemm-backend marlin` the pin's `ModelOptFp4LinearMethod` already returns into `apply_fp4_marlin_linear` before it quantizes an activation, so a layer tagged `NVFP4` runs as W4A16 on Volta; only the kernel is missing. This routes the three names `marlin_utils_fp4` imports into its own namespace -- GEMM, repack, scale permute -- to the SM70 build, and collapses a fused layer's per-shard global scale the way the A16 method does. |
 | `ple_sm70` | SM70 decode for the fp8 PLE host-embedding gather, which the pinned kernel cannot compile because it casts to `tl.float8e4nv`. |
 | `spec_sm70` | top-k/top-p renorm replacements so non-greedy EAGLE verify does not reach FlashInfer's sm75 floor. |
 | `gdn_tilelang_sm70` | SM70 TileLang GDN chunked prefill. The pin's Triton chunk kernels take 63.9% of a 27B prefill chunk; this component answers the same call with a TileLang kernel: 1,933.6 / 1,924.9 tok/s at 8,041 prompt tokens and 1,658.3 / 1,655.1 at 31,158, against 719.9 and 684.6 on Triton (receipt `evidence-55cb6e7-gdn-tilelang`). |
