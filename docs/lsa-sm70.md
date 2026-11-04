@@ -13,6 +13,10 @@ local window and sinks.
 - Target: Qwen3.8-27B, the D-LSA (flat) design, 4x V100 in tensor parallel.
   GLM-5.3-Flash is out of scope: it stores fp8 weights and an MLA latent, and
   V100 has neither fp8 tensor cores nor the reference's Hopper read.
+- Standalone package: [Oaklight/lsa-sm70](https://github.com/Oaklight/lsa-sm70)
+  carries the same selection core and backend as an installable SGLang plugin.
+  This repository keeps the component form so the recipe and the receipt stay
+  with the rest of the V100 stack.
 
 ## What is ported
 
