@@ -44,14 +44,6 @@ def _admitted(name: str, module) -> bool:
         return False
     if any(name.endswith(suffix) for suffix in SKIP_SUFFIX):
         return False
-    # LinearBase exposes these two; a plain nn.Linear has neither and would
-    # bypass quant_method.apply entirely.
-    if not hasattr(module, "quant_method") or not hasattr(
-        module, "output_size_per_partition"
-    ):
-        return False
-    if "Unquantized" not in type(module.quant_method).__name__:
-        return False
     weight = getattr(module, "weight", None)
     if weight is None or weight.dim() != 2:
         return False
@@ -59,8 +51,26 @@ def _admitted(name: str, module) -> bool:
         return False
     if getattr(module, "weight_block_size", None) == [BLOCK, BLOCK]:
         return False
+    if not (_is_linear_base(module) or isinstance(module, torch.nn.Linear)):
+        return False
+    if _is_linear_base(module) and "Unquantized" not in type(
+        module.quant_method
+    ).__name__:
+        return False
     n, k = weight.shape
     return n % BLOCK == 0 and k % BLOCK == 0
+
+
+def _is_linear_base(module) -> bool:
+    """LinearBase exposes these two; a plain ``nn.Linear`` has neither."""
+    return hasattr(module, "quant_method") and hasattr(
+        module, "output_size_per_partition"
+    )
+
+
+def _plain_linear_forward(self, x):
+    """Forward for a converted ``nn.Linear``: route through the FP8 method."""
+    return self.quant_method.apply(self, x, self.bias)
 
 
 def convert(module) -> bool:
@@ -69,6 +79,7 @@ def convert(module) -> bool:
 
     from sglang_restomod.quant.sm70_fp8_lm_head import _quantize
 
+    plain = not _is_linear_base(module)
     q, scale = _quantize(module.weight.data.to(torch.float16))
 
     class _Config:
@@ -86,6 +97,8 @@ def convert(module) -> bool:
     module.input_size_per_partition = q.shape[1]
     module.quant_method = method
     method.process_weights_after_loading(module)
+    if plain:
+        module.forward = _plain_linear_forward.__get__(module, type(module))
     return True
 
 
@@ -104,6 +117,24 @@ def quantize_dense_linears(model) -> tuple[int, int]:
                 "sm70_fp8_dense_quant: %s stays on its original path (%s)", name, exc
             )
     return converted, refused
+
+
+def weight_holder_types(model) -> dict[str, int]:
+    """Count the module types that carry a 2-D float weight.
+
+    Logged once so a launch says which layer classes the admission saw, instead
+    of only how many it converted.
+    """
+    counts: dict[str, int] = {}
+    for _name, module in model.named_modules():
+        weight = getattr(module, "weight", None)
+        if weight is None or weight.dim() != 2:
+            continue
+        if weight.dtype not in (torch.float16, torch.bfloat16):
+            continue
+        key = type(module).__name__
+        counts[key] = counts.get(key, 0) + 1
+    return counts
 
 
 def install() -> bool:
@@ -130,9 +161,10 @@ def install() -> bool:
             converted, refused = quantize_dense_linears(self.model)
             logger.info(
                 "sm70_fp8_dense_quant: %d dense linears quantized to block FP8, "
-                "%d refused",
+                "%d refused; weight holders by type: %s",
                 converted,
                 refused,
+                weight_holder_types(self.model),
             )
         except Exception as exc:  # noqa: BLE001 - a BF16 server beats a dead one
             logger.warning("sm70_fp8_dense_quant: skipped (%s)", exc)

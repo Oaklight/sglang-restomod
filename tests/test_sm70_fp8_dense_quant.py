@@ -70,6 +70,16 @@ def test_a_plain_linear_without_quant_method_is_refused():
     assert not comp._admitted("model.layers.0.mlp.dense", layer)
 
 
+def test_a_real_nn_linear_is_admitted():
+    # The model's non-LinearBase projections are plain nn.Linear; convert()
+    # wraps their forward so quant_method.apply is reached.
+    assert comp._admitted("model.layers.0.mlp.dense", torch.nn.Linear(256, 256).to(torch.bfloat16))
+
+
+def test_a_plain_linear_is_not_admitted_when_unaligned():
+    assert not comp._admitted("model.layers.0.mlp.dense", torch.nn.Linear(320, 256).to(torch.bfloat16))
+
+
 def test_a_non_2d_weight_is_refused():
     layer = _layer((256,))
     assert not comp._admitted("model.layers.0.norm", layer)
