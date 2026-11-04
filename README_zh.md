@@ -83,9 +83,11 @@ decode 吞吐（tok/s），数据来自 `scripts/bench.py`。一行数据只有�
 | 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits | 5/6 | temp 1, default | 31372 | 80.7 / 82.6（2 请求，512 输出 token，合计） | receipt `evidence-e1924f3-serving-active` |
 | 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits | 5/6 | temp 1, default | 31372 | 117.8 / 125.4（4 请求，512 输出 token，合计） | receipt `evidence-e1924f3-serving-active` |
 | 27B | FP8，e5m2 KV，fp8 head | 2 | TP2，无 EP，40 KV splits | 5/6 | temp 1, default | 8037 | 75.76 / 68.45（1 请求，512 输出 token） | receipt `evidence-8b7aaef-inner-loop` |
+| 27B | FP8，e5m2 KV，fp8 head | 2 | TP2，无 EP，40 KV splits | 5/6 | temp 1, default | 8041 | 75.83 / 71.60（1 请求，512 输出 token） | receipt `evidence-175a630-e5m2-shift` |
 | 27B | FP8，e5m2 KV，fp8 head | 2 | TP2，无 EP，40 KV splits | 5/6 | temp 1, default | 8041 | 120.26 / 122.89（2 请求，512 输出 token，合计） | receipt `evidence-e3b28bb-fp8-lm-head` |
 | 27B | FP8，e5m2 KV，fp8 head | 2 | TP2，无 EP，40 KV splits | 5/6 | temp 1, default | 8041 | 212.12 / 200.68（4 请求，512 输出 token，合计） | receipt `evidence-e3b28bb-fp8-lm-head` |
 | 27B | FP8，e5m2 KV，fp8 head | 2 | TP2，无 EP，40 KV splits | 5/6 | temp 1, default | 31372 | 66.22 / 55.34（1 请求，512 输出 token） | receipt `evidence-8b7aaef-inner-loop` |
+| 27B | FP8，e5m2 KV，fp8 head | 2 | TP2，无 EP，40 KV splits | 5/6 | temp 1, default | 31358 | 60.93 / 70.17（1 请求，512 输出 token） | receipt `evidence-175a630-e5m2-shift` |
 | 27B | FP8，e5m2 KV，fp8 head | 2 | TP2，无 EP，40 KV splits | 5/6 | temp 1, default | 31372 | 95.71 / 97.68（2 请求，512 输出 token，合计） | receipt `evidence-e3b28bb-fp8-lm-head` |
 | 27B | FP8，e5m2 KV，fp8 head | 2 | TP2，无 EP，40 KV splits | 5/6 | temp 1, default | 31372 | 135.40 / 131.73（4 请求，512 输出 token，合计） | receipt `evidence-e3b28bb-fp8-lm-head` |
 | 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits，128k 上下文 | 3/4 | temp 1, top-p 0.95, top-k 20 | 127463 | 28.71 / 30.06 | receipt `evidence-dccc907-long-context` |
@@ -114,6 +116,7 @@ MTP 5/6 的行是同一套 e5m2 启动加上 `--speculative-num-steps 5` 与 `--
   一小时后 `303e162` 测得 70.32 tok/s。两个 head 在同等条件下的背靠背 A/B（pull request #96）显示
   commit 之间最多约 10% 的差异，因此那 19 tok/s 中剩下的部分来自主机状态，原因未确认。
 - FP8 行是 8 卡，NVFP4 行是 4 卡；可比较的量是单卡吞吐，不是整行总和。
+- `evidence-175a630-e5m2-shift` 两行与 `8b7aaef` 行是同一个启动配置，只是 verify kernel 的 FP8 查表换成位移。31.5k 处 6 次稳定 step 时间采样中位数为 53.1 ms，对照 57.1 ms（-6.2%）；单次 512 token 的运行本身分辨不出这个差异。
 - 新的签名 receipt 落地时更新此表，且只收录能引用 receipt 或 recipe 的数字。没有来源的行不得写入。
 
 哪些配置已验证、哪些仍在计划中，见 [`COMPATIBILITY.md`](COMPATIBILITY.md)：每种硬件与栈一行，每行都带收据或阻塞它的 issue。
