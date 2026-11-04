@@ -383,6 +383,9 @@ def get_paged_verify_kernels(
     gqa_ctas = math.ceil(group_size / heads_per_cta)
     max_splits = max(1, math.ceil(_verify_sm_target() / (batch * heads_kv * gqa_ctas)))
     block_n = {128: 64, 256: 32}.get(dim, 64)
+    _block_n_env = os.environ.get("SGLANG_V100_VERIFY_BLOCK_N")
+    if _block_n_env is not None:
+        block_n = int(_block_n_env)
     threads = 256
     if min_tokens_per_split is None:
         min_tokens_per_split = _verify_min_tokens_per_split()
