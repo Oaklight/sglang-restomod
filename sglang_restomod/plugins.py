@@ -51,6 +51,11 @@ COMPONENTS: dict[str, Component] = {
         module="sglang_restomod.quant.sm70_fp8_lm_head",
         description="Quantize the LM head to block FP8 after load, for the TurboMind kernel",
     ),
+    "fp8_dense_quant": Component(
+        name="fp8_dense_quant",
+        module="sglang_restomod.quant.sm70_fp8_dense_quant",
+        description="Quantize a BF16 checkpoint's dense linears to block FP8 after load",
+    ),
     "attention_v100": Component(
         name="attention_v100",
         module="sglang_restomod.attention.v100",
