@@ -27,6 +27,32 @@ VERIFY_Q_BLOCK = 16
 # value left only eight CTAs active at a 4K prefix on an 80-SM V100.
 VERIFY_MIN_TOKENS_PER_SPLIT = 128
 VERIFY_SM_TARGET = 80  # V100 SXM2 SM count; one memory-streaming CTA per SM.
+
+
+def _verify_stages():
+    """Return the pipeline depth for the verify partial kernel's tile loop.
+
+    Zero by default, which is what every other TileLang kernel in this tree
+    uses. The loop loads a K tile, computes against it, then loads V, so at
+    zero depth each tile's gather latency is exposed; ``SGLANG_V100_VERIFY_STAGES``
+    lets that be measured without editing the kernel.
+    """
+    value = os.environ.get("SGLANG_V100_VERIFY_STAGES")
+    if value is None:
+        return 0
+    try:
+        value = int(value)
+    except ValueError as exc:
+        raise ValueError(
+            "SGLANG_V100_VERIFY_STAGES must be a non-negative integer, "
+            f"got {value!r}."
+        ) from exc
+    if value < 0:
+        raise ValueError(
+            "SGLANG_V100_VERIFY_STAGES must be a non-negative integer, "
+            f"got {value}."
+        )
+    return value
 _LOG2_E = 1.4426950408889634
 
 
@@ -150,7 +176,8 @@ def _paged_verify_partial_kernel(
                 T.clear(K_shared)
                 T.clear(V_shared)
                 for tile_i in T.Pipelined(
-                    T.ceildiv(split_end - split_start, block_N), num_stages=0
+                    T.ceildiv(split_end - split_start, block_N),
+                    num_stages=_verify_stages(),
                 ):
                     tile_start = split_start + tile_i * block_N
                     for n, d in T.Parallel(block_N, dim):
@@ -389,6 +416,7 @@ def get_paged_verify_kernels(
         fp8_kv,
         e5m2_kv,
         min_tokens_per_split,
+        _verify_stages(),
     )
     if key not in _VERIFY_KERNEL_CACHE:
         partial = _paged_verify_partial_kernel(
