@@ -176,6 +176,12 @@ def _paged_verify_partial_kernel(
                                     kv_head,
                                     d4,
                                 ]
+                            else:
+                                # Zero matches what T.clear leaves in the
+                                # FP16 tile for an out-of-range row. Stale
+                                # bytes here could decode to NaN, and a NaN
+                                # times a zero attention weight stays NaN.
+                                K_raw[n, d4] = T.int32(0)
                         for n, d4 in T.Parallel(block_N, dim // 4):
                             word = K_raw[n, d4]
                             K_shared[n, d4 * 4 + 0] = T.reinterpret(
@@ -271,6 +277,12 @@ def _paged_verify_partial_kernel(
                                     kv_head,
                                     d4,
                                 ]
+                            else:
+                                # Zero matches what T.clear leaves in the
+                                # FP16 tile for an out-of-range row. Stale
+                                # bytes here could decode to NaN, and a NaN
+                                # times a zero attention weight stays NaN.
+                                V_raw[n, d4] = T.int32(0)
                         for n, d4 in T.Parallel(block_N, dim // 4):
                             word = V_raw[n, d4]
                             V_shared[n, d4 * 4 + 0] = T.reinterpret(
