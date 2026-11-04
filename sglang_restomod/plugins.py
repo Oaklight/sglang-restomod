@@ -56,6 +56,11 @@ COMPONENTS: dict[str, Component] = {
         module="sglang_restomod.attention.v100",
         description="V100 full-attention backend and its CUDA graph metadata hooks",
     ),
+    "lsa_sm70": Component(
+        name="lsa_sm70",
+        module="sglang_restomod.attention.lsa_sm70",
+        description="Latent Sparse Attention selection core for SM70 (backend staged)",
+    ),
     "sm70_marlin_v100": Component(
         name="sm70_marlin_v100",
         module="sglang_restomod.quant.sm70_marlin_v100",
