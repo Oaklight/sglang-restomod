@@ -1,4 +1,4 @@
-"""The smoke summary must not carry host, user or mount identity."""
+"""The smoke summary and its failure line carry no machine identity."""
 
 from __future__ import annotations
 
@@ -7,6 +7,8 @@ import importlib.util
 import json
 import pathlib
 import socket
+import sys
+import types
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
@@ -23,7 +25,20 @@ def _load():
 gpu_smoke = _load()
 
 
+def _fake_torch(available=False):
+    """A stand-in for torch that reports no usable device."""
+
+    class _Cuda:
+        @staticmethod
+        def is_available() -> bool:
+            return available
+
+    return types.SimpleNamespace(cuda=_Cuda())
+
+
 def test_summary_has_no_machine_identity(tmp_path, monkeypatch, capsys):
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch())
+
     fake_host = "bench-99." + "example.net"
     fake_user = "fake-operator"
     fake_home = "/".join(["", "home", fake_user])
@@ -40,24 +55,33 @@ def test_summary_has_no_machine_identity(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(getpass, "getuser", lambda: fake_user)
 
     out = tmp_path / "smoke.json"
-    assert gpu_smoke.main(["--json-out", str(out)]) == 0
+    assert gpu_smoke.main(["--json-out", str(out)]) == 1
 
     captured = capsys.readouterr()
     text = out.read_text()
     for needle in (fake_host, fake_user, fake_home):
         assert needle not in captured.out
+        assert needle not in captured.err
         assert needle not in text
 
     payload = json.loads(text)
-    assert set(payload) <= {
-        "schema",
-        "torch",
-        "cuda",
-        "device_count",
-        "devices",
-        "timings_ms",
-        "error",
-    }
-    for device in payload["devices"]:
-        assert set(device) == {"index", "name", "capability", "memory_mb"}
-    assert set(payload["timings_ms"]) <= {"matmul_1024_fp16", "copy_1024_fp16"}
+    assert set(payload) <= {"schema", "ok", "device_count", "checks", "error_check"}
+    assert payload["ok"] is False
+    assert payload["error_check"] == "cuda"
+    assert payload["checks"]["cuda"] == {"ok": False}
+
+
+def test_failure_is_one_line_on_stderr(tmp_path, monkeypatch, capsys):
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch())
+    out = tmp_path / "smoke.json"
+    assert gpu_smoke.main(["--json-out", str(out)]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    lines = captured.err.strip().splitlines()
+    assert len(lines) == 1
+    assert lines[0].startswith("FAILED: ")
+
+
+def test_json_out_is_required(capsys):
+    assert gpu_smoke.main([]) == 2
+    assert "json-out" in capsys.readouterr().err
