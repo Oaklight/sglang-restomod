@@ -69,6 +69,9 @@ All four are supplied out of band. This repository never records them.
 ## Related
 
 - Issue #12 covers the workflow-side gates (trigger, permissions, environment
-  approval).
+  approval). `.github/workflows/restomod-gpu.yml` is the workflow, and
+  `scripts/check_workflow_gates.py` fails `restomod-ci` when it gains a
+  pull-request trigger, a `secrets.` reference, a cache restore, an unpinned
+  action, or loses its environment gate.
 - Issue #13 covers this protocol and its audit.
 - `docs/gpu-receipts.md` covers what a job produces and how it is signed.

@@ -1,0 +1,48 @@
+name: restomod-gpu
+
+# Runs on the operator's GPU host through a self-hosted runner. It is not a
+# pull-request check: a fork must never reach the host. The gates this file
+# must satisfy are enforced by scripts/check_workflow_gates.py in restomod-ci.
+#
+# No secrets. The host environment provides the interpreter, the pinned tree
+# and the checkpoint; see docs/self-hosted-runner.md.
+
+on:
+  workflow_dispatch:
+  # schedule is added when a runner is registered for the label set below.
+  # Until then a schedule would only queue jobs no host can pick up.
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gpu-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    runs-on: [self-hosted, v100, gpu-2]
+    environment: gpu
+    timeout-minutes: 45
+    steps:
+      - name: Refuse any event but the two the workflow declares
+        run: |
+          case "$GITHUB_EVENT_NAME" in
+            workflow_dispatch|schedule) ;;
+            *) echo "refusing event $GITHUB_EVENT_NAME" >&2; exit 1 ;;
+          esac
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Machine-identity check
+        run: python scripts/check_identity.py
+
+      - name: SM70 smoke
+        # SGLANG_SMOKE_UPSTREAM, SGLANG_SMOKE_ENGINE_CONFIG and
+        # SGLANG_RESTOMOD_COMPONENTS come from the host environment the
+        # operator provisions. Nothing here names a machine.
+        run: |
+          python scripts/gpu_smoke.py --json-out "$RUNNER_TEMP/smoke.json"
+          cat "$RUNNER_TEMP/smoke.json"
