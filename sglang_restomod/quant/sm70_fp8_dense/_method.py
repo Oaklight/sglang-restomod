@@ -50,6 +50,7 @@ _QPN8_SRC_PATH = (
     else os.environ.get("SGLANG_SM70_QPN8_SRC")
 )
 _QPN8_EXT = None
+_QPN8_MISSING_LOGGED = False
 _QPN8_EXACT_DENSE_SHAPES = {
     "down_proj": (5120, 4352),
     "gate_up_proj": (8704, 5120),
@@ -197,6 +198,18 @@ def _is_sm70_fp8_qpn8_exact_dense_layer(layer: torch.nn.Module) -> bool:
 
 def _maybe_prepare_sm70_fp8_qpn8(layer: torch.nn.Module) -> None:
     if not _get_sm70_fp8_decode_qpn8_enabled():
+        return
+    # The decoder is JIT-built from a .cu that this distribution does not ship
+    # and that the pinned upstream has no path helper for. Without it the gate
+    # below would admit a layer and the build would raise at startup.
+    global _QPN8_MISSING_LOGGED
+    if _QPN8_SRC_PATH is None or not Path(_QPN8_SRC_PATH).is_file():
+        if not _QPN8_MISSING_LOGGED:
+            _QPN8_MISSING_LOGGED = True
+            logger.warning(
+                "sm70_fp8_dense: the QPN8 decode source is unavailable "
+                "(SGLANG_SM70_QPN8_SRC), decode GEMMs stay on TurboMind"
+            )
         return
     if not _is_sm70_fp8_qpn8_exact_dense_layer(layer):
         return
