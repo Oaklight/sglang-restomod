@@ -134,6 +134,14 @@ square shape, so the same-batch ratio is what the table shows. `fp8_dense` stays
 on TurboMind; the patch matters because the default was 2.7-4.4x off the time
 the kernel can reach, and any future Marlin-backed path pays it.
 
+### Guard
+
+`scripts/check_component_patches.py` reads `manifest.json` next to this file,
+clones `zhinianqin/marlin_v100` at the pinned commit, and requires the patch to
+apply, then reverse-apply. `restomod-patch-guard` runs it on every PR, which
+closes the gap the review noted: the top-level `patches/` check never sees a
+component patch, so without this it could rot unnoticed.
+
 ### Status
 
 `upstream_status: pending`. The account has pull-only access to
