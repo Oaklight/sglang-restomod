@@ -1,0 +1,54 @@
+// CCCL backport for the pinned FlashInfer headers under CUDA 12.x.
+//
+// flashinfer/sampling.cuh:40 selects its reduction operators with
+//
+//     using MaxReduceOp = cuda::maximum<>;
+//     using MinReduceOp = cuda::minimum<>;
+//
+// Those two function objects arrived in CCCL 3.0 (CUDA 13). CUDA 12.8 ships
+// CCCL 2.x, where <cuda/functional> only re-exports <cuda/std/functional>, so
+// every consumer of the header fails to compile with
+//
+//     error: namespace "cuda" has no member "maximum"
+//
+// The failure is a toolkit-version mismatch; GPU architecture is incidental.
+// This directory is placed on the JIT include path ahead of the toolkit, so
+// <cuda/functional> resolves here first. The rest of the header is taken from
+// the toolkit unchanged via #include_next, and the operators are defined only
+// when the toolkit predates CCCL 3.
+
+#ifndef SGLANG_RESTOMOD_CCCL_FUNCTIONAL_SHIM_
+#define SGLANG_RESTOMOD_CCCL_FUNCTIONAL_SHIM_
+
+#include_next <cuda/functional>
+
+#if defined(__CUDACC__) && __CUDACC_VER_MAJOR__ < 13
+
+namespace cuda {
+
+// Transparent binary operations with the CCCL 3 signature. A defaulted type
+// parameter keeps the `maximum<>` spelling used by the header. The operands
+// are forwarded, so the result keeps the value category of the selected one.
+template <typename = void>
+struct maximum {
+  template <typename T, typename U>
+  __host__ __device__ constexpr auto operator()(T&& a, U&& b) const
+      -> decltype(a < b ? static_cast<U&&>(b) : static_cast<T&&>(a)) {
+    return a < b ? static_cast<U&&>(b) : static_cast<T&&>(a);
+  }
+};
+
+template <typename = void>
+struct minimum {
+  template <typename T, typename U>
+  __host__ __device__ constexpr auto operator()(T&& a, U&& b) const
+      -> decltype(b < a ? static_cast<U&&>(b) : static_cast<T&&>(a)) {
+    return b < a ? static_cast<U&&>(b) : static_cast<T&&>(a);
+  }
+};
+
+}  // namespace cuda
+
+#endif  // __CUDACC_VER_MAJOR__ < 13
+
+#endif  // SGLANG_RESTOMOD_CCCL_FUNCTIONAL_SHIM_
