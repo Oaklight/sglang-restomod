@@ -108,14 +108,13 @@ Requirements and refusals, checked at startup:
    the same launch, greedy output is token-identical on 32 tokens at 2,048 and
    at 16,384 prompt tokens, with a mean absolute log-probability shift of
    6.7e-4 and 1.7e-4 nats. The 16,384-token request took 11.1 s against the
-   dense baseline's 15.5 s on the same host, 32 output tokens. The evidence
-   bundle for this commit is packed but not signed: the operator key is not on
-   the GPU host. The signing command is in `docs/gpu-receipts.md`.
-5. **Docs and compatibility** (partly done). This page, the component's
-   `PROVENANCE.md` and the README component table are in. The recipe and the
-   `COMPATIBILITY.md` row are withheld until the bundle is signed: this
-   repository adds a recipe only beside a `COMPATIBILITY.md` entry, and that
-   entry only after a receipted run.
+   bench in the evidence bundle records 445 / 259.5 tok/s prefill and 7.7 / 8.0
+   tok/s decode at 2k / 16k. The bundle is packed but not signed: the operator
+   key is not on the GPU host. The signing command is in `docs/gpu-receipts.md`.
+5. **Docs and compatibility** (done, receipt pending). This page, the
+   component's `PROVENANCE.md`, the README table, the recipe and the
+   `COMPATIBILITY.md` row are in, with the row marked as recorded and its
+   bundle awaiting the operator signature.
 
 ## Limits
 
