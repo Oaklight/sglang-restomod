@@ -87,9 +87,11 @@ here is comparable across those axes.
 | 27B | FP8, e5m2 KV | 2 | TP2, no EP, 40 KV splits | 5/6 | temp 1, default | 31372 | 80.7 / 82.6 (2 requests, 512 tokens, aggregate) | receipt `evidence-e1924f3-serving-active` |
 | 27B | FP8, e5m2 KV | 2 | TP2, no EP, 40 KV splits | 5/6 | temp 1, default | 31372 | 117.8 / 125.4 (4 requests, 512 tokens, aggregate) | receipt `evidence-e1924f3-serving-active` |
 | 27B | FP8, e5m2 KV, fp8 head | 2 | TP2, no EP, 40 KV splits | 5/6 | temp 1, default | 8037 | 75.76 / 68.45 (1 request, 512 tokens) | receipt `evidence-8b7aaef-inner-loop` |
+| 27B | FP8, e5m2 KV, fp8 head | 2 | TP2, no EP, 40 KV splits | 5/6 | temp 1, default | 8041 | 75.83 / 71.60 (1 request, 512 tokens) | receipt `evidence-175a630-e5m2-shift` |
 | 27B | FP8, e5m2 KV, fp8 head | 2 | TP2, no EP, 40 KV splits | 5/6 | temp 1, default | 8041 | 120.26 / 122.89 (2 requests, 512 tokens, aggregate) | receipt `evidence-e3b28bb-fp8-lm-head` |
 | 27B | FP8, e5m2 KV, fp8 head | 2 | TP2, no EP, 40 KV splits | 5/6 | temp 1, default | 8041 | 212.12 / 200.68 (4 requests, 512 tokens, aggregate) | receipt `evidence-e3b28bb-fp8-lm-head` |
 | 27B | FP8, e5m2 KV, fp8 head | 2 | TP2, no EP, 40 KV splits | 5/6 | temp 1, default | 31372 | 66.22 / 55.34 (1 request, 512 tokens) | receipt `evidence-8b7aaef-inner-loop` |
+| 27B | FP8, e5m2 KV, fp8 head | 2 | TP2, no EP, 40 KV splits | 5/6 | temp 1, default | 31358 | 60.93 / 70.17 (1 request, 512 tokens) | receipt `evidence-175a630-e5m2-shift` |
 | 27B | FP8, e5m2 KV, fp8 head | 2 | TP2, no EP, 40 KV splits | 5/6 | temp 1, default | 31372 | 95.71 / 97.68 (2 requests, 512 tokens, aggregate) | receipt `evidence-e3b28bb-fp8-lm-head` |
 | 27B | FP8, e5m2 KV, fp8 head | 2 | TP2, no EP, 40 KV splits | 5/6 | temp 1, default | 31372 | 135.40 / 131.73 (4 requests, 512 tokens, aggregate) | receipt `evidence-e3b28bb-fp8-lm-head` |
 | 27B | FP8, e5m2 KV | 2 | TP2, no EP, 40 KV splits, 128k ctx | 3/4 | temp 1, top-p 0.95, top-k 20 | 127463 | 28.71 / 30.06 | receipt `evidence-dccc907-long-context` |
@@ -137,6 +139,10 @@ How to read it:
   19 tok/s spread is host state, and it is unexplained.
 - FP8 rows use 8 cards, NVFP4 rows use 4. Per-card throughput is the
   comparable quantity, not the row total.
+- The `evidence-175a630-e5m2-shift` rows are the same launch as the
+  `8b7aaef` rows with the verify kernel's FP8 table lookup replaced by a bit
+  shift. Six steady step-time samples at 31.5k give 53.1 ms against 57.1
+  (median, -6.2%); a single 512-token run cannot resolve that on its own.
 - Update this table when a new signed receipt lands, and only with numbers that
   cite a receipt or a recipe. A row without a citation does not belong here.
 
