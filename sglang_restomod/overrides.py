@@ -184,6 +184,70 @@ def _install_cutlass_shim() -> bool:
     return True
 
 
+def _install_dflash_forward_bridge(model) -> None:
+    """Keep the draft forward on its own dtype whatever the caller passes.
+
+    The graph runner allocates its input buffers from the draft's model config,
+    which is fp16 because ``--dtype`` applies to the whole launch. The draft
+    itself is bf16, so the captured forward would mix the two. Cast the
+    embeddings at the entry instead of changing the config.
+    """
+    import torch
+
+    if getattr(model, "_restomod_forward_bridge", False):
+        return None
+    original = model.forward
+
+    # Keep the model's own signature: the CUDA graph runner decides whether to
+    # pass `input_embeds` by inspecting it.
+    def forward(
+        input_ids,
+        positions,
+        forward_batch,
+        input_embeds=None,
+        get_embedding=False,
+        pp_proxy_tensors=None,
+    ):
+        if torch.is_tensor(input_embeds) and input_embeds.dtype != torch.bfloat16:
+            input_embeds = input_embeds.to(torch.bfloat16)
+        return original(
+            input_ids,
+            positions,
+            forward_batch,
+            input_embeds=input_embeds,
+            get_embedding=get_embedding,
+            pp_proxy_tensors=pp_proxy_tensors,
+        )
+
+    model.forward = forward
+    model._restomod_forward_bridge = True
+    return None
+
+
+def _install_dflash_context_bridge(model) -> None:
+    """Feed the target's fp16 context features into a bf16 draft ``fc``.
+
+    ``project_target_hidden`` takes the target's captured hidden states, which
+    are fp16, and multiplies them by the draft's ``fc`` weight. With the draft
+    in bf16 that matmul raises. Cast the input to the weight dtype; the result
+    then stays in the draft's own dtype.
+    """
+    fc = getattr(model, "project_target_hidden", None)
+    if fc is None or getattr(model, "_restomod_context_bridge", False):
+        return None
+    weight = getattr(getattr(model, "fc", None), "weight", None)
+    if weight is None:
+        return None
+    original = fc
+
+    def project_target_hidden(target_hidden, *args, **kwargs):
+        return original(target_hidden.to(weight.dtype), *args, **kwargs)
+
+    model.project_target_hidden = project_target_hidden
+    model._restomod_context_bridge = True
+    return None
+
+
 def _install_force_fp16_cast() -> bool:
     """Cast bfloat16 weights to float16 after the model loads.
 
@@ -209,6 +273,25 @@ def _install_force_fp16_cast() -> bool:
             return result
         model = getattr(self, "model", None)
         if model is None:
+            return result
+        spec_algorithm = getattr(self, "spec_algorithm", None)
+        if (
+            getattr(self, "is_draft_worker", False)
+            and spec_algorithm is not None
+            and spec_algorithm.is_dflash_family()
+        ):
+            # The DFLASH draft is natively bf16 and its residual stream passes
+            # the fp16 range after one layer (attention out 2.2e4, MLP out
+            # 2.9e4, residual 5.8e4 against fp16 max 65504). Casting it to
+            # fp16 makes the draft NaN from layer 2, which zeroes acceptance.
+            # The attention backend takes bf16 activations and runs the kernel
+            # in fp16, so the draft can stay bf16 here.
+            model.to(torch.bfloat16)
+            _install_dflash_context_bridge(model)
+            _install_dflash_forward_bridge(model)
+            logger.info(
+                "sglang-restomod: kept the DFLASH draft in bfloat16 (sm70)"
+            )
             return result
         converted = 0
         for tensor in list(model.parameters()) + list(model.buffers()):

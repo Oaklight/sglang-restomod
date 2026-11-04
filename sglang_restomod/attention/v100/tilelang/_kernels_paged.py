@@ -273,7 +273,7 @@ def _paged_kernel_func(batch, heads, heads_kv, dim, page_block_size,
                                     block_N,
                                 ),
                             )
-                            if is_causal and sliding_window_size >= 0
+                            if sliding_window_size >= 0
                             else 0
                         )
                         loop_end = (
@@ -323,8 +323,25 @@ def _paged_kernel_func(batch, heads, heads_kv, dim, page_block_size,
                                     )
                             else:
                                 for i, j in T.Parallel(block_M, block_N):
+                                    q_pos = bx * block_M + i
+                                    kv_pos = k * block_N + j
+                                    # A non-causal layer keeps the window as a
+                                    # left bound only: every key position after
+                                    # the query is visible, as the DFLASH draft
+                                    # block requires.
+                                    window_ok = (
+                                        kv_pos
+                                        >= prefix_kv_lens[bz]
+                                        + q_pos
+                                        - sliding_window_size
+                                        if sliding_window_size >= 0
+                                        else True
+                                    )
                                     acc_s[i, j] = T.if_then_else(
-                                        k * block_N + j < cache_seqlens[bz], 0, -T.infinity(acc_s.dtype)
+                                        window_ok
+                                        & (kv_pos < cache_seqlens[bz]),
+                                        0,
+                                        -T.infinity(acc_s.dtype),
                                     )
 
                             T.gemm(Q_shared, K_ref, acc_s, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)

@@ -1,0 +1,7 @@
+{
+  "repo": "zhinianqin/marlin_v100",
+  "commit": "3f16d442cdb4c24dd225bbec196c982a54d9a31c",
+  "patches": [
+    "0001-splitk-from-occupancy.patch"
+  ]
+}
