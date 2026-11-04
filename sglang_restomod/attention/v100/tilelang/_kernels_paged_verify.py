@@ -387,6 +387,9 @@ def get_paged_verify_kernels(
     if _block_n_env is not None:
         block_n = int(_block_n_env)
     threads = 256
+    _threads_env = os.environ.get("SGLANG_V100_VERIFY_THREADS")
+    if _threads_env is not None:
+        threads = int(_threads_env)
     if min_tokens_per_split is None:
         min_tokens_per_split = _verify_min_tokens_per_split()
     key = (
