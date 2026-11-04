@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import logging
 
+import torch
+
 logger = logging.getLogger(__name__)
 
 
@@ -60,6 +62,10 @@ def install() -> bool:
             bias = args[2] if len(args) > 2 else kwargs.get("bias")
             if isinstance(x, tuple):
                 x = x[0]
+            if x.dtype != torch.float16:
+                # A bf16 draft calls the shared lm_head; the TurboMind kernel
+                # is fp16 only.
+                x = x.to(torch.float16)
             return kernels.apply_sm70_turbomind_fp8_linear(layer, x, bias)
         return orig_apply(self, *args, **kwargs)
 
