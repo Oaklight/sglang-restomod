@@ -623,6 +623,7 @@ def paged_forward(
             max_blocks=max_blocks,
             causal=causal,
             fp8_kv=fp8_kv,
+            e5m2_kv=fp8_dtype == torch.float8_e5m2,
         )
         if fp8_kv:
             # TileLang cannot lower a native FP8 operand for SM70. The verify

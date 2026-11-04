@@ -63,6 +63,7 @@ def _paged_verify_partial_kernel(
     block_N,
     threads,
     fp8_kv,
+    e5m2_kv,
     min_tokens_per_split,
 ):
     nt = T.dynamic("nt")
@@ -160,7 +161,15 @@ def _paged_verify_partial_kernel(
                             physical_page = block_table[batch_id, logical_page]
                             if fp8_kv:
                                 raw = K_cache[physical_page, page_offset, kv_head, d]
-                                K_shared[n, d] = FP8_LUT[T.cast(raw, T.int32)]
+                                if e5m2_kv:
+                                    # E5M2 and FP16 share sign and exponent
+                                    # positions, so this shift is an exact
+                                    # value conversion and avoids a dependent
+                                    # LUT load on the critical path.
+                                    bits = T.Cast("uint16", raw) << T.uint16(8)
+                                    K_shared[n, d] = T.reinterpret(bits, T.float16)
+                                else:
+                                    K_shared[n, d] = FP8_LUT[T.cast(raw, T.int32)]
                             else:
                                 K_shared[n, d] = K_cache[
                                     physical_page, page_offset, kv_head, d
@@ -216,7 +225,11 @@ def _paged_verify_partial_kernel(
                             physical_page = block_table[batch_id, logical_page]
                             if fp8_kv:
                                 raw = V_cache[physical_page, page_offset, kv_head, d]
-                                V_shared[n, d] = FP8_LUT[T.cast(raw, T.int32)]
+                                if e5m2_kv:
+                                    bits = T.Cast("uint16", raw) << T.uint16(8)
+                                    V_shared[n, d] = T.reinterpret(bits, T.float16)
+                                else:
+                                    V_shared[n, d] = FP8_LUT[T.cast(raw, T.int32)]
                             else:
                                 V_shared[n, d] = V_cache[
                                     physical_page, page_offset, kv_head, d
@@ -348,6 +361,7 @@ def get_paged_verify_kernels(
     max_blocks,
     causal,
     fp8_kv=False,
+    e5m2_kv=False,
     min_tokens_per_split=None,
 ):
     """Compile the grouped partial/combine pair for one CUDA-graph shape."""
@@ -373,6 +387,7 @@ def get_paged_verify_kernels(
         block_n,
         threads,
         fp8_kv,
+        e5m2_kv,
         min_tokens_per_split,
     )
     if key not in _VERIFY_KERNEL_CACHE:
@@ -389,6 +404,7 @@ def get_paged_verify_kernels(
             block_N=block_n,
             threads=threads,
             fp8_kv=fp8_kv,
+            e5m2_kv=e5m2_kv,
             min_tokens_per_split=min_tokens_per_split,
         )
         combine = _paged_verify_combine_kernel(
