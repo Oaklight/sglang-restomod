@@ -53,12 +53,12 @@ def _scan_top_p(
     # negatives invert. The sign bit of the packed key is flipped again so a
     # signed int64 sort orders by score, then by the lower id on a tie.
     bits = scores.to(tl.int32, bitcast=True)
-    ordered = bits ^ tl.where(bits < 0, -1, -2147483648)
-    high = ordered ^ -2147483648
-    key = high.to(tl.int64) * 4294967296 + (4294967295 - bucket.to(tl.int64))
+    ordered = bits ^ tl.where(bits < 0, -1, -(1 << 31))
+    high = ordered ^ -(1 << 31)
+    key = high.to(tl.int64) * (1 << 32) + (((1 << 32) - 1) - bucket.to(tl.int64))
     key = tl.sort(key, descending=True)
-    low = key & 4294967295
-    chosen = (4294967295 - low).to(tl.int32)
+    low = key & ((1 << 32) - 1)
+    chosen = (((1 << 32) - 1) - low).to(tl.int32)
     columns = tl.arange(0, buckets_pow2)
     tl.store(picked + row * top_p + columns, chosen, mask=columns < top_p)
 
@@ -164,7 +164,8 @@ def select_lists_triton(
         return lists, lengths
     candidates = {
         "index_dim": index_dim,
-        "buckets_pow2": _pow2(bucket_count),
+        # tl.sort has no size-1 path; an empty table sorts two masked lanes.
+        "buckets_pow2": max(2, _pow2(bucket_count)),
         "picks_pow2": _pow2(top_p),
         "top_p": top_p,
         "cluster_size": buckets.cluster_block_size,

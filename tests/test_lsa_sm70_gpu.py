@@ -212,3 +212,42 @@ def test_triton_selection_matches_the_torch_path_when_top_p_exceeds_the_buckets(
     assert torch.equal(on_kernels[1], on_torch[1])
     for row, length in enumerate(on_kernels[1].tolist()):
         assert torch.equal(on_kernels[0][row, :length], on_torch[0][row, :length])
+
+
+def test_triton_selection_with_no_closed_blocks():
+    torch = _require_sm70()
+    from sglang_restomod.attention.lsa_sm70.kernels import select_lists_triton
+    from sglang_restomod.attention.lsa_sm70.reference import Buckets, read
+
+    empty = Buckets(
+        torch.empty(0, 64, device="cuda"),
+        torch.empty(0, 16, dtype=torch.int32, device="cuda"),
+        torch.empty(0, dtype=torch.int32, device="cuda"),
+        64,
+        512,
+    )
+    queries = _unit_rows(torch, 4, 64, 9)
+    positions = torch.arange(4, dtype=torch.int64, device="cuda")
+
+    selected, lengths = select_lists_triton(
+        queries, positions, empty, top_p=16, top_k=64, sink_size=2, window_size=32
+    )
+    expected, expected_lengths = read(
+        queries.cpu(),
+        positions.cpu(),
+        Buckets(
+            torch.empty(0, 64),
+            torch.empty(0, 16, dtype=torch.int32),
+            torch.empty(0, dtype=torch.int32),
+            64,
+            512,
+        ),
+        top_p=16,
+        top_k=64,
+        sink_size=2,
+        window_size=32,
+    )
+
+    assert torch.equal(lengths.cpu(), expected_lengths)
+    for row, length in enumerate(lengths.tolist()):
+        assert torch.equal(selected[row, :length].cpu(), expected[row, :length])
