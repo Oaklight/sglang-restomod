@@ -30,8 +30,26 @@ def build_prompt(tok, n_tokens, seed_text):
     return tok.decode(full), len(full)
 
 
+def spec_fields(meta):
+    """Accept metrics from a final ``meta_info``, or {} when spec decoding is off.
+
+    The engine fills these only when it verified speculative drafts, so their
+    absence is how a non-spec launch is told apart from a spec launch that
+    accepted nothing.
+    """
+    if not meta:
+        return {}
+    out = {}
+    for key in ("spec_accept_length", "spec_accept_rate"):
+        if meta.get(key) is not None:
+            out[key.replace("spec_", "")] = round(float(meta[key]), 3)
+    if meta.get("spec_verify_ct"):
+        out["verify_ct"] = int(meta["spec_verify_ct"])
+    return out
+
+
 def stream_request(url, payload, timeout):
-    """Yield (kind, value) where kind is 'first' | 'token' | 'usage'."""
+    """Return timing, usage and the final ``meta_info`` of one streamed request."""
     body = json.dumps(payload).encode()
     headers = {"Content-Type": "application/json"}
     if API_KEY:
@@ -42,6 +60,7 @@ def stream_request(url, payload, timeout):
     n_tok = 0
     chunk_t = []
     usage = None
+    meta = None
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         for raw in resp:
             line = raw.decode("utf-8", "replace").strip()
@@ -56,6 +75,8 @@ def stream_request(url, payload, timeout):
                 continue
             if obj.get("usage"):
                 usage = obj["usage"]
+            if obj.get("meta_info"):
+                meta = obj["meta_info"]
             choices = obj.get("choices") or []
             if not choices:
                 continue
@@ -71,7 +92,27 @@ def stream_request(url, payload, timeout):
                 chunk_t.append(now)
     end_t = time.perf_counter()
     return {"t0": t0, "first_t": first_t, "end_t": end_t, "n_tok": n_tok,
-            "chunk_t": chunk_t, "usage": usage}
+            "chunk_t": chunk_t, "usage": usage, "meta": meta}
+
+
+def probe_spec_accept(host, prompt, output_tokens, timeout):
+    """One short ``/generate`` request, for the accept metrics it returns.
+
+    The OpenAI-compatible streaming path carries ``usage`` but not
+    ``meta_info``, so the timed reps cannot see the accept rate. ``/generate``
+    does return it, and accept length is a property of the draft rather than of
+    the request, so one probe per context is enough. The probe asks for the
+    bench's own output length, capped at 64: on a shorter reply the accept
+    length is dominated by the first few verify passes.
+    """
+    payload = {
+        "text": prompt,
+        "sampling_params": {"max_new_tokens": min(output_tokens, 64),
+                            "temperature": 0.0, "ignore_eos": True},
+        "stream": True,
+    }
+    r = stream_request(f"http://{host}/generate", payload, timeout)
+    return spec_fields(r.get("meta"))
 
 
 def summarize(r, label):
@@ -90,6 +131,7 @@ def summarize(r, label):
         "pure_decode_tps": round(max(out_tok - 1, 0) / dec, 2) if dec > 0 else None,
         "prefill_tps": round(prompt_tok / ttft, 1) if (prompt_tok and ttft > 0) else None,
         "total_s": round(r["end_t"] - r["t0"], 3),
+        **spec_fields(r.get("meta")),
     }
 
 
@@ -114,6 +156,9 @@ def main():
                     help="send chat_template_kwargs.enable_thinking=false")
     ap.add_argument("--fresh", action="store_true",
                     help="give each context a unique prefix so prefill is cold")
+    ap.add_argument("--no-spec-accept", dest="spec_accept", action="store_false",
+                    help="skip the /generate probe that records the accept "
+                         "length and rate (run when the endpoint has no /generate)")
     ap.add_argument("--model-dir", default=MODEL_DIR,
                     help="tokenizer source; defaults to $QLAB_MODEL_DIR")
     ap.add_argument("--api-key", default=API_KEY,
@@ -231,9 +276,16 @@ def main():
                     else:
                         active_s = 0.0
                 burst_s = max(burst_s, 1e-6)
+                # Accept length is tokens per verify pass, so it pools by
+                # verify count, not by request: the batch shares no state.
+                verify = sum(
+                    (o["meta"] or {}).get("spec_verify_ct") or 0 for o in done
+                )
+                accept = round(tot / verify, 3) if verify else None
                 s = {"label": f"ctx{ctx} C{args.concurrency} rep{rep+1}",
                      "requests": args.concurrency,
                      "tokens": tot,
+                     "accept_length": accept,
                      "aggregate_decode_tps": (
                          round(active_tot / active_s, 2) if active_s > 0 else None
                      ),
@@ -247,6 +299,22 @@ def main():
                      "wall_s": round(wall, 3)}
                 results.append(s)
                 print(json.dumps(s))
+
+        # After the timed reps, so the probe cannot move a number. A server
+        # without speculative decoding reports no fields; that is recorded, not
+        # treated as a failure.
+        if args.spec_accept:
+            try:
+                fields = probe_spec_accept(
+                    args.host, prompt, args.output_tokens, args.timeout
+                )
+                row = {"label": f"ctx{ctx} spec-accept", **fields}
+                if not fields:
+                    row["note"] = "no spec metrics in the response"
+            except Exception as exc:  # noqa: BLE001 - a probe must not fail the bench
+                row = {"label": f"ctx{ctx} spec-accept", "error": str(exc)}
+            results.append(row)
+            print(json.dumps(row))
 
     print("\n=== SUMMARY ===")
     print(json.dumps(results, indent=2))
