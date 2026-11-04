@@ -82,10 +82,9 @@ regression check, bench at 8k and 32k against the launch under test and read the
 32k decode rate against the recipe's expected floor.
 
 The suite also compares the declared component list against that
-`server_info.json` and writes `launch_check.txt`: the two components whose
-effect reaches a server argument (`attention_v100`,
-`spec_sm70`) are checked by value, and a mismatch stops the run before the
-bench. A component that raises while registering is skipped by the loader and
+`server_info.json` and writes `launch_check.txt`: the components whose
+effect reaches a server argument (`attention_v100`, `spec_sm70`, `lsa_sm70`)
+are checked by value, and a mismatch stops the run before the bench. A component that raises while registering is skipped by the loader and
 the launch then serves under the same flag with the engine's own backend, which
 is the failure this catches.
 
