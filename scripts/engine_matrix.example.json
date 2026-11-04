@@ -1,0 +1,26 @@
+{
+  "engines": [
+    {
+      "name": "vanilla",
+      "python": "/path/to/python",
+      "env": {"PYTHONPATH": "/path/to/engine/tree"}
+    },
+    {
+      "name": "fork",
+      "python": "/path/to/python",
+      "env": {"PYTHONPATH": "/path/to/fork/python"},
+      "args": ["--attention-backend", "fa_v100"]
+    }
+  ],
+  "launch": {
+    "model_path": "/path/to/checkpoint",
+    "tp_size": 2,
+    "port_base": 12100,
+    "context_length": 8192,
+    "startup_timeout_s": 600
+  },
+  "forward": {
+    "prompt": "The capital of France is",
+    "max_new_tokens": 8
+  }
+}
