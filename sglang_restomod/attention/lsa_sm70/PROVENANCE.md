@@ -71,5 +71,6 @@ reference uses when its CuTeDSL kernels are unavailable.
 | `LsaSm70Backend` and Qwen wiring | written here, end-to-end on 4x V100 |
 | fused Triton scan/top-k/expansion | not started |
 | CUDA graph capture | refused; the selection is host-orchestrated |
+| signed GPU receipt | evidence packed, signing pending the operator key |
 
 No numbers are claimed in `COMPATIBILITY.md` until a receipted run exists.

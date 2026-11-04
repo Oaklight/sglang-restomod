@@ -104,9 +104,16 @@ Requirements and refusals, checked at startup:
    request answers correctly; against the dense `tilelang_fa_v100` baseline on
    the same launch, greedy output is token-identical on 32 tokens at 2,048 and
    at 16,384 prompt tokens, with a mean absolute log-probability shift of
-   2e-6 and 4.5e-4 nats. The receipted run is in `COMPATIBILITY.md`.
-5. **Docs and compatibility** (done). This page, the component's
-   `PROVENANCE.md`, the README component table and the `COMPATIBILITY.md` row.
+   2e-6 and 4.5e-4 nats. The evidence bundle is packed (12 files, archive
+   sha256 `044370185ee4fa3dfec2a23b46bcdab9faae700fa5432fefdc9fcea8e4da42ba`,
+   `gpu_tests.txt` 10 passed / 1 skipped); it is not signed yet, because the
+   operator key is not on this host. The signing command is in
+   `docs/gpu-receipts.md`.
+5. **Docs and compatibility** (partly done). This page, the component's
+   `PROVENANCE.md` and the README component table are in. The recipe and the
+   `COMPATIBILITY.md` row are withheld until the bundle is signed: this
+   repository adds a recipe only beside a `COMPATIBILITY.md` entry, and that
+   entry only after a receipted run.
 
 ## Limits
 
