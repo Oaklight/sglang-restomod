@@ -176,11 +176,24 @@ def _paged_verify_partial_kernel(
                                     kv_head,
                                     d4,
                                 ]
-                        for n, d in T.Parallel(block_N, dim):
-                            word = K_raw[n, T.floordiv(d, 4)]
-                            byte = (word >> T.Cast("int32", (d % 4) * 8)) & T.int32(255)
-                            bits = T.Cast("uint16", byte) << T.uint16(8)
-                            K_shared[n, d] = T.reinterpret(bits, T.float16)
+                        for n, d4 in T.Parallel(block_N, dim // 4):
+                            word = K_raw[n, d4]
+                            K_shared[n, d4 * 4 + 0] = T.reinterpret(
+                                T.Cast("uint16", (word & 255)) << T.uint16(8),
+                                T.float16,
+                            )
+                            K_shared[n, d4 * 4 + 1] = T.reinterpret(
+                                T.Cast("uint16", ((word >> 8) & 255)) << T.uint16(8),
+                                T.float16,
+                            )
+                            K_shared[n, d4 * 4 + 2] = T.reinterpret(
+                                T.Cast("uint16", ((word >> 16) & 255)) << T.uint16(8),
+                                T.float16,
+                            )
+                            K_shared[n, d4 * 4 + 3] = T.reinterpret(
+                                T.Cast("uint16", ((word >> 24) & 255)) << T.uint16(8),
+                                T.float16,
+                            )
                     else:
                         for n, d in T.Parallel(block_N, dim):
                             kv_i = tile_start + n
@@ -258,11 +271,24 @@ def _paged_verify_partial_kernel(
                                     kv_head,
                                     d4,
                                 ]
-                        for n, d in T.Parallel(block_N, dim):
-                            word = V_raw[n, T.floordiv(d, 4)]
-                            byte = (word >> T.Cast("int32", (d % 4) * 8)) & T.int32(255)
-                            bits = T.Cast("uint16", byte) << T.uint16(8)
-                            V_shared[n, d] = T.reinterpret(bits, T.float16)
+                        for n, d4 in T.Parallel(block_N, dim // 4):
+                            word = V_raw[n, d4]
+                            V_shared[n, d4 * 4 + 0] = T.reinterpret(
+                                T.Cast("uint16", (word & 255)) << T.uint16(8),
+                                T.float16,
+                            )
+                            V_shared[n, d4 * 4 + 1] = T.reinterpret(
+                                T.Cast("uint16", ((word >> 8) & 255)) << T.uint16(8),
+                                T.float16,
+                            )
+                            V_shared[n, d4 * 4 + 2] = T.reinterpret(
+                                T.Cast("uint16", ((word >> 16) & 255)) << T.uint16(8),
+                                T.float16,
+                            )
+                            V_shared[n, d4 * 4 + 3] = T.reinterpret(
+                                T.Cast("uint16", ((word >> 24) & 255)) << T.uint16(8),
+                                T.float16,
+                            )
                     else:
                         for n, d in T.Parallel(block_N, dim):
                             kv_i = tile_start + n
