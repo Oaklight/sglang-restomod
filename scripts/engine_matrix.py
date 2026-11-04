@@ -93,11 +93,35 @@ def tail(path: str, limit: int = 4000) -> str:
         return ""
 
 
+_GENERIC = ("sigquit", "child failed", "no health response")
+
+
 def first_error(log: str) -> str:
+    """The most specific line a failure left behind.
+
+    A dead scheduler reports ``signum=None ... child failed`` after the real
+    exception, so a plain reverse scan returns the notice instead of the
+    cause. Prefer the last exception line of the last traceback, then any
+    line that names an error and is not one of those notices.
+    """
+    marker = "Traceback (most recent call last)"
+    if marker in log:
+        block = log[log.rfind(marker) :]
+        # The scheduler logs more after the exception (signals, teardown);
+        # those lines start with a timestamp, the exception does not.
+        lines = [
+            line.strip()
+            for line in block.splitlines()
+            if line.strip() and not line.lstrip().startswith("[")
+        ]
+        if lines:
+            return redact(lines[-1])[:300]
     lines = [line.strip() for line in log.splitlines() if line.strip()]
     for line in reversed(lines):
         low = line.lower()
-        if "error" in low or "traceback" in low or "failed" in low or "exception" in low:
+        if any(token in low for token in _GENERIC):
+            continue
+        if "error" in low or "exception" in low or "failed" in low:
             return redact(line)[:300]
     return redact(lines[-1])[:300] if lines else ""
 
