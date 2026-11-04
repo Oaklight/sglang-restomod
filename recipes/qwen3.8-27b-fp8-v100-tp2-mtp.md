@@ -324,8 +324,14 @@ SGLANG_27B_SPEC=auto
 ```
 
 If you set the flags by hand, keep `--speculative-*` off above 49152 and drop
-`SGLANG_V100_DRAFT_NATIVE` with them. A purely decode-bound job at 48-64k can
-still run MTP for a ~0-15% decode gain, at the prefill cost above.
+`SGLANG_V100_DRAFT_NATIVE` with them.
+
+Measured on `d1a0f43882`, cold prefix, 128 output tokens, one server restart
+per arm: at 31,756 tokens MTP 5/4 nearly doubles decode (79.38 / 69.46 against
+36.22 / 36.21) for 8% of the prefill; at 64,012 it is already a **-27% decode**
+and -2% prefill loss (25.19 / 25.21 against 34.68 / 34.64); at 127,012 it is
+-25% decode and -10% prefill. So the crossover sits between 32k and 64k, and
+there is no 48-64k band where MTP still pays on decode.
 
 ## Long context
 
