@@ -64,6 +64,7 @@ def _paged_verify_partial_kernel(
     threads,
     fp8_kv,
     e5m2_kv,
+    vec_kv,
     min_tokens_per_split,
 ):
     nt = T.dynamic("nt")
@@ -73,10 +74,14 @@ def _paged_verify_partial_kernel(
     block_M = max(64, VERIFY_Q_BLOCK * heads_per_cta)
 
     q_shape = [nt, heads, dim]
-    kv_shape = [num_pages, page_block_size, heads_kv, dim]
+    kv_width = dim // 4 if vec_kv else dim
+    kv_shape = [num_pages, page_block_size, heads_kv, kv_width]
     partial_o_shape = [batch, max_splits, VERIFY_Q_BLOCK, heads, dim]
     partial_lse_shape = [batch, max_splits, VERIFY_Q_BLOCK, heads]
-    kv_dtype = T.uint8 if fp8_kv else T.float16
+    if vec_kv:
+        kv_dtype = T.int32
+    else:
+        kv_dtype = T.uint8 if fp8_kv else T.float16
 
     @T.prim_func
     def main(
@@ -100,6 +105,12 @@ def _paged_verify_partial_kernel(
             Q_shared = T.alloc_shared([block_M, dim], T.float16)
             K_shared = T.alloc_shared([block_N, dim], T.float16)
             V_shared = T.alloc_shared([block_N, dim], T.float16)
+            if vec_kv:
+                # One 32-bit load per four KV bytes: the gather is bound by
+                # outstanding requests, not by bytes, so widening the element
+                # is what buys memory-level parallelism.
+                K_raw = T.alloc_shared([block_N, dim // 4], T.int32)
+                V_raw = T.alloc_shared([block_N, dim // 4], T.int32)
             P_shared = T.alloc_shared([block_M, block_N], T.float16)
 
             acc_s = T.alloc_fragment([block_M, block_N], T.float32)
@@ -153,27 +164,45 @@ def _paged_verify_partial_kernel(
                     T.ceildiv(split_end - split_start, block_N), num_stages=0
                 ):
                     tile_start = split_start + tile_i * block_N
-                    for n, d in T.Parallel(block_N, dim):
-                        kv_i = tile_start + n
-                        logical_page = T.floordiv(kv_i, page_block_size)
-                        page_offset = kv_i - logical_page * page_block_size
-                        if kv_i < split_end:
-                            physical_page = block_table[batch_id, logical_page]
-                            if fp8_kv:
-                                raw = K_cache[physical_page, page_offset, kv_head, d]
-                                if e5m2_kv:
-                                    # E5M2 and FP16 share sign and exponent
-                                    # positions, so this shift is an exact
-                                    # value conversion and avoids a dependent
-                                    # LUT load on the critical path.
-                                    bits = T.Cast("uint16", raw) << T.uint16(8)
-                                    K_shared[n, d] = T.reinterpret(bits, T.float16)
-                                else:
-                                    K_shared[n, d] = FP8_LUT[T.cast(raw, T.int32)]
-                            else:
-                                K_shared[n, d] = K_cache[
-                                    physical_page, page_offset, kv_head, d
+                    if vec_kv:
+                        for n, d4 in T.Parallel(block_N, dim // 4):
+                            kv_i = tile_start + n
+                            logical_page = T.floordiv(kv_i, page_block_size)
+                            page_offset = kv_i - logical_page * page_block_size
+                            if kv_i < split_end:
+                                K_raw[n, d4] = K_cache[
+                                    block_table[batch_id, logical_page],
+                                    page_offset,
+                                    kv_head,
+                                    d4,
                                 ]
+                        for n, d in T.Parallel(block_N, dim):
+                            word = K_raw[n, T.floordiv(d, 4)]
+                            byte = (word >> T.Cast("int32", (d % 4) * 8)) & T.int32(255)
+                            bits = T.Cast("uint16", byte) << T.uint16(8)
+                            K_shared[n, d] = T.reinterpret(bits, T.float16)
+                    else:
+                        for n, d in T.Parallel(block_N, dim):
+                            kv_i = tile_start + n
+                            logical_page = T.floordiv(kv_i, page_block_size)
+                            page_offset = kv_i - logical_page * page_block_size
+                            if kv_i < split_end:
+                                physical_page = block_table[batch_id, logical_page]
+                                if fp8_kv:
+                                    raw = K_cache[physical_page, page_offset, kv_head, d]
+                                    if e5m2_kv:
+                                        # E5M2 and FP16 share sign and exponent
+                                        # positions, so this shift is an exact
+                                        # value conversion and avoids a dependent
+                                        # LUT load on the critical path.
+                                        bits = T.Cast("uint16", raw) << T.uint16(8)
+                                        K_shared[n, d] = T.reinterpret(bits, T.float16)
+                                    else:
+                                        K_shared[n, d] = FP8_LUT[T.cast(raw, T.int32)]
+                                else:
+                                    K_shared[n, d] = K_cache[
+                                        physical_page, page_offset, kv_head, d
+                                    ]
 
                     for row, n in T.Parallel(block_M, block_N):
                         q_i = T.floordiv(row, heads_per_cta)
@@ -217,23 +246,41 @@ def _paged_verify_partial_kernel(
                     for row in T.Parallel(block_M):
                         l_i[row] += row_sum[row]
 
-                    for n, d in T.Parallel(block_N, dim):
-                        kv_i = tile_start + n
-                        logical_page = T.floordiv(kv_i, page_block_size)
-                        page_offset = kv_i - logical_page * page_block_size
-                        if kv_i < split_end:
-                            physical_page = block_table[batch_id, logical_page]
-                            if fp8_kv:
-                                raw = V_cache[physical_page, page_offset, kv_head, d]
-                                if e5m2_kv:
-                                    bits = T.Cast("uint16", raw) << T.uint16(8)
-                                    V_shared[n, d] = T.reinterpret(bits, T.float16)
-                                else:
-                                    V_shared[n, d] = FP8_LUT[T.cast(raw, T.int32)]
-                            else:
-                                V_shared[n, d] = V_cache[
-                                    physical_page, page_offset, kv_head, d
+                    if vec_kv:
+                        for n, d4 in T.Parallel(block_N, dim // 4):
+                            kv_i = tile_start + n
+                            logical_page = T.floordiv(kv_i, page_block_size)
+                            page_offset = kv_i - logical_page * page_block_size
+                            if kv_i < split_end:
+                                V_raw[n, d4] = V_cache[
+                                    block_table[batch_id, logical_page],
+                                    page_offset,
+                                    kv_head,
+                                    d4,
                                 ]
+                        for n, d in T.Parallel(block_N, dim):
+                            word = V_raw[n, T.floordiv(d, 4)]
+                            byte = (word >> T.Cast("int32", (d % 4) * 8)) & T.int32(255)
+                            bits = T.Cast("uint16", byte) << T.uint16(8)
+                            V_shared[n, d] = T.reinterpret(bits, T.float16)
+                    else:
+                        for n, d in T.Parallel(block_N, dim):
+                            kv_i = tile_start + n
+                            logical_page = T.floordiv(kv_i, page_block_size)
+                            page_offset = kv_i - logical_page * page_block_size
+                            if kv_i < split_end:
+                                physical_page = block_table[batch_id, logical_page]
+                                if fp8_kv:
+                                    raw = V_cache[physical_page, page_offset, kv_head, d]
+                                    if e5m2_kv:
+                                        bits = T.Cast("uint16", raw) << T.uint16(8)
+                                        V_shared[n, d] = T.reinterpret(bits, T.float16)
+                                    else:
+                                        V_shared[n, d] = FP8_LUT[T.cast(raw, T.int32)]
+                                else:
+                                    V_shared[n, d] = V_cache[
+                                        physical_page, page_offset, kv_head, d
+                                    ]
 
                     for row, n in T.Parallel(block_M, block_N):
                         P_shared[row, n] = T.cast(acc_s[row, n], T.float16)
@@ -362,6 +409,7 @@ def get_paged_verify_kernels(
     causal,
     fp8_kv=False,
     e5m2_kv=False,
+    vec_kv=None,
     min_tokens_per_split=None,
 ):
     """Compile the grouped partial/combine pair for one CUDA-graph shape."""
@@ -372,6 +420,10 @@ def get_paged_verify_kernels(
     max_splits = max(1, math.ceil(VERIFY_SM_TARGET / (batch * heads_kv * gqa_ctas)))
     block_n = {128: 64, 256: 32}.get(dim, 64)
     threads = 256
+    if vec_kv is None:
+        vec_kv = e5m2_kv and os.environ.get("SGLANG_V100_VERIFY_VEC_GATHER", "1") != "0"
+    if vec_kv and dim % 4:
+        raise ValueError(f"vectorised KV gather needs dim % 4 == 0, got {dim}")
     if min_tokens_per_split is None:
         min_tokens_per_split = _verify_min_tokens_per_split()
     key = (
@@ -388,6 +440,7 @@ def get_paged_verify_kernels(
         threads,
         fp8_kv,
         e5m2_kv,
+        vec_kv,
         min_tokens_per_split,
     )
     if key not in _VERIFY_KERNEL_CACHE:
@@ -405,6 +458,7 @@ def get_paged_verify_kernels(
             threads=threads,
             fp8_kv=fp8_kv,
             e5m2_kv=e5m2_kv,
+            vec_kv=vec_kv,
             min_tokens_per_split=min_tokens_per_split,
         )
         combine = _paged_verify_combine_kernel(

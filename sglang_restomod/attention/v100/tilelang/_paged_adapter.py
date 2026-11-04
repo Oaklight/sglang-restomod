@@ -613,6 +613,12 @@ def paged_forward(
         and D <= 256
         and num_tokens <= B * VERIFY_Q_BLOCK
     ):
+        e5m2_kv = fp8_dtype == torch.float8_e5m2
+        vec_kv = (
+            e5m2_kv
+            and D % 4 == 0
+            and os.environ.get("SGLANG_V100_VERIFY_VEC_GATHER", "1") != "0"
+        )
         partial, combine, _ = get_paged_verify_kernels(
             batch=B,
             heads=num_heads,
@@ -623,9 +629,15 @@ def paged_forward(
             max_blocks=max_blocks,
             causal=causal,
             fp8_kv=fp8_kv,
-            e5m2_kv=fp8_dtype == torch.float8_e5m2,
+            e5m2_kv=e5m2_kv,
+            vec_kv=vec_kv,
         )
-        if fp8_kv:
+        if vec_kv:
+            # The kernel reads four KV bytes per element; int32 keeps the
+            # storage while giving TileLang an element it can vectorise.
+            k_cache = k_cache.view(torch.int32)
+            v_cache = v_cache.view(torch.int32)
+        elif fp8_kv:
             # TileLang cannot lower a native FP8 operand for SM70. The verify
             # kernel accepts the same storage as bytes and decodes each value
             # into FP16 shared memory before WMMA.
