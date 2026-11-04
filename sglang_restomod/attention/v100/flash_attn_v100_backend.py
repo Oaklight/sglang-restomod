@@ -31,6 +31,8 @@ import torch
 from sglang.srt.layers.attention.base_attn_backend import AttentionBackend
 from sglang.srt.layers.radix_attention import AttentionType
 
+from .masks import resolve_layer_mask
+
 if TYPE_CHECKING:
     from sglang.srt.layers.radix_attention import RadixAttention
     from sglang.srt.model_executor.forward_batch_info import ForwardBatch
@@ -59,17 +61,12 @@ def _get_native_paged_attention_params(
     layer: "RadixAttention", default_causal: bool
 ) -> tuple[bool, int]:
     """Resolve the per-layer mask used by the native paged extend kernel."""
-    causal = default_causal and not (
-        layer.is_cross_attention or layer.attn_type == AttentionType.ENCODER_ONLY
+    return resolve_layer_mask(
+        default_causal=default_causal,
+        is_cross_attention=bool(layer.is_cross_attention),
+        is_encoder_only=layer.attn_type == AttentionType.ENCODER_ONLY,
+        sliding_window_size=layer.sliding_window_size,
     )
-    sliding_window_size = (
-        int(layer.sliding_window_size)
-        if causal
-        and layer.sliding_window_size is not None
-        and layer.sliding_window_size >= 0
-        else -1
-    )
-    return causal, sliding_window_size
 
 
 def _is_dflash_draft_native_shape_supported(

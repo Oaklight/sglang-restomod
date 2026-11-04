@@ -62,3 +62,38 @@ def test_delegates_decode_metadata_to_triton():
     )
     assert backend._triton.called is True
     assert backend.forward_metadata is None
+
+
+def test_encoder_only_layer_keeps_its_window():
+    from sglang_restomod.attention.v100.masks import resolve_layer_mask
+
+    causal, window = resolve_layer_mask(
+        default_causal=True,
+        is_cross_attention=False,
+        is_encoder_only=True,
+        sliding_window_size=2047,
+    )
+    assert causal is False
+    assert window == 2047
+
+
+def test_causal_layer_keeps_its_window():
+    from sglang_restomod.attention.v100.masks import resolve_layer_mask
+
+    assert resolve_layer_mask(
+        default_causal=True,
+        is_cross_attention=False,
+        is_encoder_only=False,
+        sliding_window_size=2047,
+    ) == (True, 2047)
+
+
+def test_layer_without_a_window_gets_minus_one():
+    from sglang_restomod.attention.v100.masks import resolve_layer_mask
+
+    assert resolve_layer_mask(
+        default_causal=True,
+        is_cross_attention=False,
+        is_encoder_only=True,
+        sliding_window_size=None,
+    ) == (False, -1)
