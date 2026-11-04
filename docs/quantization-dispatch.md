@@ -111,8 +111,8 @@ Known limits:
   format concern.
 
 Receipts: see `docs/gpu-receipts.md`. The two recorded runs are
-`docs/runs/2026-10-25-qwen3.8-27b-fp8-lambda12.md` and
-`docs/runs/2026-10-25-qwen3.8-27b-fp8-cuda-graph-lambda12.md`.
+`docs/runs/2026-10-25-qwen3.8-27b-fp8-node-b.md` and
+`docs/runs/2026-10-25-qwen3.8-27b-fp8-cuda-graph-node-b.md`.
 
 ## Registration
 

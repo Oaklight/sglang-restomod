@@ -43,7 +43,7 @@ process.
 ## Measured
 
 Qwen3.8-27B-FP8, TP2, 2x V100-SXM2-32GB, chunked prefill 4096, prompt built at
-an exact token count, fresh prompts, greedy, lambda12, 2026-11-02.
+an exact token count, fresh prompts, greedy, node-b, 2026-11-02.
 
 | context | Triton GDN (tok/s) | TileLang GDN (tok/s) | TTFT |
 |---|---|---|---|
@@ -55,7 +55,7 @@ Greedy continuations are byte-identical to the Triton baseline at 8,192 and
 hit) and the 32k path that requests mamba state checkpoints.
 
 The TileLang rows are the signed run behind `evidence-55cb6e7-gdn-tilelang`
-(`scripts/gpu_suite.sh` on lambda12 at `55cb6e7`, `versions.txt` = sglang
+(`scripts/gpu_suite.sh` on node-b at `55cb6e7`, `versions.txt` = sglang
 0.5.22, the pin); the Triton rows are the earlier `bench.py` runs on the same
 box with the same launcher.
 

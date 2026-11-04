@@ -30,20 +30,20 @@ A missing receipt is `unverified` (failure), never a skip.
 
 | Host | Holds | Does |
 |---|---|---|
-| GPU host (`lambda1`, `lambda4`, `lambda12`) | the checkout, the GPU | runs the suite, writes evidence, packs the archive |
-| Operator host (`cloud.usa3`) | `/root/.ssh/outboard` (private key), `oob` | signs the statement |
+| GPU host | the checkout, the GPU | runs the suite, writes evidence, packs the archive |
+| Operator host | the private key, `oob` | signs the statement |
 | GitHub | `.github/allowed_signers` | verifies and publishes the check |
 
 The key never leaves the operator host. The GPU host only produces data.
 
-`oob` 0.5.0 is installed in the shared conda prefix and works on every lambda
+`oob` 0.5.0 is installed in the shared conda prefix and works on every GPU
 node without a container:
 
 ```sh
-OOB=/nfs/lambda_stor_01/homes/pding/qlab/env/conda/sglang-v100-py312/bin/oob
+OOB=/path/to/conda/bin/oob
 ```
 
-On the operator host it is `/root/outboard-venv/bin/oob`.
+On the operator host it is a dedicated venv's `oob`.
 
 ## Operator runbook
 
@@ -108,6 +108,19 @@ the engine under test before running it, or the bundle will name whatever
 (for example a fork under `/var/tmp`), and then a correct benchmark is
 described by the wrong version line.
 
+The bundle is published, so the suite scrubs it before packing.
+`scripts/redact_evidence.py` rewrites absolute paths under a home or site
+mount, NVIDIA serial numbers, UUIDs and bus ids, the `host=` line, and every
+name in `IDENTITY_DENYLIST`. `redaction.txt` records the count per rule and
+never the replaced value. Pass the same list the CI check reads:
+
+Export the repository secret `IDENTITY_DENYLIST` before running the suite.
+Do not write its value into a shell history, a script, or this repository.
+
+`scripts/check_identity.py` is the same rule set applied to the committed tree.
+It fails on a fully-qualified domain name, a home-directory path, an absolute
+path under a site mount, a long digit-only token, or a denylisted name.
+
 Copy `/tmp/evidence.tgz` to the operator host, and upload it to an HTTPS
 location the verifier can reach (a release asset, an internal static host, or
 any signed public URL).
@@ -115,15 +128,15 @@ any signed public URL).
 ### 2. Sign on the operator host
 
 ```sh
-/root/outboard-venv/bin/oob sign \
+oob sign \
   --job gpu-bench \
   --commit <full-sha> \
   --result pass \
-  --evidence-dir /root/evidence/<sha> \
-  --key /root/.ssh/outboard \
+  --evidence-dir evidence/<sha> \
+  --key <operator-key> \
   --repo Oaklight/sglang-restomod \
   --claims evidence_url=https://example.invalid/<sha>.tgz \
-  --out /root/receipt.md
+  --out receipt.md
 ```
 
 `--claims evidence_url=...` lets the verifier find the archive without a
@@ -134,7 +147,7 @@ which is different from `unverified`.
 Render a readable comment before posting:
 
 ```sh
-/root/outboard-venv/bin/oob render --block /root/receipt.md
+oob render --block receipt.md
 ```
 
 ### 3. Deliver the receipt
@@ -161,7 +174,7 @@ Pull request and comment events always require the archive.
 ## Key rotation
 
 1. Generate a new ed25519 key on the operator host:
-   `ssh-keygen -t ed25519 -N "" -C "gpu operator" -f /root/.ssh/outboard-next`.
+   `ssh-keygen -t ed25519 -N "" -C "gpu operator" -f <key-file>`.
 2. Add its public half to `.github/allowed_signers` as a second line.
 3. Switch signing to the new key and verify one receipt.
 4. Remove the old line in a follow-up commit.

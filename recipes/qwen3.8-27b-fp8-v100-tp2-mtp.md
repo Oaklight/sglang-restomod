@@ -42,7 +42,7 @@ single largest decode change on this model at long context:
 | 8,204 | 42.99 / 46.16 tok/s | **60.40 / 64.50** |
 | 31,756 | 17.89 / 17.86 tok/s | **41.48 / 44.71** |
 
-Greedy, 128 output tokens, two reps, lambda12, accept length 2.73-3.12 in both
+Greedy, 128 output tokens, two reps, node-b, accept length 2.73-3.12 in both
 arms. Prefill is unchanged. The flag defaults off because the CUDA graph capture
 path still routes a draft extend to Triton; on this model the draft extend runs
 eagerly, so the capture path is not exercised. Receipt
@@ -303,7 +303,7 @@ collapse, but it did not remove the per-row prefix read: every verify row and
 every draft row still streams the whole prefix, so the step cost keeps growing
 with context while the tokens per step stay at ~2.9.
 
-Measured 2026-10-27 on lambda4 and lambda12, 2x V100, e5m2, graph on, greedy,
+Measured 2026-10-27 on node-a and node-b, 2x V100, e5m2, graph on, greedy,
 64 output tokens, 2 reps. The 128k arm was run on both hosts and agrees to
 0.1%:
 
@@ -351,7 +351,7 @@ signature — see the crossover section — so read them as MTP rows):
 ### Current: graph on, no MTP, two-CTA decode partial
 
 27B-FP8, TP2, e5m2, greedy, 192 output tokens, prefix cache hitting after the
-first rep, lambda12, `SGLANG_27B_SPEC=auto` (so no MTP above 49152) and the
+first rep, node-b, `SGLANG_27B_SPEC=auto` (so no MTP above 49152) and the
 decode CUDA graph on, which was only the launcher default from 2026-10-28:
 
 | context | prefill tok/s | TTFT | decode tok/s |
@@ -458,7 +458,7 @@ The tier is 1,029,904 tokens (16.87 GB) of host KV per rank plus 15.14 GB of
 host Mamba state, 2.6x the device pool.
 
 **Decode after a restore.** The copy costs TTFT, not steady state. Measured
-2026-11-03 on lambda12, same launch, 14 distinct 30k-token documents against a
+2026-11-03 on node-b, same launch, 14 distinct 30k-token documents against a
 30k prompt, greedy: the restored prefix answers its first token in 0.43 / 0.33 s
 and decodes at 43.84 / 42.77 tok/s, against 43.25 / 49.36 with a cold prefill.
 The spread between two cold reps is as wide as the gap, so a restored prefix
@@ -483,7 +483,7 @@ is required.
 Two settings decide whether the disk tier does anything at all. 24 distinct
 30,720-token documents (737k tokens) against a 397k-token device pool and an
 **8 GB** host tier (8.4 documents), two passes in order. **All three rows are
-lambda4** (503 GB RAM); the last section of this block is the lambda12 result
+node-a** (503 GB RAM); the last section of this block is the node-b result
 for the same launcher:
 
 | arm | round 1 | round 2 |
@@ -509,20 +509,20 @@ also decodes at the same rate as a freshly prefilled one (median 32.63 vs
 byte-identical, so the win is not paid for during generation and does not change
 what the model says.
 
-**Not portable to lambda12.** The same launcher on lambda12 (125 GB RAM), same
+**Not portable to node-b.** The same launcher on node-b (125 GB RAM), same
 24 documents, same 8 GB host tier, gives **0/23 disk hits** on the second pass:
 documents 1-23 take 18.44-18.73 s each, against 17.3-18.3 s to re-prefill, and
-the file backend does write (`/tmp/hicache` grew by ~90k files). On lambda12
+the file backend does write (`/tmp/hicache` grew by ~90k files). On node-b
 `--hicache-host-memory-mode buffer_only` is 4x better than `write_back` for the
 same workload:
 
-| arm, lambda12, 24 documents, 8 GB tier | fill pass | second pass |
+| arm, node-b, 24 documents, 8 GB tier | fill pass | second pass |
 |---|---|---|
 | `write_back`, `cache` | 18.5-18.9 s | 0/23 hits, 18.44-18.73 s |
 | `write_through`, `buffer_only` | 2.0-7.9 s | 5/23 at 1.70-2.10 s, 18 at 3.47-7.11 s |
 
 The cause of the host difference is unconfirmed; restomod #84 tracks it. Treat
-the disk tier as a lambda4 result until that issue closes, and do not apply the
+the disk tier as a node-a result until that issue closes, and do not apply the
 `write_back` row to another host without re-measuring.
 
 `--hicache-host-memory-mode buffer_only` cannot be combined with `write_back`:
@@ -608,6 +608,6 @@ expectation. Neither magnitude reorders a greedy decode.
 - The first request after startup is much slower while prefill kernels JIT. A
   benchmark has to warm up or it quotes the warmup.
 
-Run records: [docs/runs/2026-10-26-qwen3.8-27b-mtp-lambda12.md](../docs/runs/2026-10-26-qwen3.8-27b-mtp-lambda12.md),
+Run records: [docs/runs/2026-10-26-qwen3.8-27b-mtp-node-b.md](../docs/runs/2026-10-26-qwen3.8-27b-mtp-node-b.md),
 [docs/runs/2026-10-26-qwen3.8-27b-kv-dtype-mtp-crossover.md](../docs/runs/2026-10-26-qwen3.8-27b-kv-dtype-mtp-crossover.md).
 Launcher: `scripts/serve_sglang_27b_v100.sh` in the lab repository.
