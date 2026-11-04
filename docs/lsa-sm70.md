@@ -89,12 +89,15 @@ Requirements and refusals, checked at startup:
    CPU tests against the reference's invariants, including the exactness
    anchor: at a budget at least the context, the selected set is the causal
    prefix.
-2. **SM70 selection** (done, as the dense-matmul path). The first path the
-   reference takes below its fused-scan gate: score every visible bucket with a
-   matmul, top-p with a stable sort, expand in rank order. It runs on the device
-   and is tested against the core oracle on an SM70 device. The fused Triton
-   scan, top-k and expansion kernels are not ported; they are a performance
-   follow-up, not a correctness gap.
+2. **SM70 selection kernels** (done). `kernels.py` carries two Triton
+   programs. `_scan_top_p` scores every visible bucket in fp32, packs
+   `(score, bucket)` into one int64 key and sorts it descending, so a tie goes
+   to the lower bucket; `_expand` walks the picks best first with a two-level
+   cumsum, cuts at `top_k`, then writes the window and the sinks. Both are
+   tested against the core oracle on an SM70 device, and on a 1,024-row chunk
+   they measure 0.28 ms against the torch path's 1.75 ms at 2,048 keys. The
+   reference's own fused scan is not vendored; this is a smaller pair of
+   kernels with the same rules.
 3. **Backend** (done). `LsaSm70Backend(AttentionBackend)` builds the per-layer
    index from q/k, maintains the per-request bucket table, selects for prefill
    and decode, and reads through `decode_attention_fwd`. Under tensor parallel
@@ -119,10 +122,9 @@ Requirements and refusals, checked at startup:
 - Prefill selection is host-orchestrated in the reference and here; decode
   selection is not yet graph-capturable either, because the first path keeps
   the bucket table on the host. Serve with `--disable-cuda-graph`.
-- Selection uses `torch.argsort` a chunk of rows at a time. It is not the
-  reference's fused scan. A 16,384-token request with 32 output tokens took
-  63.9 s against the dense baseline's 15.5 s on the same host, with decode not
-  separated from prefill. Speed is not claimed.
+- Selection is a pair of Triton programs a row, not the reference's fused
+  scan. Speed is not claimed: the first end-to-end path is tuned for
+  correctness.
 - An fp8 KV cache is refused. The reference keeps a separate bf16 index-key
   buffer for that case; this port projects from the pool.
 

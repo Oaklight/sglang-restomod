@@ -27,6 +27,7 @@ The serving path, written here against those semantics:
 |---|---|
 | `design.py` | the flat design's knobs and a request's bucket table |
 | `selection.py` | `reference.read` vectorized a chunk of rows at a time |
+| `kernels.py` | the same rules as two Triton programs, on CUDA |
 | `read.py` | the sparse read through the pinned `decode_attention_fwd` |
 | `backend.py` | `LsaSm70Backend(AttentionBackend)` |
 | `backend_registry.py` | registers `lsa_sm70` with the pinned engine |
@@ -36,10 +37,9 @@ The serving path, written here against those semantics:
 - `src/lsa/core/kernels/cutedsl/` - Hopper WGMMA and Blackwell `tcgen05`
   kernels. The reference dispatches them only on H200/B300, so they are dead
   weight on sm70.
-- `src/lsa/core/kernels/triton/` - the fused scan, top-k and expansion
-  kernels. The first serving path scores every visible bucket with a matmul
-  (the reference's own path below its fused-scan gate) and selects with
-  `torch.argsort`; the fused kernels are a later optimization.
+- `src/lsa/core/kernels/triton/` - the reference's fused scan, top-k and
+  expansion kernels. They carry the shape machinery this port does not use;
+  `kernels.py` implements the same rules as two smaller programs instead.
 - `src/lsa/core/shape.py` - bucket shapes. The target design scores centroids
   (`bucket_shape: null`, `node_bucket_shape: null`).
 - `src/lsa/core/hierarchy.py` - the fixed/tree hierarchy. The first target is
@@ -69,7 +69,7 @@ reference uses when its CuTeDSL kernels are unavailable.
 | vectorized selection | written here, CPU- and GPU-tested against the oracle |
 | sparse read | written here, GPU-tested against a dense gather |
 | `LsaSm70Backend` and Qwen wiring | written here, end-to-end on 4x V100 |
-| fused Triton scan/top-k/expansion | not started |
+| Triton scan/top-p and expansion | written here, GPU-tested against the oracle |
 | CUDA graph capture | refused; the selection is host-orchestrated |
 | signed GPU receipt | evidence packed, signing pending the operator key |
 

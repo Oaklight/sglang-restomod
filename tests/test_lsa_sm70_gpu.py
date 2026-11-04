@@ -152,3 +152,63 @@ def test_selected_lists_read_matches_a_dense_gather():
     expected = _dense_read(torch, q, kv, kv, selected, lengths, scale)
 
     assert torch.allclose(out.float(), expected, atol=2e-2, rtol=2e-2)
+
+
+def test_triton_selection_matches_the_cpu_oracle_at_the_serving_shape():
+    torch = _require_sm70()
+    from sglang_restomod.attention.lsa_sm70.kernels import select_lists_triton
+    from sglang_restomod.attention.lsa_sm70.reference import build_buckets, read
+
+    sizes = dict(pool_size=4, bucket_size=8, bucket_cap=16, cluster_block_size=512)
+    keys = _unit_rows(torch, 2048, 64, 5)
+    queries = _unit_rows(torch, 8, 64, 6)
+    positions = torch.tensor([0, 1, 511, 512, 1023, 1024, 1500, 2047], dtype=torch.int64)
+    buckets = build_buckets(keys, **sizes)
+
+    selected, lengths = select_lists_triton(
+        queries, positions.cuda(), buckets, top_p=512, top_k=2048, sink_size=4, window_size=512
+    )
+    expected, expected_lengths = read(
+        queries.cpu(),
+        positions,
+        build_buckets(keys.cpu(), **sizes),
+        top_p=512,
+        top_k=2048,
+        sink_size=4,
+        window_size=512,
+    )
+
+    assert torch.equal(lengths.cpu(), expected_lengths)
+    for row, length in enumerate(lengths.tolist()):
+        assert torch.equal(selected[row, :length].cpu(), expected[row, :length])
+
+
+def test_triton_selection_matches_the_torch_path_when_top_p_exceeds_the_buckets():
+    torch = _require_sm70()
+    from sglang_restomod.attention.lsa_sm70.kernels import select_lists_triton
+    from sglang_restomod.attention.lsa_sm70.reference import build_buckets
+    from sglang_restomod.attention.lsa_sm70.selection import select_lists
+
+    sizes = dict(pool_size=4, bucket_size=8, bucket_cap=16, cluster_block_size=64)
+    keys = _unit_rows(torch, 192, 64, 7)
+    queries = _unit_rows(torch, 16, 64, 8)
+    positions = torch.arange(0, 192, 12, dtype=torch.int64, device="cuda")
+    buckets = build_buckets(keys, **sizes)
+
+    on_kernels = select_lists_triton(
+        queries, positions, buckets, top_p=16, top_k=32, sink_size=2, window_size=64
+    )
+    on_torch = select_lists(
+        queries,
+        positions,
+        buckets,
+        top_p=16,
+        top_k=32,
+        sink_size=2,
+        window_size=64,
+        use_kernels=False,
+    )
+
+    assert torch.equal(on_kernels[1], on_torch[1])
+    for row, length in enumerate(on_kernels[1].tolist()):
+        assert torch.equal(on_kernels[0][row, :length], on_torch[0][row, :length])

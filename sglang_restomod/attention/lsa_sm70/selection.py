@@ -33,6 +33,7 @@ def select_lists(
     window_size: int,
     early_budget: EarlyBudget | None = None,
     chunk: int = 1024,
+    use_kernels: bool = True,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Select the keys each query reads, a chunk of rows at a time.
 
@@ -46,12 +47,26 @@ def select_lists(
         window_size: Recent positions always read, the query's own included.
         early_budget: The budget of queries before its position, or None.
         chunk: Rows selected at once.
+        use_kernels: Run the Triton programs on a CUDA tensor; the torch path
+            is the oracle's, chunked.
 
     Returns:
         Selected key ids [Tq, top_k + window_size + sink_size] int32 - the
         expansion, then the window, then the sinks, -1 padded.
         Keys each row holds [Tq] int32.
     """
+    if use_kernels and early_budget is None and index_queries.is_cuda:
+        from .kernels import select_lists_triton
+
+        return select_lists_triton(
+            index_queries,
+            positions,
+            buckets,
+            top_p=top_p,
+            top_k=top_k,
+            sink_size=sink_size,
+            window_size=window_size,
+        )
     rows = index_queries.shape[0]
     width = top_k + window_size + sink_size
     selected = torch.full((rows, width), PAD, dtype=torch.int32, device=index_queries.device)
