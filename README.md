@@ -28,6 +28,7 @@ Eight components ship, all opt-in via `SGLANG_RESTOMOD_COMPONENTS`:
 |---|---|
 | `fp8_moe` | block-FP8 expert GEMM on sm70. The TurboMind library SGLang ships for SM70 exports `fp8_moe_gemm_sm70_out` but never registers it with torch; this resolves the symbol with a small `dlopen`/`dlsym` shim and exposes a typed surface. This is what makes the official block-FP8 MoE checkpoints runnable on V100. |
 | `fp8_dense` | SM70 W8A16 dense FP8 linear kernels for the pinned engine. |
+| `fp8_dense_quant` | Quantizes a BF16 checkpoint's dense linears to block FP8 after load and hands them to `fp8_dense`, because at M=1..4 those GEMMs are bandwidth-bound and the byte count is the cost. Admission is narrow: 2-D weight, both sides a multiple of the 128 block, not an expert, not the LM head. On Flash-Next NVFP4 the decode step falls 32.79 -> 31.08 ms with `fp8_lm_head` (issue #95). |
 | `attention_v100` | V100 full attention for the pin. Vendors `flash_attn_v100_backend.py`, the SM70 QSA backend and the `tilelang_fa_v100` kernels, registers the `tilelang_fa_v100` backend name (the pin does not define it), and implements `init_forward_metadata_out_graph` on the backend, which the graph runner calls and the base class leaves as a no-op. Without the last one a decode CUDA graph cannot capture; without the first two the launch does not start. |
 | `fp4_moe` | NVFP4 expert GEMM through the `marlin_v100` extension: load-time repack, SM70 scale encoding, and the GEMM bridge. The Marlin kernel SGLang ships is an empty body below SM80. |
 | `ple_sm70` | SM70 decode for the fp8 PLE host-embedding gather, which the pinned kernel cannot compile because it casts to `tl.float8e4nv`. |
@@ -83,6 +84,8 @@ here is comparable across those axes.
 | 27B | FP8, e5m2 KV | 2 | TP2, no EP, 40 KV splits | 3/4 | temp 1, top-p 0.95, top-k 20 | 32112 | 54.39 / 46.69 | receipt `evidence-7e15a2b-fp8-draft-extend` |
 | 27B | FP8, e5m2 KV | 2 | TP2, no EP, 40 KV splits | 5/6 | temp 1, top-p 0.95, top-k 20 | 8034 | 80.01 / 66.98 | receipt `evidence-5097450-spec-steps` |
 | 27B | FP8, e5m2 KV | 2 | TP2, no EP, 40 KV splits | 5/6 | temp 1, top-p 0.95, top-k 20 | 32138 | 61.62 / 46.39 | receipt `evidence-5097450-spec-steps` |
+| 27B | FP8, e5m2 KV | 2 | TP2, no EP, 40 KV splits | 5/6 | temperature 0 | 4023 | 80.62 / 85.07 | receipt `evidence-d0054cfd-bench-spec` |
+| 27B | FP8, e5m2 KV | 2 | TP2, no EP, 40 KV splits | 5/6 | temperature 0 | 32138 | 61.57 / 69.99 | receipt `evidence-d0054cfd-bench-spec` |
 | 27B | FP8, e5m2 KV | 2 | TP2, no EP, 40 KV splits | 5/6 | temp 1, default | 8041 | 107.1 / 106.4 (2 requests, 512 tokens, aggregate) | receipt `evidence-e1924f3-serving-active` |
 | 27B | FP8, e5m2 KV | 2 | TP2, no EP, 40 KV splits | 5/6 | temp 1, default | 8041 | 181.8 / 181.3 (4 requests, 512 tokens, aggregate) | receipt `evidence-e1924f3-serving-active` |
 | 27B | FP8, e5m2 KV | 2 | TP2, no EP, 40 KV splits | 5/6 | temp 1, default | 31372 | 80.7 / 82.6 (2 requests, 512 tokens, aggregate) | receipt `evidence-e1924f3-serving-active` |
