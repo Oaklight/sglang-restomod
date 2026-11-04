@@ -30,6 +30,47 @@ from .scales import encode_global_scale, encode_scales
 logger = logging.getLogger(__name__)
 
 ENV_MODE = "SGLANG_SM70_FP4_MOE"
+ENV_STATS = "SGLANG_SM70_FP4_MOE_STATS"
+_STATS: dict[str, float] = {}
+
+
+def _record_moe_stats(expert_ids, num_tokens_post_padded, size_m: int, block: int) -> None:
+    """Count decode MoE blocks when ``SGLANG_SM70_FP4_MOE_STATS`` is set.
+
+    ``size_m`` is the batch the call was issued for, so a decode step (size_m
+    at or below 8) is counted apart from a prefill chunk, which would otherwise
+    dominate the average. It logs the padded rows, the block size and the
+    distinct experts over the valid slice only.
+    """
+    import logging
+
+    if os.environ.get(ENV_STATS, "").strip().lower() not in ("1", "true", "on", "yes"):
+        return
+    if size_m > 8:
+        return
+    if torch.cuda.is_current_stream_capturing():
+        # .item() syncs, which invalidates a CUDA graph capture.
+        return
+    rows = int(num_tokens_post_padded.max().item())
+    blocks = max(rows // max(block, 1), 1)
+    experts = int(torch.unique(expert_ids[:blocks]).numel())
+    stats = _STATS
+    stats["calls"] = stats.get("calls", 0) + 1
+    stats["rows"] = stats.get("rows", 0) + rows
+    stats["experts"] = stats.get("experts", 0) + experts
+    stats["block"] = block
+    if stats["calls"] % 96 == 0:  # one decode step is 48 layers x 2 calls
+        n = stats["calls"]
+        logging.getLogger(__name__).info(
+            "fp4_moe decode stats: %d calls (%.1f steps), rows/call %.1f, "
+            "block %d, distinct experts/call %.1f",
+            n,
+            n / 96,
+            stats["rows"] / n,
+            stats["block"],
+            stats["experts"] / n,
+        )
+        _STATS.clear()
 
 
 def _mode() -> str:
@@ -215,6 +256,7 @@ def moe_wna16_marlin_gemm(
             "SM70 NVFP4 Marlin does not support expert parallelism; "
             "launch with --ep-size 1"
         )
+    _record_moe_stats(expert_ids, num_tokens_post_padded, size_m, moe_block_size)
     op = ensure_loaded().gemm
     return op(
         a,
