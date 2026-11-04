@@ -137,6 +137,53 @@ def weight_holder_types(model) -> dict[str, int]:
     return counts
 
 
+def refusal_reason(name: str, module) -> str | None:
+    """Return why ``_admitted`` refuses this module, or None when it admits it.
+
+    Kept next to ``_admitted`` so the log explains a count instead of leaving
+    the reader to guess which of six checks rejected a layer.
+    """
+    if not name:
+        return "unnamed"
+    if any(part in name for part in SKIP_PREFIX):
+        return "expert"
+    if any(name.endswith(suffix) for suffix in SKIP_SUFFIX):
+        return "lm_head"
+    weight = getattr(module, "weight", None)
+    if weight is None or weight.dim() != 2:
+        return "no-2d-weight"
+    if weight.dtype not in (torch.float16, torch.bfloat16):
+        return "dtype"
+    if getattr(module, "weight_block_size", None) == [BLOCK, BLOCK]:
+        return "already-fp8"
+    if not (_is_linear_base(module) or isinstance(module, torch.nn.Linear)):
+        return "not-a-linear"
+    if _is_linear_base(module) and "Unquantized" not in type(
+        module.quant_method
+    ).__name__:
+        return "method:" + type(module.quant_method).__name__
+    n, k = weight.shape
+    if n % BLOCK or k % BLOCK:
+        return f"shape:{n}x{k}"
+    return None
+
+
+def admission_report(model) -> dict[str, dict[str, int]]:
+    """Per module type, how many layers each refusal reason accounts for."""
+    report: dict[str, dict[str, int]] = {}
+    for name, module in model.named_modules():
+        weight = getattr(module, "weight", None)
+        if weight is None or weight.dim() != 2:
+            continue
+        if weight.dtype not in (torch.float16, torch.bfloat16):
+            continue
+        key = type(module).__name__
+        bucket = report.setdefault(key, {})
+        reason = refusal_reason(name, module) or "admitted"
+        bucket[reason] = bucket.get(reason, 0) + 1
+    return report
+
+
 def install() -> bool:
     """Quantize the dense linears once, after the model weights are loaded."""
     from sglang.srt.layers.quantization.fp8 import Fp8LinearMethod
@@ -158,13 +205,16 @@ def install() -> bool:
     def load_model(self):
         result = original(self)
         try:
+            # The report runs first: after conversion the admitted layers read
+            # as already-fp8.
+            report = admission_report(self.model)
             converted, refused = quantize_dense_linears(self.model)
             logger.info(
                 "sm70_fp8_dense_quant: %d dense linears quantized to block FP8, "
-                "%d refused; weight holders by type: %s",
+                "%d refused; admission by type: %s",
                 converted,
                 refused,
-                weight_holder_types(self.model),
+                report,
             )
         except Exception as exc:  # noqa: BLE001 - a BF16 server beats a dead one
             logger.warning("sm70_fp8_dense_quant: skipped (%s)", exc)
