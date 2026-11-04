@@ -41,11 +41,11 @@ of the model, so a single number would not generalize.
 
 Every scheme reuses the target's verify pass and the draft-decode container.
 For MTP/NEXTN the draft decode is the Triton multi-step backend
-(`TritonMultiStepDraftBackend`), and at long context it is the second-largest
-term in the step: 38.2 ms of a ~102 ms step at 130k with 40 KV splits, against
-1.3 ms for one layer of the native verify kernel over the same KV. That cost is
-shared by every scheme that drafts autoregressively, which is why #76 item 2 is
-ahead of any new scheme in this list.
+(`TritonMultiStepDraftBackend`). At 130k on the 27B it costs 80.3 ms per step at
+the default 8 KV splits and 38.2 ms at 80 splits, against 1.3 ms for one layer
+of the native verify kernel over the same KV (`decode-at-130k-splits.md`). That
+cost is shared by every scheme that drafts autoregressively, which is why #76
+item 2 is ahead of any new scheme in this list.
 
 ## Not confirmed
 
