@@ -51,6 +51,7 @@ include = ["sglang_restomod*"]
 "sglang_restomod.attention.lsa_sm70" = ["PROVENANCE.md"]
 "sglang_restomod.quant.sm70_fp8_moe" = ["*.cpp", "README.md"]
 "sglang_restomod.quant.sm70_fp4_moe" = ["PROVENANCE.md"]
+"sglang_restomod.quant.sm70_fp4_dense" = ["PROVENANCE.md"]
 "sglang_restomod.quant.sm70_marlin_v100" = ["patches/*.patch", "patches/README.md"]
 "sglang_restomod.spec" = ["cccl/cuda/functional"]
 
