@@ -35,6 +35,7 @@ shapes that is a few rows, so it does not dominate the step.
 from __future__ import annotations
 
 import functools
+import inspect
 import logging
 import os
 import sys
@@ -185,18 +186,51 @@ def install() -> bool:
     return True
 
 
+def _positional_index(func, name: str) -> int | None:
+    """Index of ``name`` in ``func``'s positional parameters, or None.
+
+    None when the parameter is absent, is keyword-only, or sits behind
+    ``*args``: in those cases the caller cannot pass it positionally and the
+    keyword path is the only one that exists.
+    """
+    try:
+        parameters = list(inspect.signature(func).parameters.values())
+    except (TypeError, ValueError):
+        return None
+    for index, parameter in enumerate(parameters):
+        if parameter.name == name:
+            return index
+        if parameter.kind is inspect.Parameter.VAR_POSITIONAL:
+            return None
+    return None
+
+
 def _wrap_sampling_module(module) -> bool:
     """Put the shim on ``module.load_jit``. False when there is nothing to wrap."""
     original = getattr(module, "load_jit", None)
     if original is None or getattr(original, "_restomod_cccl_shim", False):
         return False
 
+    # A caller that passes ``extra_include_paths`` positionally gets a
+    # ``TypeError`` from the keyword below, inside the JIT path the shim exists
+    # to fix. The pin does not, but a wrapper whose failure mode is that error
+    # is worse than one that forwards in the form it received.
+    extra_index = _positional_index(original, "extra_include_paths")
+
     @functools.wraps(original)
     def load_jit(*args, **kwargs):
-        paths = list(kwargs.get("extra_include_paths") or ())
-        if _JIT_CCCL_DIR not in paths:
-            paths.insert(0, _JIT_CCCL_DIR)
-        kwargs["extra_include_paths"] = paths
+        if extra_index is not None and len(args) > extra_index:
+            args = list(args)
+            paths = list(args[extra_index] or ())
+            if _JIT_CCCL_DIR not in paths:
+                paths.insert(0, _JIT_CCCL_DIR)
+            args[extra_index] = paths
+            args = tuple(args)
+        else:
+            paths = list(kwargs.get("extra_include_paths") or ())
+            if _JIT_CCCL_DIR not in paths:
+                paths.insert(0, _JIT_CCCL_DIR)
+            kwargs["extra_include_paths"] = paths
         return original(*args, **kwargs)
 
     load_jit._restomod_cccl_shim = True
@@ -258,7 +292,11 @@ def install_jit_cccl_compat() -> bool:
     stays unedited. ``cccl/`` next to this file holds the shim; it defers to
     the toolkit on CUDA 13 and later.
 
-    Returns True once the hook is armed, including when it already was.
+    Returns True once the hook is armed, including when it already was. False
+    when the module is already imported and has no ``load_jit`` to wrap: that
+    is a pin rename, and reporting success there would send the next step back
+    to the original "namespace cuda has no member maximum" error with a
+    component that logged that it had installed.
     """
     global _JIT_CCCL_INSTALLED
     if _JIT_CCCL_INSTALLED:
@@ -268,7 +306,17 @@ def install_jit_cccl_compat() -> bool:
     # be patched, and one that has not gets patched by the finder on import.
     module = sys.modules.get(_JIT_SAMPLING_MODULE)
     if module is not None:
-        _wrap_sampling_module(module)
+        load_jit = getattr(module, "load_jit", None)
+        if load_jit is None:
+            logger.warning(
+                "sglang-restomod: %s has no load_jit; the CCCL shim is not armed",
+                _JIT_SAMPLING_MODULE,
+            )
+            return False
+        if not getattr(load_jit, "_restomod_cccl_shim", False) and not _wrap_sampling_module(
+            module
+        ):
+            return False
     elif not any(isinstance(finder, _JitSamplingFinder) for finder in sys.meta_path):
         sys.meta_path.insert(0, _JitSamplingFinder())
 

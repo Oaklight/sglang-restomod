@@ -70,3 +70,20 @@ def test_tree_sampling_jit_builds_and_runs():
     rows = torch.arange(batch, device=device)
     bonus_positions = accept_index[rows, accept_token_num.to(torch.int64)].to(torch.int64)
     assert predicts[bonus_positions].tolist() == [0] * batch
+
+
+def test_pin_default_include_has_no_cuda_functional():
+    """The shim has to be the first <cuda/functional> the JIT build sees.
+
+    ``load_jit`` builds ``DEFAULT_INCLUDE + extra_include_paths``, so a copy
+    of the header inside the pin's own include directory would be found before
+    the shim, and the build would fail with the original
+    "namespace cuda has no member maximum". This holds on a real install
+    rather than on the stub module the CPU tests use.
+    """
+    import os
+
+    compile_module = pytest.importorskip("sglang.kernels.jit.utils.compile")
+    for entry in compile_module.DEFAULT_INCLUDE:
+        header = os.path.join(entry, "cuda", "functional")
+        assert not os.path.exists(header), f"the pin's include path already ships {header}"

@@ -161,6 +161,14 @@ def test_jit_cccl_compat_is_idempotent(monkeypatch):
     assert sm70_sampling.install_jit_cccl_compat()
     assert module.load_jit is first
 
+    # The second call above returns through _JIT_CCCL_INSTALLED, so it does not
+    # exercise the guard inside _wrap_sampling_module. Reset the flag to take
+    # that path: a second wrap would install a second shim on an already
+    # wrapped function.
+    monkeypatch.setattr(sm70_sampling, "_JIT_CCCL_INSTALLED", False)
+    assert sm70_sampling.install_jit_cccl_compat()
+    assert module.load_jit is first
+
 
 def test_jit_cccl_compat_arms_one_finder(monkeypatch):
     import sys
@@ -192,3 +200,49 @@ def test_cccl_shim_ships_with_the_package():
         text = handle.read()
     assert "#include_next <cuda/functional>" in text
     assert "struct maximum" in text and "struct minimum" in text
+
+
+def test_jit_cccl_compat_forwards_a_positional_include_path(monkeypatch):
+    """A ``load_jit`` that takes the list positionally gets it back edited.
+
+    The pin's own ``load_jit(*args, extra_include_paths=None)`` makes the
+    parameter keyword-only, so this is the other shape a pin bump can produce:
+    there the injected keyword would collide with the caller's positional
+    value and raise a TypeError inside the JIT path.
+    """
+    import sys
+    import types
+
+    from sglang_restomod.spec import sm70_sampling
+
+    calls = {}
+
+    def fake_load_jit(name, arg, extra_include_paths=None):
+        calls["extra"] = extra_include_paths
+        return "module"
+
+    module = types.ModuleType("positional.sampling")
+    module.load_jit = fake_load_jit
+    monkeypatch.setitem(sys.modules, "positional.sampling", module)
+    monkeypatch.setattr(sm70_sampling, "_JIT_SAMPLING_MODULE", "positional.sampling")
+    monkeypatch.setattr(sm70_sampling, "_JIT_CCCL_INSTALLED", False)
+
+    assert sm70_sampling.install_jit_cccl_compat()
+    module.load_jit("speculative_sampling", 4, ["/opt/other/include"])
+    assert calls["extra"] == [sm70_sampling._JIT_CCCL_DIR, "/opt/other/include"]
+
+
+def test_jit_cccl_compat_reports_failure_when_the_module_has_no_load_jit(monkeypatch):
+    """A present module without ``load_jit`` is a pin rename, not success."""
+    import sys
+    import types
+
+    from sglang_restomod.spec import sm70_sampling
+
+    module = types.ModuleType("renamed.sampling")
+    monkeypatch.setitem(sys.modules, "renamed.sampling", module)
+    monkeypatch.setattr(sm70_sampling, "_JIT_SAMPLING_MODULE", "renamed.sampling")
+    monkeypatch.setattr(sm70_sampling, "_JIT_CCCL_INSTALLED", False)
+
+    assert sm70_sampling.install_jit_cccl_compat() is False
+    assert sm70_sampling._JIT_CCCL_INSTALLED is False
