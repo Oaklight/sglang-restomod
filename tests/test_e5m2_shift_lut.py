@@ -21,15 +21,13 @@ def test_shift_reproduces_the_lut_for_all_finite_bytes():
     raw = torch.arange(256, dtype=torch.uint8)
 
     lut = raw.view(torch.float8_e5m2).to(torch.float16)
-    # torch has no uint16 left shift on CPU, so shift in int32 and narrow.
-    shifted = (
-        ((raw.to(torch.int32) << 8) & 0xFFFF)
-        .to(torch.uint16)
-        .view(torch.float16)
-    )
+    # torch has no uint16 shift or uint16 indexing on CPU, so do both in int32.
+    shift_bits = (raw.to(torch.int32) << 8) & 0xFFFF
+    shifted = shift_bits.to(torch.uint16).view(torch.float16)
+    lut_bits = lut.view(torch.uint16).to(torch.int32)
 
     finite = ~torch.isnan(lut)
     assert torch.equal(
-        lut.view(torch.uint16)[finite], shifted.view(torch.uint16)[finite]
+        lut_bits[finite], shift_bits[finite]
     ), "the shift differs from the table on a finite e5m2 value"
     assert torch.isnan(shifted[~finite]).all(), "a NaN byte became finite"
