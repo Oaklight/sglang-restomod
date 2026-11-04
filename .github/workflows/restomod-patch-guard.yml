@@ -33,3 +33,6 @@ jobs:
           scripts/fetch_upstream.sh
           python scripts/check_patches.py
           scripts/apply_patches.sh
+
+      - name: Check component patches against their upstreams
+        run: python scripts/check_component_patches.py

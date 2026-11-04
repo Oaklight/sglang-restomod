@@ -1,0 +1,75 @@
+diff --git a/csrc/quantization/marlin/sm70_marlin_common.cuh b/csrc/quantization/marlin/sm70_marlin_common.cuh
+index 0e8ecbf..037fcb1 100644
+--- a/csrc/quantization/marlin/sm70_marlin_common.cuh
++++ b/csrc/quantization/marlin/sm70_marlin_common.cuh
+@@ -316,7 +316,7 @@ inline bool sm70_marlin_requested_split_k_is_supported(
+ }
+ 
+ inline Sm70MarlinAutoParams sm70_marlin_default_auto_params(
+-    int packed_macro_n);
++    Sm70MarlinDenseAutoParamsContext const& ctx);
+ 
+ inline Sm70CtaGeometry sm70_marlin_default_geometry_from_packed_macro_n(
+     int packed_macro_n) {
+@@ -335,6 +335,52 @@ inline Sm70CtaGeometry sm70_marlin_default_geometry_from_packed_macro_n(
+   return {0, 0, 0, 0, 0, 0, 0};
+ }
+ 
++// One CTA computes one output tile, so a small tile count leaves the 80 SMs of
++// a V100 idle and the K loop runs to completion on each of them. Split K until
++// about two waves are in flight, then stop: past that the reduction cost wins.
++// The realized count is in (96, 192]: the loop stops before the doubling that
++// would cross the target. The cap of 8 is the limit for a narrow-N shape with
++// 1-12 tiles (N=256, M=1 is one tile, so 8 CTAs on 80 SMs); the rule cannot
++// fill the machine there.
++// Measured on one V100 for the 27B shapes, split_k=8 helps up to M=16, 4 at
++// M=64, and 1 at M>=256.
++inline constexpr int64_t kSm70MarlinTargetCtas = 192;
++inline constexpr int kSm70MarlinMaxSplitK = 8;
++
++inline int sm70_marlin_default_split_k(Sm70CtaGeometry const& geometry,
++                                       int64_t size_m, int64_t size_n,
++                                       int64_t size_k) {
++  int64_t const cta_m = geometry.cta_m;
++  int64_t const cta_n = geometry.cta_n;
++  int64_t const cta_k = geometry.cta_k;
++  int64_t const tiles =
++      ((size_m + cta_m - 1) / cta_m) * ((size_n + cta_n - 1) / cta_n);
++  int split_k = 1;
++  while (split_k < kSm70MarlinMaxSplitK &&
++         tiles * static_cast<int64_t>(split_k) * 2 <= kSm70MarlinTargetCtas) {
++    split_k *= 2;
++  }
++  // The reduction buffer is laid out over K, so the split must divide it.
++  while (split_k > 1 &&
++         size_k % (static_cast<int64_t>(split_k) * cta_k) != 0) {
++    split_k /= 2;
++  }
++  return split_k;
++}
++
++inline Sm70MarlinAutoParams sm70_marlin_default_auto_params(
++    Sm70MarlinDenseAutoParamsContext const& ctx) {
++  Sm70CtaGeometry const geometry =
++      sm70_marlin_default_geometry_from_packed_macro_n(ctx.packed_macro_n);
++  return {geometry,
++          sm70_marlin_default_split_k(geometry, ctx.size_m, ctx.size_n,
++                                      ctx.size_k),
++          true,
++          ctx.packed_macro_n};
++}
++
++// Callers that do not carry the problem shape (the env helper and the MoE
++// path) keep the historical single-CTA-per-tile default.
+ inline Sm70MarlinAutoParams sm70_marlin_default_auto_params(
+     int packed_macro_n) {
+   return {sm70_marlin_default_geometry_from_packed_macro_n(packed_macro_n),
+@@ -1475,7 +1517,7 @@ inline Sm70MarlinAutoParams sm70_marlin_dense_auto_params(
+     return params;
+   }
+ 
+-  return sm70_marlin_default_auto_params(ctx.packed_macro_n);
++  return sm70_marlin_default_auto_params(ctx);
+ }
+ 
+ inline void validate_sm70_marlin_dense_cta_geometry_supported(char const* op_name,
