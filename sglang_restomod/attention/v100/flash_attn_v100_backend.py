@@ -1160,6 +1160,15 @@ class FlashAttnV100Backend(AttentionBackend):
                 **kwargs,
             )
 
+        # SM70 has no native bf16 attention. A bf16 draft hands this backend
+        # bf16 activations; run the kernel in the KV cache dtype and restore
+        # the caller's dtype on the output.
+        out_dtype = q.dtype
+        if out_dtype == torch.bfloat16:
+            q = q.to(torch.float16)
+            k = k.to(torch.float16)
+            v = v.to(torch.float16)
+
         cache_loc = (
             forward_batch.out_cache_loc
             if not layer.is_cross_attention
@@ -1292,7 +1301,10 @@ class FlashAttnV100Backend(AttentionBackend):
             md.prefix_kv_lens,
             **paged_kwargs,
         )
-        return out.reshape(num_tokens, layer.tp_q_head_num * layer.head_dim)
+        out = out.reshape(num_tokens, layer.tp_q_head_num * layer.head_dim)
+        if out.dtype != out_dtype:
+            out = out.to(out_dtype)
+        return out
 
     def support_triton(self):
         return True

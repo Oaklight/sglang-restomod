@@ -72,6 +72,40 @@ def install_on(factory, build, wrap) -> bool:
     return True
 
 
+def install_topk_fallback() -> bool:
+    """Point flashinfer's radix top-k at torch on sm70.
+
+    ``sglang.srt.models.dflash`` binds ``flashinfer.top_k`` at import time and
+    only takes its own ``torch.topk`` fallback when that import fails. On sm70 the
+    import succeeds and the kernel refuses at call time
+    (``FlashInfer requires GPUs with sm75 or higher``), so replace the module
+    attribute before the model module is imported.
+    """
+    try:
+        import flashinfer
+        from sglang.srt.utils.common import get_device_sm
+    except Exception as exc:  # noqa: BLE001 - report, never abort loading
+        logger.warning("attention_v100: top-k fallback skipped: %s", exc)
+        return False
+    if getattr(flashinfer, "_restomod_sm70_topk", False):
+        return False
+    original = getattr(flashinfer, "top_k", None)
+    if original is None:
+        return False
+
+    def top_k(scores, k, *args, **kwargs):
+        if get_device_sm() < 75:
+            import torch
+
+            return torch.topk(scores, k, dim=-1)
+        return original(scores, k, *args, **kwargs)
+
+    flashinfer.top_k = top_k
+    flashinfer._restomod_sm70_topk = True
+    logger.info("attention_v100: flashinfer top_k falls back to torch on sm70")
+    return True
+
+
 def install() -> bool:
     """Component hook: patch the engine's draft factory if it is importable."""
     try:
@@ -85,6 +119,7 @@ def install() -> bool:
 
     from .backend_registry import FLASH_ATTN_V100, build_backend
 
+    install_topk_fallback()
     changed = install_on(
         draft_utils.DraftBackendFactory,
         lambda runner: build_backend(FLASH_ATTN_V100, runner),

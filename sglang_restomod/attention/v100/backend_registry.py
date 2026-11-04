@@ -142,3 +142,21 @@ def install(
     if changed:
         logger.info("attention_v100: registered backend(s) %s", ", ".join(BACKEND_NAMES))
     return changed
+
+
+def install_draft_choices() -> bool:
+    """Let ``--speculative-draft-attention-backend`` accept this backend.
+
+    ``DRAFT_ATTENTION_BACKEND_CHOICES`` is a separate list from the main
+    backend choices, and the pin documents ``add_draft_attention_backend_choices``
+    as the out-of-tree hook. Plugins load before ``ServerArgs`` is built, so
+    extending it here reaches argparse in time.
+    """
+    try:
+        from sglang.srt.arg_groups.choices import add_draft_attention_backend_choices
+    except Exception as exc:  # noqa: BLE001 - report, never abort loading
+        logger.warning("attention_v100: draft backend choices skipped: %s", exc)
+        return False
+    add_draft_attention_backend_choices([FLASH_ATTN_V100])
+    logger.info("attention_v100: draft workers may select %s", FLASH_ATTN_V100)
+    return True
