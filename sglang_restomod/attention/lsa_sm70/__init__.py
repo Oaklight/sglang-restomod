@@ -20,17 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 def register() -> None:
-    """Component entry point: install the LSA backend when it is available.
+    """Component entry point: register the LSA attention backend."""
+    from .backend_registry import install
 
-    The backend is staged behind the tracking issue. Until it lands, selecting
-    this component loads the selection core and leaves the engine's own
-    attention in place, which is the documented baseline.
-    """
-    try:
-        from .backend_registry import install
-    except ModuleNotFoundError:
-        logger.info(
-            "sglang-restomod lsa_sm70: selection core loaded; serving backend not staged yet"
-        )
-        return
     install()

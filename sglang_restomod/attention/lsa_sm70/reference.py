@@ -119,20 +119,23 @@ def build_buckets(
         block_count, cluster_block_size, index_dim
     )
     pools = pool_keys(blocks, pool_size)
-    pool_sizes = torch.full(pools.shape[:2], float(pool_size))
+    pool_sizes = torch.full(pools.shape[:2], float(pool_size), device=keys.device)
     if cluster_algorithm == "position":
-        labels = (torch.arange(pools.shape[1]) // (bucket_size // pool_size)).expand(
-            block_count, -1
-        )
+        labels = (
+            torch.arange(pools.shape[1], device=keys.device) // (bucket_size // pool_size)
+        ).expand(block_count, -1)
     else:
         labels = ward_merge(pools, pool_sizes, block_bucket_count, bucket_cap)
     key_labels = labels.repeat_interleave(pool_size, dim=1)
     # Bucket of each key across the whole cache, numbered block after block.
-    bucket_of_key = key_labels + block_bucket_count * torch.arange(block_count)[:, None]
-    key_sums = torch.zeros(block_count * block_bucket_count, index_dim)
+    block_ids = torch.arange(block_count, device=keys.device)[:, None]
+    bucket_of_key = key_labels + block_bucket_count * block_ids
+    key_sums = torch.zeros(block_count * block_bucket_count, index_dim, device=keys.device)
     key_sums.index_add_(0, bucket_of_key.flatten(), blocks.reshape(-1, index_dim))
     bucket_centroids = key_sums / key_sums.norm(dim=1, keepdim=True).clamp_min(1e-30)
-    members = torch.empty(block_count * block_bucket_count, bucket_cap, dtype=torch.int32)
+    members = torch.empty(
+        block_count * block_bucket_count, bucket_cap, dtype=torch.int32, device=keys.device
+    )
     for block in range(block_count):
         local = members_from_labels(key_labels[block], block_bucket_count, bucket_cap)
         rows = slice(block * block_bucket_count, (block + 1) * block_bucket_count)

@@ -162,8 +162,12 @@ def members_from_labels(labels: torch.Tensor, bucket_count: int, bucket_cap: int
         Bucket members [bucket_count, bucket_cap] int32 - block-local positions,
         -1 past a bucket's size.
     """
-    members = torch.full((bucket_count, bucket_cap), -1, dtype=torch.int32)
-    for bucket in range(bucket_count):
-        keys = (labels == bucket).nonzero().flatten()
-        members[bucket, : keys.numel()] = keys.to(torch.int32)
+    members = torch.full((bucket_count, bucket_cap), -1, dtype=torch.int32, device=labels.device)
+    labels = labels.long()
+    order = torch.argsort(labels, stable=True)
+    counts = torch.bincount(labels, minlength=bucket_count)
+    starts = torch.cumsum(counts, 0) - counts
+    rank = torch.arange(labels.numel(), device=labels.device) - starts[labels[order]]
+    keep = rank < bucket_cap
+    members[labels[order][keep], rank[keep]] = order[keep].to(torch.int32)
     return members

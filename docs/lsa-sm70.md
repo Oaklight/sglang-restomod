@@ -60,28 +60,66 @@ and carries QSA kernels that read a per-query list.
 may keep its V100 page size and the selection is packed into a slot list at read
 time.
 
+## Serving
+
+`SGLANG_RESTOMOD_COMPONENTS=lsa_sm70` registers the backend; select it with
+`--attention-backend lsa_sm70` and point `SGLANG_RESTOMOD_LSA_MAP` at the
+released D-LSA projection file. The backend:
+
+- keeps one bucket table a `(layer, request)` and appends each token's index
+  key as it is written; a request the backend did not prefill is rebuilt from
+  the KV pool;
+- projects the rank's KV heads through its rows of the maps and all-reduces the
+  partials across the attention TP group, so every rank selects the same lists;
+- selects a chunk of rows at a time (score, top-p, expand, window, sinks) and
+  reads each row's list through `decode_attention_fwd`.
+
+Requirements and refusals, checked at startup:
+
+- `--page-size 1`: a list is a set of single tokens.
+- a bf16 or fp16 KV cache; an fp8 cache has no index source.
+- `--disable-cuda-graph`: the selection is host-orchestrated, so a captured
+  graph would replay one batch's lists.
+- no speculative decoding, data-parallel attention or context parallel; the
+  first path is plain tensor parallel.
+
 ## Phases
 
-1. **Portable core** (this change). Index space, Ward, flat selection, early
-   budget; CPU tests against the reference's invariants, including the exactness
+1. **Portable core** (done). Index space, Ward, flat selection, early budget;
+   CPU tests against the reference's invariants, including the exactness
    anchor: at a budget at least the context, the selected set is the causal
    prefix.
-2. **SM70 selection kernels.** A chunked bucket scan in fp16/fp32, top-k and
-   expansion in Triton, each tested against the core oracle on an SM70 device.
-   The reference's fused scan is gated at 32,768 gathered buckets; below the
-   gate it uses a dense matmul, which is the first path here.
-3. **Backend.** `LsaSm70Backend(AttentionBackend)`: build the per-layer index
-   from q/k, store the index keys where the read can find them, maintain the
-   per-request bucket cache at page ends, select for prefill and decode, and
-   issue `decode_attention_fwd` over the lists. Under tensor parallel the index
-   maps are split by head and the partials all-reduced, as the reference's
-   `HeadShard` does for 24 query and 4 KV heads at TP4.
-4. **End to end.** Qwen3.8-27B at TP4 on 4x V100, bf16 KV cache (the key and
-   query input reads bf16 keys), D-LSA map loaded from the release, a smoke
-   request, accuracy against the dense baseline at a short and a long context,
-   and a signed receipt.
-5. **Docs and compatibility.** A recipe, a `COMPATIBILITY.md` row only after a
-   receipted run, and the README component table.
+2. **SM70 selection** (done, as the dense-matmul path). The first path the
+   reference takes below its fused-scan gate: score every visible bucket with a
+   matmul, top-p with a stable sort, expand in rank order. It runs on the device
+   and is tested against the core oracle on an SM70 device. The fused Triton
+   scan, top-k and expansion kernels are not ported; they are a performance
+   follow-up, not a correctness gap.
+3. **Backend** (done). `LsaSm70Backend(AttentionBackend)` builds the per-layer
+   index from q/k, maintains the per-request bucket table, selects for prefill
+   and decode, and reads through `decode_attention_fwd`. Under tensor parallel
+   the index maps are split by head and the partials all-reduced.
+4. **End to end** (done). Qwen3.8-27B-FP8 at TP4 on 4x V100, fp16 KV cache,
+   `--page-size 1`, `--disable-cuda-graph`, the released D-LSA map. A smoke
+   request answers correctly; against the dense `tilelang_fa_v100` baseline on
+   the same launch, greedy output is token-identical on 32 tokens at 2,048 and
+   at 16,384 prompt tokens, with a mean absolute log-probability shift of
+   2e-6 and 4.5e-4 nats. The receipted run is in `COMPATIBILITY.md`.
+5. **Docs and compatibility** (done). This page, the component's
+   `PROVENANCE.md`, the README component table and the `COMPATIBILITY.md` row.
+
+## Limits
+
+- Prefill selection is host-orchestrated in the reference and here; decode
+  selection is not yet graph-capturable either, because the first path keeps
+  the bucket table on the host. Serve with `--disable-cuda-graph`.
+- Selection uses `torch.argsort` a chunk of rows at a time. It is not the
+  reference's fused scan. A 16,384-token request with 32 output tokens took
+  63.9 s against the dense baseline's 15.5 s on the same host, with decode not
+  separated from prefill. Speed is not claimed.
+- An fp8 KV cache is refused. The reference keeps a separate bf16 index-key
+  buffer for that case; this port projects from the pool.
+
 
 ## Risks and stop conditions
 
