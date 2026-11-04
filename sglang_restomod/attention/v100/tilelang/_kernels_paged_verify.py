@@ -27,6 +27,32 @@ VERIFY_Q_BLOCK = 16
 # value left only eight CTAs active at a 4K prefix on an 80-SM V100.
 VERIFY_MIN_TOKENS_PER_SPLIT = 128
 VERIFY_SM_TARGET = 80  # V100 SXM2 SM count; one memory-streaming CTA per SM.
+
+
+def _verify_sm_target():
+    """Return the CTA target for the verify partial kernel.
+
+    ``VERIFY_SM_TARGET`` is one CTA per SM. The partial kernel holds a
+    32 KiB K tile and a 32 KiB V tile at dim 256, so two or three CTAs fit in
+    V100's 96 KiB of shared memory; ``SGLANG_V100_VERIFY_SM_TARGET`` raises the
+    launch above one CTA per SM to expose more outstanding loads per SM.
+    """
+    value = os.environ.get("SGLANG_V100_VERIFY_SM_TARGET")
+    if value is None:
+        return VERIFY_SM_TARGET
+    try:
+        value = int(value)
+    except ValueError as exc:
+        raise ValueError(
+            "SGLANG_V100_VERIFY_SM_TARGET must be a positive integer, "
+            f"got {value!r}."
+        ) from exc
+    if value <= 0:
+        raise ValueError(
+            "SGLANG_V100_VERIFY_SM_TARGET must be a positive integer, "
+            f"got {value}."
+        )
+    return value
 _LOG2_E = 1.4426950408889634
 
 
@@ -355,7 +381,7 @@ def get_paged_verify_kernels(
     group_size = heads // heads_kv
     heads_per_cta = min(4, group_size)
     gqa_ctas = math.ceil(group_size / heads_per_cta)
-    max_splits = max(1, math.ceil(VERIFY_SM_TARGET / (batch * heads_kv * gqa_ctas)))
+    max_splits = max(1, math.ceil(_verify_sm_target() / (batch * heads_kv * gqa_ctas)))
     block_n = {128: 64, 256: 32}.get(dim, 64)
     threads = 256
     if min_tokens_per_split is None:
