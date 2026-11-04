@@ -121,6 +121,12 @@ Do not write its value into a shell history, a script, or this repository.
 It fails on a fully-qualified domain name, a home-directory path, an absolute
 path under a site mount, a long digit-only token, or a denylisted name.
 
+Bundles published before `evidence-68ccaaf-identity` (2026-11-03) predate the
+redaction step. They carry the node name, `uname -a`, GPU serial numbers, UUIDs
+and bus ids, and the absolute checkpoint path. Each is bound by the receipt
+that cites it, so none were rewritten; read them as disclosing that much about
+the host that produced them.
+
 Copy `/tmp/evidence.tgz` to the operator host, and upload it to an HTTPS
 location the verifier can reach (a release asset, an internal static host, or
 any signed public URL).
