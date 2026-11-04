@@ -163,6 +163,8 @@ selected = {c.strip() for c in components.split(",") if c.strip()}
 expected = {}
 if "attention_v100" in selected:
     expected["attention_backend"] = "tilelang_fa_v100"
+if "lsa_sm70" in selected:
+    expected["attention_backend"] = "lsa_sm70"
 if "spec_sm70" in selected:
     expected["speculative_draft_attention_backend"] = "tilelang_fa_v100"
 mismatched = 0

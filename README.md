@@ -22,7 +22,7 @@ tests. The repository is not a fork of SGLang or of any V100 project.
 
 ## Status
 
-Seven components ship, all opt-in via `SGLANG_RESTOMOD_COMPONENTS`:
+Eight components ship, all opt-in via `SGLANG_RESTOMOD_COMPONENTS`:
 
 | component | what it does |
 |---|---|
@@ -33,6 +33,7 @@ Seven components ship, all opt-in via `SGLANG_RESTOMOD_COMPONENTS`:
 | `ple_sm70` | SM70 decode for the fp8 PLE host-embedding gather, which the pinned kernel cannot compile because it casts to `tl.float8e4nv`. |
 | `spec_sm70` | top-k/top-p renorm replacements so non-greedy EAGLE verify does not reach FlashInfer's sm75 floor. |
 | `gdn_tilelang_sm70` | SM70 TileLang GDN chunked prefill. The pin's Triton chunk kernels take 63.9% of a 27B prefill chunk; this component answers the same call with a TileLang kernel: 1,933.6 / 1,924.9 tok/s at 8,041 prompt tokens and 1,658.3 / 1,655.1 at 31,158, against 719.9 and 684.6 on Triton (receipt `evidence-55cb6e7-gdn-tilelang`). |
+| `lsa_sm70` | Latent Sparse Attention (LSA) for SM70 full attention. Keys are clustered in a learned latent space, each query scores bucket centroids instead of every key, and the read takes the selected keys plus a local window and sinks. Ports the flat D-LSA design for Qwen3.8-27B (16 full-attention layers, GQA 24/4), with the index sharded across the attention TP group, the selection in two Triton programs, and the read through the pin's Triton decode kernel. Selects `--attention-backend lsa_sm70`; needs `SGLANG_RESTOMOD_LSA_MAP`, `--page-size 1` and `--disable-cuda-graph`. Also packaged standalone at `Oaklight/lsa-sm70`. |
 
 ```bash
 SGLANG_RESTOMOD_COMPONENTS=fp8_moe,attention_v100
