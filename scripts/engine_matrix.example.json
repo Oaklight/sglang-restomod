@@ -3,13 +3,22 @@
     {
       "name": "vanilla",
       "python": "/path/to/python",
-      "env": {"PYTHONPATH": "/path/to/engine/tree"}
+      "env": {
+        "PYTHONPATH": "/path/to/engine/tree"
+      },
+      "tree": "/path/to/engine/checkout"
     },
     {
       "name": "fork",
       "python": "/path/to/python",
-      "env": {"PYTHONPATH": "/path/to/fork/python"},
-      "args": ["--attention-backend", "fa_v100"]
+      "env": {
+        "PYTHONPATH": "/path/to/fork/python"
+      },
+      "args": [
+        "--attention-backend",
+        "fa_v100"
+      ],
+      "commit": "0000000"
     }
   ],
   "launch": {

@@ -126,6 +126,25 @@ def first_error(log: str) -> str:
     return redact(lines[-1])[:300] if lines else ""
 
 
+def engine_commit(spec: dict) -> str | None:
+    """The commit under test: declared in the spec, or read from its tree."""
+    if spec.get("commit"):
+        return spec["commit"]
+    tree = spec.get("tree")
+    if not tree:
+        return None
+    try:
+        out = subprocess.run(
+            ["git", "-C", tree, "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return out.stdout.strip() or None
+    except Exception:  # noqa: BLE001 - a missing commit is not a failure
+        return None
+
+
 def run_engine(spec: dict, launch: dict, forward: dict, workdir: str) -> dict:
     name = spec["name"]
     port = int(launch["port_base"]) + spec.get("port_offset", 0)
@@ -151,7 +170,13 @@ def run_engine(spec: dict, launch: dict, forward: dict, workdir: str) -> dict:
     ]
     command += spec.get("args", [])
 
-    result = {"name": name, "stage": "import", "ok": False, "port": port}
+    result = {
+        "name": name,
+        "commit": engine_commit(spec),
+        "stage": "import",
+        "ok": False,
+        "port": port,
+    }
     started = time.time()
     with open(log_path, "w") as log:
         process = subprocess.Popen(
