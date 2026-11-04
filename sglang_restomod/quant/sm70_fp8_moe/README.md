@@ -3,7 +3,7 @@
 Binds the block-FP8 expert GEMM that ships inside the prebuilt TurboMind
 library (`_sm70_turbomind_v100.so`) but is never registered with torch.
 
-Status: **spike validated on 2026-10-25** (lambda4, 4x V100-32GB). Relative
+Status: **spike validated on 2026-10-25** (node-a, 4x V100-32GB). Relative
 error against an FP16-dequantized reference is 7e-4 for a gated, multi-expert
 case. Not yet wired into `Fp8MoEMethod`; that is #20.
 

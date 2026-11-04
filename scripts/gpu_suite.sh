@@ -76,9 +76,9 @@ mkdir -p "$OUT"
   echo "tree=$(git rev-parse HEAD^{tree})"
   echo "branch=$(git rev-parse --abbrev-ref HEAD)"
   echo "dirty_files=$DIRTY"
-  echo "host=$(hostname)"
   echo "date=$(date -Is)"
-  uname -a
+  # Kernel and machine class only: uname -a would print the node name.
+  uname -srm
 } > "$OUT/commit.txt"
 
 if [[ "$SKIP_GPU_PROBE" != "1" ]]; then
@@ -216,6 +216,11 @@ GPU_TEST_RC=0
 if [[ "$SKIP_GPU_TESTS" != "1" ]]; then
   "$PYTHON" -m pytest -q -m gpu tests/ > "$OUT/gpu_tests.txt" 2>&1 || GPU_TEST_RC=$?
 fi
+
+# The archive goes to a public release asset. Strip paths under a home or site
+# mount, NVIDIA serials, UUIDs and bus ids, and any IDENTITY_DENYLIST name
+# before anything is packed.
+"$PYTHON" scripts/redact_evidence.py "$OUT"
 
 PACK="${OUT%/}.tgz"
 "$OOB" pack --evidence-dir "$OUT" --out "$PACK"

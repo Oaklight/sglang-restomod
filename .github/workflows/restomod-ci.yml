@@ -28,6 +28,14 @@ jobs:
       - name: Compile
         run: python -m compileall -q sglang_restomod scripts
 
+      - name: Machine-identity check
+        env:
+          # Site-specific names come from a repository secret; the file that
+          # reads them never contains them. Unset on fork pull requests, where
+          # the generic shape rules still run.
+          IDENTITY_DENYLIST: ${{ secrets.IDENTITY_DENYLIST }}
+        run: python scripts/check_identity.py
+
       - name: Fetch the pinned upstream tree
         run: git fetch --depth 1 origin +refs/heads/upstream:refs/remotes/origin/upstream
 

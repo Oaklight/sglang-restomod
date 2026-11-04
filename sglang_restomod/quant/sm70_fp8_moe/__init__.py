@@ -9,7 +9,7 @@ typed Python surface.
 Import of this module is cheap. Torch, sglang and the shim are touched only by
 :func:`ensure_loaded`, which the public helpers call on first use.
 
-Contract, validated on lambda4 against an FP16-dequantized reference
+Contract, validated on node-a against an FP16-dequantized reference
 (relative error 6.5e-4, gated, four experts):
 
 * weights are per expert ``[N, K]`` e4m3 with scales ``[N/128, K/128]`` fp32;

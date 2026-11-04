@@ -89,13 +89,13 @@ at 3k) that is 2.2-2.7x. Cold 4,856-token prefill: 0.96 s, about 5,061 tok/s.
 - Under MTP the all-reduce becomes the top cost: 12.2 of 29.1 ms per step, in
   305 collectives above 500 us. They never overlap compute. See #64.
 
-Launcher and full measurement note: `benchmarks/flash-next-fp8-sglang-lambda4-tp8.md`
-in the lab repository.
+Launcher and full measurement note: the 8x benchmark record in the private
+lab repository.
 
 ## Measured at the pin (restomod, 2026-10-31)
 
 Same hardware, same model, `sglang-restomod` on upstream `v0.5.22 @ baa9befa`
-with no patches. Launcher: `pin_launch_fn_mtp.sh` on lambda1.
+with no patches. Launcher: `pin_launch_fn_mtp.sh` on an 8-GPU node.
 
 ```
 --dtype float16 --quantization fp8
@@ -145,7 +145,7 @@ to the 27B model.
 
 ### Topology matters
 
-lambda1's eight V100s sit in two NVLink islands (0-3 and 4-7, `SYS` between),
+The eight V100s sit in two NVLink islands (0-3 and 4-7, `SYS` between),
 so the eight-rank group is not full NVLink. SGLang says so at startup:
 `CustomAllreduce is disabled because it's not supported on more than two
 PCIe-only GPUs`. Every all-reduce therefore crosses the socket boundary, which

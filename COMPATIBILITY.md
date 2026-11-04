@@ -12,9 +12,9 @@ what the row claims.
 
 | Hardware | Architecture | Path | Status |
 |---|---|---|---|
-| Tesla V100-SXM2 (2x) | sm70 | fork `dg1kjd/sglang-sxm2` @ `73abfe1` + 3 local patches, block FP8 | Validated 2026-10-25: Qwen3.8-27B-FP8, TP2, 28K — [run](docs/runs/2026-10-25-qwen3.8-27b-fp8-lambda12.md) |
-| Tesla V100-SXM2 (2x) | sm70 | fork, same, CUDA graph + MTP | Validated 2026-10-26: 27B decode 67-79 tok/s at 1-2.7K, 42-45 at 8K — [run](docs/runs/2026-10-26-qwen3.8-27b-mtp-lambda12.md) |
-| Tesla V100-SXM2 (8x) | sm70 | fork, same + `fp8_moe`, TP8/EP8, CUDA graph + MTP | Validated 2026-10-26: Qwen3.8-Flash-Next-FP8 end to end, 83-86 tok/s decode — [lab record](https://github.com/Oaklight/lambda-v100-lab/blob/main/benchmarks/flash-next-fp8-sglang-lambda4-tp8.md) |
+| Tesla V100-SXM2 (2x) | sm70 | fork `dg1kjd/sglang-sxm2` @ `73abfe1` + 3 local patches, block FP8 | Validated 2026-10-25: Qwen3.8-27B-FP8, TP2, 28K — [run](docs/runs/2026-10-25-qwen3.8-27b-fp8-node-b.md) |
+| Tesla V100-SXM2 (2x) | sm70 | fork, same, CUDA graph + MTP | Validated 2026-10-26: 27B decode 67-79 tok/s at 1-2.7K, 42-45 at 8K — [run](docs/runs/2026-10-26-qwen3.8-27b-mtp-node-b.md) |
+| Tesla V100-SXM2 (8x) | sm70 | fork, same + `fp8_moe`, TP8/EP8, CUDA graph + MTP | Validated 2026-10-26: Qwen3.8-Flash-Next-FP8 end to end, 83-86 tok/s decode — private lab benchmark record |
 | Tesla V100-SXM2 (2x) | sm70 | pin v0.5.22 + `attention_v100`, `fp8_dense`, `spec_sm70`, TP2, MTP 3/4 | Validated 2026-11-02: Qwen3.8-27B-FP8, 60.40-64.50 tok/s at 8.2K and 41.48-44.71 at 31.7K — receipt `evidence-e5a5740-draft-extend` |
 | Tesla V100-SXM2 (2x) | sm70 | same, fp16 KV | Validated 2026-11-02: the same model without the draft-extend fix measures 17.89-17.86 tok/s at 31.7K — issue #75 |
 | Tesla V100-SXM2 (2x) | sm70 | pin v0.5.22 + `attention_v100`, `fp8_dense`, `spec_sm70`, `gdn_tilelang_sm70`, TP2, MTP 3/4, 40 KV splits | Validated 2026-11-02: Qwen3.8-27B-FP8, prefill 1,933.5 / 1,925.7 tok/s at 8.0K and 1,658.7 / 1,651.5 at 31.1K; decode 73.12 / 63.40 and 45.98 / 46.07, indicative only — receipt `evidence-e9ef57f-spec-depth`, whose `server_info.json` records `tp_size` 2, `speculative_num_steps` 3, `speculative_num_draft_tokens` 4 and `triton_attention_num_kv_splits` 40, and whose `versions.txt` records the component list |
@@ -54,11 +54,11 @@ Notes:
 - The 2026-10-25 row is a fork run recorded for evidence; the same path is not
   yet available through this layer's components.
 - With the CUDA graph metadata fix in the fork, the same run reaches 30-35
-  tok/s decode: [graph run](docs/runs/2026-10-25-qwen3.8-27b-fp8-cuda-graph-lambda12.md).
+  tok/s decode: [graph run](docs/runs/2026-10-25-qwen3.8-27b-fp8-cuda-graph-node-b.md).
 - The `fp8_moe` component (block-FP8 expert GEMM) was validated numerically
   on 2026-10-25 and loads the full Flash-Next checkpoint on 8x V100 (17.29 GB
   per rank, TP8/EP8). See the
-  [expert GEMM run](docs/runs/2026-10-25-qwen3.8-flash-next-fp8-sm70-moe-lambda4.md).
+  [expert GEMM run](docs/runs/2026-10-25-qwen3.8-flash-next-fp8-sm70-moe-node-a.md).
 - The QSA decode blocker recorded earlier is **resolved**: the SM70 kernels were
   templated over the query-head group, so the 3-head layout at TP8 no longer
   falls back to a FlashAttention build the V100 image lacks. Flash-Next now
@@ -73,7 +73,7 @@ Notes:
   e5m2 carries the MTP target verify and reaches 256k. e4m3 has a smaller
   perturbation of the model's own next-token distribution — see the recipe's
   "KV dtype" section. The
-  [E5M2 run](docs/runs/2026-10-25-qwen3.8-27b-fp8-e5m2-kv-lambda12.md) is the
+  [E5M2 run](docs/runs/2026-10-25-qwen3.8-27b-fp8-e5m2-kv-node-b.md) is the
   record of the pre-fix failure.
 - **At the pin, e4m3 does not start and e5m2 does.** `fp8_e4m3` fails because
   the grouped decode kernel compiles for `fp8e4nv`, which Volta does not
