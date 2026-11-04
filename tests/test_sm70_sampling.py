@@ -33,9 +33,7 @@ def test_top_k_matches_reference():
     probs = torch.softmax(torch.randn(3, 64), dim=-1)
     k = torch.tensor([1, 5, 20])
     got = top_k_renorm_probs(probs, k)
-    want = torch.stack(
-        [_reference_top_k(probs[i : i + 1], k[i])[0] for i in range(probs.shape[0])]
-    )
+    want = torch.stack([_reference_top_k(probs[i : i + 1], k[i])[0] for i in range(probs.shape[0])])
     assert torch.allclose(got, want, atol=1e-6)
     assert torch.allclose(got.sum(dim=-1), torch.ones(3), atol=1e-5)
 
@@ -57,9 +55,7 @@ def test_top_p_matches_reference():
     probs = torch.softmax(torch.randn(4, 128), dim=-1)
     top_p = torch.tensor([0.1, 0.5, 0.9, 1.0])
     got = top_p_renorm_probs(probs, top_p)
-    want = torch.stack(
-        [_reference_top_p(probs[i : i + 1], top_p[i])[0] for i in range(4)]
-    )
+    want = torch.stack([_reference_top_p(probs[i : i + 1], top_p[i])[0] for i in range(4)])
     assert torch.allclose(got, want, atol=1e-6)
     assert torch.allclose(got.sum(dim=-1), torch.ones(4), atol=1e-5)
 
@@ -84,3 +80,169 @@ def test_top_p_returns_float32():
     probs = torch.softmax(torch.randn(2, 16), dim=-1).to(torch.float16)
     assert top_k_renorm_probs(probs, 3).dtype == torch.float16
     assert top_p_renorm_probs(probs, 0.9).dtype == torch.float32
+
+
+def _write_stub_module(root, source):
+    package = root / "stubpkg"
+    package.mkdir(parents=True, exist_ok=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "sampling.py").write_text(source, encoding="utf-8")
+    return package
+
+
+def test_jit_cccl_compat_wraps_on_import(monkeypatch, tmp_path):
+    import importlib
+    import sys
+
+    from sglang_restomod.spec import sm70_sampling
+
+    _write_stub_module(
+        tmp_path,
+        "calls = {}\n\n\ndef load_jit(*args, **kwargs):\n"
+        "    calls['args'] = args\n    calls['kwargs'] = kwargs\n    return 'module'\n",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.setattr(sys, "meta_path", list(sys.meta_path))
+    monkeypatch.setattr(sm70_sampling, "_JIT_SAMPLING_MODULE", "stubpkg.sampling")
+    monkeypatch.setattr(sm70_sampling, "_JIT_CCCL_INSTALLED", False)
+    monkeypatch.delitem(sys.modules, "stubpkg", raising=False)
+    monkeypatch.delitem(sys.modules, "stubpkg.sampling", raising=False)
+
+    assert sm70_sampling.install_jit_cccl_compat()
+    module = importlib.import_module("stubpkg.sampling")
+    assert getattr(module.load_jit, "_restomod_cccl_shim", False)
+
+    module.load_jit("speculative_sampling", 4, True, extra_include_paths=["/elsewhere"])
+    paths = module.calls["kwargs"]["extra_include_paths"]
+    assert paths[0] == sm70_sampling._JIT_CCCL_DIR
+    assert paths[1] == "/elsewhere"
+    assert module.calls["args"] == ("speculative_sampling", 4, True)
+
+
+def test_jit_cccl_compat_patches_an_imported_module(monkeypatch):
+    import sys
+    import types
+
+    from sglang_restomod.spec import sm70_sampling
+
+    calls = {}
+
+    def fake_load_jit(*args, **kwargs):
+        calls["args"] = args
+        calls["kwargs"] = kwargs
+        return "module"
+
+    module = types.ModuleType("already.imported.sampling")
+    module.load_jit = fake_load_jit
+    monkeypatch.setitem(sys.modules, "already.imported.sampling", module)
+    monkeypatch.setattr(sm70_sampling, "_JIT_SAMPLING_MODULE", "already.imported.sampling")
+    monkeypatch.setattr(sm70_sampling, "_JIT_CCCL_INSTALLED", False)
+
+    assert sm70_sampling.install_jit_cccl_compat()
+    assert module.load_jit is not fake_load_jit
+    module.load_jit("speculative_sampling", 4, True)
+    assert calls["kwargs"]["extra_include_paths"] == [sm70_sampling._JIT_CCCL_DIR]
+
+
+def test_jit_cccl_compat_is_idempotent(monkeypatch):
+    import sys
+    import types
+
+    from sglang_restomod.spec import sm70_sampling
+
+    module = types.ModuleType("already.imported.sampling")
+    module.load_jit = lambda *args, **kwargs: "module"
+    monkeypatch.setitem(sys.modules, "already.imported.sampling", module)
+    monkeypatch.setattr(sm70_sampling, "_JIT_SAMPLING_MODULE", "already.imported.sampling")
+    monkeypatch.setattr(sm70_sampling, "_JIT_CCCL_INSTALLED", False)
+
+    assert sm70_sampling.install_jit_cccl_compat()
+    first = module.load_jit
+    assert sm70_sampling.install_jit_cccl_compat()
+    assert module.load_jit is first
+
+    # The second call above returns through _JIT_CCCL_INSTALLED, so it does not
+    # exercise the guard inside _wrap_sampling_module. Reset the flag to take
+    # that path: a second wrap would install a second shim on an already
+    # wrapped function.
+    monkeypatch.setattr(sm70_sampling, "_JIT_CCCL_INSTALLED", False)
+    assert sm70_sampling.install_jit_cccl_compat()
+    assert module.load_jit is first
+
+
+def test_jit_cccl_compat_arms_one_finder(monkeypatch):
+    import sys
+
+    from sglang_restomod.spec import sm70_sampling
+
+    monkeypatch.setattr(sys, "meta_path", list(sys.meta_path))
+    monkeypatch.setattr(sm70_sampling, "_JIT_SAMPLING_MODULE", "never.imported.module")
+    monkeypatch.setattr(sm70_sampling, "_JIT_CCCL_INSTALLED", False)
+
+    assert sm70_sampling.install_jit_cccl_compat()
+    finders = [f for f in sys.meta_path if isinstance(f, sm70_sampling._JitSamplingFinder)]
+    assert len(finders) == 1
+
+    monkeypatch.setattr(sm70_sampling, "_JIT_CCCL_INSTALLED", False)
+    assert sm70_sampling.install_jit_cccl_compat()
+    finders = [f for f in sys.meta_path if isinstance(f, sm70_sampling._JitSamplingFinder)]
+    assert len(finders) == 1
+
+
+def test_cccl_shim_ships_with_the_package():
+    import os
+
+    from sglang_restomod.spec import sm70_sampling
+
+    header = os.path.join(sm70_sampling._JIT_CCCL_DIR, "cuda", "functional")
+    assert os.path.isfile(header)
+    with open(header, encoding="utf-8") as handle:
+        text = handle.read()
+    assert "#include_next <cuda/functional>" in text
+    assert "struct maximum" in text and "struct minimum" in text
+
+
+def test_jit_cccl_compat_forwards_a_positional_include_path(monkeypatch):
+    """A ``load_jit`` that takes the list positionally gets it back edited.
+
+    The pin's own ``load_jit(*args, extra_include_paths=None)`` makes the
+    parameter keyword-only, so this is the other shape a pin bump can produce:
+    there the injected keyword would collide with the caller's positional
+    value and raise a TypeError inside the JIT path.
+    """
+    import sys
+    import types
+
+    from sglang_restomod.spec import sm70_sampling
+
+    calls = {}
+
+    def fake_load_jit(name, arg, extra_include_paths=None):
+        calls["extra"] = extra_include_paths
+        return "module"
+
+    module = types.ModuleType("positional.sampling")
+    module.load_jit = fake_load_jit
+    monkeypatch.setitem(sys.modules, "positional.sampling", module)
+    monkeypatch.setattr(sm70_sampling, "_JIT_SAMPLING_MODULE", "positional.sampling")
+    monkeypatch.setattr(sm70_sampling, "_JIT_CCCL_INSTALLED", False)
+
+    assert sm70_sampling.install_jit_cccl_compat()
+    module.load_jit("speculative_sampling", 4, ["/opt/other/include"])
+    assert calls["extra"] == [sm70_sampling._JIT_CCCL_DIR, "/opt/other/include"]
+
+
+def test_jit_cccl_compat_reports_failure_when_the_module_has_no_load_jit(monkeypatch):
+    """A present module without ``load_jit`` is a pin rename, not success."""
+    import sys
+    import types
+
+    from sglang_restomod.spec import sm70_sampling
+
+    module = types.ModuleType("renamed.sampling")
+    monkeypatch.setitem(sys.modules, "renamed.sampling", module)
+    monkeypatch.setattr(sm70_sampling, "_JIT_SAMPLING_MODULE", "renamed.sampling")
+    monkeypatch.setattr(sm70_sampling, "_JIT_CCCL_INSTALLED", False)
+
+    assert sm70_sampling.install_jit_cccl_compat() is False
+    assert sm70_sampling._JIT_CCCL_INSTALLED is False

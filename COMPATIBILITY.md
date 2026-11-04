@@ -49,6 +49,11 @@ where the log excerpt lives.
 Notes:
 
 - Quantization dispatch and FP8 specifics: `docs/quantization-dispatch.md`.
+- The speculative tree-sampling JIT needs `spec_sm70` on a CUDA 12.x toolkit:
+  the pinned `flashinfer/sampling.cuh` uses `cuda::maximum` / `cuda::minimum`,
+  which only CCCL 3.x (CUDA 13) provides, and the component puts a shim on the
+  JIT include path. Without it the build stops at
+  `error: namespace "cuda" has no member "maximum"` (#63).
 - Upstream SGLang supports sm75 and newer; it does not target sm70. V100 needs
   selected components from this layer.
 - A validated row records: hardware, upstream pin, component versions, model,

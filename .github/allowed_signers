@@ -1,3 +1,4 @@
 # Operator key for the GPU receipt gate. The private half stays on the
 # operator host and never leaves it.
 operator ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKe8k1Jf3XTmXQtZ+WIGXJjcCNHTPhSJtt0bUsGyycKT outboard operator
+operator-v100 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAVqcvUty8DM4JWY09Oyz6gH7HgKb2uGMMAPxgOD2fIc outboard operator

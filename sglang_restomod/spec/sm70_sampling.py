@@ -34,7 +34,11 @@ shapes that is a few rows, so it does not dominate the step.
 
 from __future__ import annotations
 
+import functools
+import inspect
 import logging
+import os
+import sys
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -43,6 +47,14 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _INSTALLED = False
+
+#: Directory holding the ``cuda/functional`` backport for CUDA 12.x toolkits.
+_JIT_CCCL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cccl")
+
+#: Module that builds the FlashInfer tree-sampling kernel on first call.
+_JIT_SAMPLING_MODULE = "sglang.kernels.ops.speculative.sampling"
+
+_JIT_CCCL_INSTALLED = False
 
 
 def _per_row(value, batch: int, device) -> torch.Tensor:
@@ -170,12 +182,149 @@ def install() -> bool:
             rebound += 1
 
     _INSTALLED = True
-    logger.info(
-        "sglang-restomod: EAGLE renorm kernels replaced for SM70 (%d rebound)", rebound
-    )
+    logger.info("sglang-restomod: EAGLE renorm kernels replaced for SM70 (%d rebound)", rebound)
+    return True
+
+
+def _positional_index(func, name: str) -> int | None:
+    """Index of ``name`` in ``func``'s positional parameters, or None.
+
+    None when the parameter is absent, is keyword-only, or sits behind
+    ``*args``: in those cases the caller cannot pass it positionally and the
+    keyword path is the only one that exists.
+    """
+    try:
+        parameters = list(inspect.signature(func).parameters.values())
+    except (TypeError, ValueError):
+        return None
+    for index, parameter in enumerate(parameters):
+        if parameter.name == name:
+            return index
+        if parameter.kind is inspect.Parameter.VAR_POSITIONAL:
+            return None
+    return None
+
+
+def _wrap_sampling_module(module) -> bool:
+    """Put the shim on ``module.load_jit``. False when there is nothing to wrap."""
+    original = getattr(module, "load_jit", None)
+    if original is None or getattr(original, "_restomod_cccl_shim", False):
+        return False
+
+    # A caller that passes ``extra_include_paths`` positionally gets a
+    # ``TypeError`` from the keyword below, inside the JIT path the shim exists
+    # to fix. The pin does not, but a wrapper whose failure mode is that error
+    # is worse than one that forwards in the form it received.
+    extra_index = _positional_index(original, "extra_include_paths")
+
+    @functools.wraps(original)
+    def load_jit(*args, **kwargs):
+        if extra_index is not None and len(args) > extra_index:
+            args = list(args)
+            paths = list(args[extra_index] or ())
+            if _JIT_CCCL_DIR not in paths:
+                paths.insert(0, _JIT_CCCL_DIR)
+            args[extra_index] = paths
+            args = tuple(args)
+        else:
+            paths = list(kwargs.get("extra_include_paths") or ())
+            if _JIT_CCCL_DIR not in paths:
+                paths.insert(0, _JIT_CCCL_DIR)
+            kwargs["extra_include_paths"] = paths
+        return original(*args, **kwargs)
+
+    load_jit._restomod_cccl_shim = True
+    module.load_jit = load_jit
+    logger.info("sglang-restomod: CCCL shim added to the speculative JIT includes")
+    return True
+
+
+class _PatchingLoader:
+    """Run the real loader, then patch the module it produced."""
+
+    def __init__(self, loader) -> None:
+        self._loader = loader
+
+    def create_module(self, spec):
+        return self._loader.create_module(spec)
+
+    def exec_module(self, module) -> None:
+        self._loader.exec_module(module)
+        _wrap_sampling_module(module)
+
+
+class _JitSamplingFinder:
+    """Patch the speculative sampling module when it is first imported.
+
+    The component must not import ``torch``-heavy SGLang modules at
+    registration time, and a profile without speculative decoding never needs
+    this one, so the patch is deferred to the import itself.
+    """
+
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname != _JIT_SAMPLING_MODULE:
+            return None
+        for finder in sys.meta_path:
+            if finder is self:
+                continue
+            find_spec = getattr(finder, "find_spec", None)
+            if find_spec is None:
+                continue
+            spec = find_spec(fullname, path, target)
+            if spec is not None:
+                spec.loader = _PatchingLoader(spec.loader)
+                return spec
+        return None
+
+
+def install_jit_cccl_compat() -> bool:
+    """Add the CCCL backport to the speculative JIT include path.
+
+    The pinned ``flashinfer/sampling.cuh`` uses ``cuda::maximum`` and
+    ``cuda::minimum``, which exist only in CCCL 3.x (CUDA 13). Under CUDA 12.x
+    the JIT build of the tree-sampling kernel therefore fails before it starts:
+
+        flashinfer/sampling.cuh(40): error: namespace "cuda" has no member "maximum"
+
+    ``sglang/kernels/ops/speculative/sampling.py`` calls ``load_jit`` without
+    ``extra_include_paths``, and resolves that name from its own module
+    namespace at call time, so replacing the attribute is enough -- the pin
+    stays unedited. ``cccl/`` next to this file holds the shim; it defers to
+    the toolkit on CUDA 13 and later.
+
+    Returns True once the hook is armed, including when it already was. False
+    when the module is already imported and has no ``load_jit`` to wrap: that
+    is a pin rename, and reporting success there would send the next step back
+    to the original "namespace cuda has no member maximum" error with a
+    component that logged that it had installed.
+    """
+    global _JIT_CCCL_INSTALLED
+    if _JIT_CCCL_INSTALLED:
+        return True
+
+    # A worker that imported the module before the plugin loaded still has to
+    # be patched, and one that has not gets patched by the finder on import.
+    module = sys.modules.get(_JIT_SAMPLING_MODULE)
+    if module is not None:
+        load_jit = getattr(module, "load_jit", None)
+        if load_jit is None:
+            logger.warning(
+                "sglang-restomod: %s has no load_jit; the CCCL shim is not armed",
+                _JIT_SAMPLING_MODULE,
+            )
+            return False
+        if not getattr(load_jit, "_restomod_cccl_shim", False) and not _wrap_sampling_module(
+            module
+        ):
+            return False
+    elif not any(isinstance(finder, _JitSamplingFinder) for finder in sys.meta_path):
+        sys.meta_path.insert(0, _JitSamplingFinder())
+
+    _JIT_CCCL_INSTALLED = True
     return True
 
 
 def register() -> None:
     """Component entry point."""
     install()
+    install_jit_cccl_compat()

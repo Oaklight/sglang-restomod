@@ -49,6 +49,7 @@ include = ["sglang_restomod*"]
 "sglang_restomod.quant.sm70_fp8_moe" = ["*.cpp", "README.md"]
 "sglang_restomod.quant.sm70_fp4_moe" = ["PROVENANCE.md"]
 "sglang_restomod.quant.sm70_marlin_v100" = ["patches/*.patch", "patches/README.md"]
+"sglang_restomod.spec" = ["cccl/cuda/functional"]
 
 [tool.ruff]
 line-length = 100
