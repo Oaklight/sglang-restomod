@@ -36,6 +36,9 @@ jobs:
           IDENTITY_DENYLIST: ${{ secrets.IDENTITY_DENYLIST }}
         run: python scripts/check_identity.py
 
+      - name: GPU workflow gates
+        run: python scripts/check_workflow_gates.py
+
       - name: Fetch the pinned upstream tree
         run: git fetch --depth 1 origin +refs/heads/upstream:refs/remotes/origin/upstream
 
