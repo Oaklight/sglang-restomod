@@ -18,8 +18,11 @@ A fourth name is patched that is not a kernel binding, because the w4a4 method
 leaves it unhandled: ``nvfp4_marlin_process_global_scale``. ``weight_scale_2``
 is one entry per shard of a fused layer, so ``gate_up_proj`` reaches the kernel
 with ``numel() == 2`` in fp32, while the op requires a half or bfloat16 scalar.
-``ModelOptNvFp4A16LinearMethod`` collapses it with ``max()``; this repeats that,
-warns, and keeps the fp16 conversion the prepare step would have done.
+``ModelOptNvFp4A16LinearMethod`` collapses it with ``max()``; this repeats that
+and warns. The result then goes back to float32: the pin's prepare step asserts
+a 16-bit input, but the SM70 NVFP4 kernel reads a float32 scalar
+(``marlin.cu:281``), and every value that survives the 16-bit round trip is
+exactly representable again, so the widening is lossless.
 """
 
 from __future__ import annotations
@@ -140,7 +143,12 @@ def _make_global_scale(original):
             global_scale = global_scale.max()
         if global_scale.dtype not in (torch.float16, torch.bfloat16):
             global_scale = global_scale.to(torch.float16)
-        return original(global_scale)
+        processed = original(global_scale)
+        # The pin prepares a 16-bit scalar; the SM70 NVFP4 kernel reads float32
+        # (marlin.cu:281) and rejects anything else. Widening is exact.
+        if processed.dtype != torch.float32:
+            processed = processed.to(torch.float32)
+        return processed
 
     return nvfp4_marlin_process_global_scale
 

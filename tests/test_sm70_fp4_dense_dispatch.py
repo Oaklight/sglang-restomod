@@ -50,8 +50,10 @@ def fp4(monkeypatch):
         return "permuted-result"
 
     def global_scale(value):
+        # The pin returns the 16-bit tensor it was given; the assertion below is
+        # on what the bridge hands back, not on what it hands in.
         calls["global_scale"] = value
-        return value
+        return value.clone()
 
     def prepare(layer):
         calls["prepare"] = layer
@@ -203,27 +205,29 @@ def test_zero_rows_returns_an_empty_output_without_the_kernel(fp4):
     assert "gemm" not in fp4.calls
 
 
-def test_a_fused_global_scale_is_collapsed_to_one_half(fp4):
+def test_a_fused_global_scale_is_collapsed_and_widened(fp4):
     method.install()
     per_shard = torch.tensor([1.5, 2.5], dtype=torch.float32)
 
-    fp4.module.nvfp4_marlin_process_global_scale(per_shard)
+    out = fp4.module.nvfp4_marlin_process_global_scale(per_shard)
 
-    passed = fp4.calls["global_scale"]
-    assert passed.numel() == 1
-    assert passed.dtype == torch.float16
-    assert passed.item() == pytest.approx(2.5)
+    # The pin's prepare step takes a 16-bit scalar ...
+    assert fp4.calls["global_scale"].dtype == torch.float16
+    assert fp4.calls["global_scale"].numel() == 1
+    # ... and the SM70 NVFP4 kernel reads float32 (marlin.cu:281).
+    assert out.dtype == torch.float32
+    assert out.numel() == 1
+    assert out.item() == pytest.approx(2.5)
 
 
-def test_a_scalar_global_scale_is_only_cast(fp4):
+def test_a_scalar_global_scale_is_widened_not_rounded(fp4):
     method.install()
 
-    fp4.module.nvfp4_marlin_process_global_scale(torch.tensor([0.25], dtype=torch.float32))
+    out = fp4.module.nvfp4_marlin_process_global_scale(torch.tensor([0.25], dtype=torch.float32))
 
-    passed = fp4.calls["global_scale"]
-    assert passed.numel() == 1
-    assert passed.dtype == torch.float16
-    assert passed.item() == pytest.approx(0.25)
+    assert out.dtype == torch.float32
+    assert out.numel() == 1
+    assert out.item() == pytest.approx(0.25)
 
 
 def test_a_missing_extension_refuses_at_weight_load(fp4, monkeypatch):
