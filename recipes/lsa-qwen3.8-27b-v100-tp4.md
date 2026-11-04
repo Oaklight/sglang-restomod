@@ -82,10 +82,7 @@ with a subquadratic read.
 
 ## Receipt
 
-The evidence bundle is packed for commit `3c4ea17695` (12 files, bundle digest
-`cd0d28c21b49f49d7bed98a2313df853f044cbf174801c9267864c436b1bb56b`, file
-sha256 `70a229b66f728a9fb802dee238cc4876a8b00c83897be74e60624b298f09bdc5`;
-`gpu_tests.txt` 13 passed / 1 skipped; launch check
-`attention_backend=lsa_sm70`). It is not signed yet: the operator key is not
-on the GPU host. Sign it with `oob sign` as in `docs/gpu-receipts.md` before
-treating this row as receipted.
+The evidence bundle for the commit that carries this recipe is signed with the
+V100 operator key and posted on PR #182; the `gpu-receipt` check carries the
+bundle digest. It records `gpu_tests.txt` (13 passed / 1 skipped) and the launch
+check `attention_backend=lsa_sm70`.
