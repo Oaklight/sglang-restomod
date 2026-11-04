@@ -19,10 +19,10 @@ leaves it unhandled: ``nvfp4_marlin_process_global_scale``. ``weight_scale_2``
 is one entry per shard of a fused layer, so ``gate_up_proj`` reaches the kernel
 with ``numel() == 2`` in fp32, while the op requires a half or bfloat16 scalar.
 ``ModelOptNvFp4A16LinearMethod`` collapses it with ``max()``; this repeats that
-and warns. The result then goes back to float32: the pin's prepare step asserts
-a 16-bit input, but the SM70 NVFP4 kernel reads a float32 scalar
-(``marlin.cu:281``), and every value that survives the 16-bit round trip is
-exactly representable again, so the widening is lossless.
+and warns. The pin then scales the value by a container-dependent bias *in that
+container* -- 128 for fp16, 2**119 for bfloat16 -- which overflows fp16 above
+511.75 and rounds a small scale before it is ever used. This does both steps in
+float32 instead and hands the kernel the scalar it wants (``marlin.cu:281``).
 """
 
 from __future__ import annotations
@@ -125,30 +125,49 @@ def marlin_permute_scales(s, size_k, size_n, group_size):
 
 
 def _make_global_scale(original):
+    """Do the pin's global-scale arithmetic in float32.
+
+    The pin's ``nvfp4_marlin_process_global_scale`` takes a 16-bit tensor and
+    multiplies it by ``2 ** (exponent_bias - 7)`` *in that dtype*: 128 for the
+    fp16 branch, 2**119 for bfloat16. Two things follow, and both are avoided
+    by doing the work one width up:
+
+    * an fp16 product overflows above 511.75, so a large per-tensor scale comes
+      out ``inf`` before the kernel ever sees it;
+    * rounding the input to fp16 first throws away precision that a small
+      scale needs -- 3e-5 lands at 0.0038376 instead of 0.00384.
+
+    The multiplier is read from the pin itself rather than restated here, so a
+    change to the bias follows automatically.
+    """
+
     def nvfp4_marlin_process_global_scale(global_scale):
         global _COLLAPSE_WARNED
 
         import torch
 
-        if global_scale.numel() != 1:
-            # A fused layer calibrated gate and up separately. One alpha for
-            # both halves degrades whichever was not the largest, which is the
-            # same approximation ModelOptNvFp4A16LinearMethod makes.
+        # One alpha for a fused layer: gate and up were calibrated separately,
+        # and this is the same collapse ModelOptNvFp4A16LinearMethod makes.
+        scale = global_scale.to(torch.float32)
+        if scale.numel() != 1:
             if not _COLLAPSE_WARNED:
                 logger.warning(
                     "SM70 NVFP4 dense: collapsing %d per-shard global scales with max()",
-                    global_scale.numel(),
+                    scale.numel(),
                 )
                 _COLLAPSE_WARNED = True
-            global_scale = global_scale.max()
-        if global_scale.dtype not in (torch.float16, torch.bfloat16):
-            global_scale = global_scale.to(torch.float16)
-        processed = original(global_scale)
-        # The pin prepares a 16-bit scalar; the SM70 NVFP4 kernel reads float32
-        # (marlin.cu:281) and rejects anything else. Widening is exact.
-        if processed.dtype != torch.float32:
-            processed = processed.to(torch.float32)
-        return processed
+            scale = scale.max()
+
+        probe_dtype = (
+            global_scale.dtype
+            if global_scale.dtype in (torch.float16, torch.bfloat16)
+            else torch.float16
+        )
+        multiplier = original(torch.ones(1, dtype=probe_dtype)).to(torch.float32)
+
+        # float32 in, float32 out: the SM70 NVFP4 kernel reads one float32
+        # scalar (marlin.cu:281) and the product never narrows on the way.
+        return (scale * multiplier).reshape(1)
 
     return nvfp4_marlin_process_global_scale
 

@@ -50,10 +50,11 @@ def fp4(monkeypatch):
         return "permuted-result"
 
     def global_scale(value):
-        # The pin returns the 16-bit tensor it was given; the assertion below is
-        # on what the bridge hands back, not on what it hands in.
+        # The pin multiplies by a container-dependent bias in the container's
+        # own dtype; the bridge probes it with a one and applies it in fp32.
         calls["global_scale"] = value
-        return value.clone()
+        bias = 128.0 if value.dtype != torch.bfloat16 else 2.0**119
+        return value * bias
 
     def prepare(layer):
         calls["prepare"] = layer
@@ -205,29 +206,36 @@ def test_zero_rows_returns_an_empty_output_without_the_kernel(fp4):
     assert "gemm" not in fp4.calls
 
 
-def test_a_fused_global_scale_is_collapsed_and_widened(fp4):
+def test_a_fused_global_scale_is_collapsed_to_one_float32(fp4):
     method.install()
-    per_shard = torch.tensor([1.5, 2.5], dtype=torch.float32)
+    per_shard = torch.tensor([1.5, 2.5], dtype=torch.float16)
 
     out = fp4.module.nvfp4_marlin_process_global_scale(per_shard)
 
-    # The pin's prepare step takes a 16-bit scalar ...
-    assert fp4.calls["global_scale"].dtype == torch.float16
-    assert fp4.calls["global_scale"].numel() == 1
-    # ... and the SM70 NVFP4 kernel reads float32 (marlin.cu:281).
     assert out.dtype == torch.float32
     assert out.numel() == 1
-    assert out.item() == pytest.approx(2.5)
+    assert out.item() == pytest.approx(2.5 * 128.0)
 
 
-def test_a_scalar_global_scale_is_widened_not_rounded(fp4):
+def test_a_large_global_scale_does_not_overflow(fp4):
+    """600 would become inf if the pin's x128 ran in fp16."""
     method.install()
 
-    out = fp4.module.nvfp4_marlin_process_global_scale(torch.tensor([0.25], dtype=torch.float32))
+    out = fp4.module.nvfp4_marlin_process_global_scale(torch.tensor([600.0], dtype=torch.float16))
 
     assert out.dtype == torch.float32
-    assert out.numel() == 1
-    assert out.item() == pytest.approx(0.25)
+    assert out.item() == pytest.approx(600.0 * 128.0)
+    assert torch.isfinite(out).all()
+
+
+def test_a_small_global_scale_keeps_the_precision_fp16_would_lose(fp4):
+    method.install()
+
+    out = fp4.module.nvfp4_marlin_process_global_scale(torch.tensor([3e-5], dtype=torch.float32))
+
+    # fp16 first rounds 3e-5 to 3.0518e-5, giving 0.00383758; multiplying in
+    # fp32 gives 0.00384 exactly.
+    assert out.item() == pytest.approx(3e-5 * 128.0, rel=1e-6)
 
 
 def test_a_missing_extension_refuses_at_weight_load(fp4, monkeypatch):
