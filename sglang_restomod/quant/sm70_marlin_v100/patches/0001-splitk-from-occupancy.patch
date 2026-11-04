@@ -11,13 +11,17 @@ index 0e8ecbf..037fcb1 100644
  
  inline Sm70CtaGeometry sm70_marlin_default_geometry_from_packed_macro_n(
      int packed_macro_n) {
-@@ -335,6 +335,48 @@ inline Sm70CtaGeometry sm70_marlin_default_geometry_from_packed_macro_n(
+@@ -335,6 +335,52 @@ inline Sm70CtaGeometry sm70_marlin_default_geometry_from_packed_macro_n(
    return {0, 0, 0, 0, 0, 0, 0};
  }
  
 +// One CTA computes one output tile, so a small tile count leaves the 80 SMs of
 +// a V100 idle and the K loop runs to completion on each of them. Split K until
 +// about two waves are in flight, then stop: past that the reduction cost wins.
++// The realized count is in (96, 192]: the loop stops before the doubling that
++// would cross the target. The cap of 8 is the limit for a narrow-N shape with
++// 1-12 tiles (N=256, M=1 is one tile, so 8 CTAs on 80 SMs); the rule cannot
++// fill the machine there.
 +// Measured on one V100 for the 27B shapes, split_k=8 helps up to M=16, 4 at
 +// M=64, and 1 at M>=256.
 +inline constexpr int64_t kSm70MarlinTargetCtas = 192;
