@@ -49,9 +49,23 @@ _SPLIT_K_LONG_MIN = 2560
 _SPLIT_K_DECODE_MAX_M = 8
 _SPLIT_K_ALIGN = 64
 _STATS: dict[str, float] = {}
-# scalar_types.float4_e2m1f.id, spelled out so the dispatch below does not have
-# to import sgl_kernel on a path that never reaches the kernel.
-_NVFP4_TYPE_ID = 562949953487106
+
+
+def _is_nvfp4(b_q_type) -> bool:
+    """True when ``b_q_type`` names the NVFP4 scalar type.
+
+    Callers pass the enum member, or its integer id. The name is read first, so
+    the usual path never imports sgl_kernel; the id path imports it lazily
+    rather than repeating the value as a literal.
+    """
+    if b_q_type is None:
+        return False
+    name = getattr(b_q_type, "name", None)
+    if name is not None:
+        return str(name) == "float4_e2m1f"
+    from sgl_kernel.scalar_type import scalar_types
+
+    return int(b_q_type) == scalar_types.float4_e2m1f.id
 
 
 def _record_moe_stats(expert_ids, num_tokens_post_padded, size_m: int, block: int) -> None:
@@ -342,7 +356,7 @@ def moe_wna16_marlin_gemm(
         and b_zeros_or_none is None
         and g_idx_or_none is None
         and perm_or_none is None
-        and int(getattr(b_q_type, "id", b_q_type)) == _NVFP4_TYPE_ID
+        and _is_nvfp4(b_q_type)
     ):
         from sglang_restomod.quant.sm70_fp4_moe import decode_gemv
 
