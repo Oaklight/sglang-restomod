@@ -111,6 +111,37 @@ Non-greedy measurement (temperature 1, top-p 0.95, top-k 20, 128 output):
 cards. The offloaded table is fp8, and the pinned gather kernel cannot compile
 on SM70; the `ple_sm70` component replaces it.
 
+## Split-K
+
+The two expert GEMMs of a layer have different K, and split-K helps one while
+hurting the other. `sglang_restomod` picks it per launch through
+`SGLANG_SM70_FP4_MOE_SPLIT_K`:
+
+| value | behaviour |
+|---|---|
+| unset, `per-shape` | 2 for a K of at least 2560 that is 64-aligned, 1 otherwise |
+| `off` | leave `SM70_MARLIN_MOE_SPLIT_K` as the extension finds it |
+| `1`, `2`, `4`, `8` | pin that value for every call |
+
+Trace measurement, ten decode steps at 4,096 context, GPUs 0-3 with the other
+cards idle, device time per launch:
+
+| call | N | K | split-K 1 | split-K 2 |
+|---|---:|---:|---:|---:|
+| gate_up | 320 | 2560 | 130.7 us | 102.7 us |
+| down | 2560 | 160 | 44.7 us | 76.8 us |
+
+Splitting the down call also costs the step more than its GEMM delta: the TP
+all-reduce behind it goes 0.59 -> 2.81 ms/step. That is why one value for the
+whole model loses either way, and why the per-shape rule exists: it puts the
+step at 29.76 and 30.10 ms against 31.08 and 31.14 for split-K 1 everywhere.
+
+These are trace numbers. Decode tok/s for this configuration has not been taken
+under the receipt protocol.
+
+Split-K 2 accumulates with `atomicAdd` on `__half`, so the gate_up output is
+not bitwise reproducible across runs at that setting; split-K 1 is.
+
 ## Measured
 
 4× V100-SXM2, TP4 on one NVLink island (0-3), `--ple-offload-embedding`,

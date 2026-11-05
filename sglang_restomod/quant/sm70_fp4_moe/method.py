@@ -14,6 +14,11 @@ Three upstream hooks are replaced:
 3. ``FusedMoE`` selection is unchanged: launch with
    ``--moe-runner-backend marlin`` and ``--quantization modelopt_fp4``.
 
+Split-K is picked per launch (``SGLANG_SM70_FP4_MOE_SPLIT_K``, see
+``_select_split_k``): on the TP4 profile the gate_up call wants 2 and the down
+call wants 1, and both run in the same process, so the value has to be set call
+by call rather than once at launch.
+
 The extension is built outside the package; see ``PROVENANCE.md``.
 """
 
@@ -31,6 +36,13 @@ logger = logging.getLogger(__name__)
 
 ENV_MODE = "SGLANG_SM70_FP4_MOE"
 ENV_STATS = "SGLANG_SM70_FP4_MOE_STATS"
+ENV_SPLIT_K = "SGLANG_SM70_FP4_MOE_SPLIT_K"
+MARLIN_SPLIT_K = "SM70_MARLIN_MOE_SPLIT_K"
+_SPLIT_K_OFF = ("0", "off", "auto", "none", "false")
+_SPLIT_K_SUPPORTED = ("1", "2", "4", "8")
+_SPLIT_K_LONG = "2"
+_SPLIT_K_LONG_MIN = 2560
+_SPLIT_K_ALIGN = 64
 _STATS: dict[str, float] = {}
 
 
@@ -71,6 +83,44 @@ def _record_moe_stats(expert_ids, num_tokens_post_padded, size_m: int, block: in
             stats["experts"] / n,
         )
         _STATS.clear()
+
+
+def _select_split_k(size_k: int) -> None:
+    """Pick the Marlin split-K for this launch.
+
+    Split-K hands one output tile's K loop to ``grid.z`` CTAs that accumulate
+    with atomics, so it pays only when the loop is long and the grid is small.
+    Measured on the TP4 profile at 4,096 context over ten decode steps, one
+    V100 island: the gate_up call (``size_k`` 2560) runs 130.7 us per launch at
+    split-K 1 and 102.7 us at 2; the down call (``size_k`` 160) runs 44.7 us at
+    1 and 76.8 us at 2. One value for the whole model loses either way, because
+    splitting the down call also costs the step more than the GEMM delta shows:
+    the TP all-reduce behind it goes 0.59 -> 2.81 ms/step.
+
+    ``SGLANG_SM70_FP4_MOE_SPLIT_K`` takes ``per-shape`` (the default), ``off``,
+    or one of 1/2/4/8 to pin every call. ``per-shape`` uses 2 for a K of at
+    least 2560 that is 64-aligned, so a CTA_K of 32 or 64 divides it, and 1
+    otherwise. The value this writes wins over ``SM70_MARLIN_MOE_SPLIT_K`` set
+    outside the component.
+
+    The extension reads the variable with ``std::getenv`` on every launch, so a
+    per-call value is honoured. CUDA-graph capture runs this once per shape and
+    replay does not re-read it.
+    """
+    mode = os.environ.get(ENV_SPLIT_K, "").strip().lower()
+    if mode in ("", "per-shape", "per_shape"):
+        long_call = size_k >= _SPLIT_K_LONG_MIN and size_k % _SPLIT_K_ALIGN == 0
+        os.environ[MARLIN_SPLIT_K] = _SPLIT_K_LONG if long_call else "1"
+        return
+    if mode in _SPLIT_K_OFF:
+        return
+    if mode in _SPLIT_K_SUPPORTED:
+        os.environ[MARLIN_SPLIT_K] = mode
+        return
+    raise ValueError(
+        f"{ENV_SPLIT_K} must be 'per-shape', 'off', or one of "
+        f"{', '.join(_SPLIT_K_SUPPORTED)}; got {mode!r}"
+    )
 
 
 def _mode() -> str:
@@ -257,6 +307,7 @@ def moe_wna16_marlin_gemm(
             "launch with --ep-size 1"
         )
     _record_moe_stats(expert_ids, num_tokens_post_padded, size_m, moe_block_size)
+    _select_split_k(size_k)
     op = ensure_loaded().gemm
     return op(
         a,
