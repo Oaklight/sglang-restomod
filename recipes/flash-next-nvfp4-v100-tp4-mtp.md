@@ -119,13 +119,21 @@ hurting the other. `sglang_restomod` picks it per launch through
 
 | value | behaviour |
 |---|---|
-| unset, `per-shape` | 2 for a decode call (`size_m` at or below 8) whose K is at least 2560 and 64-aligned, 1 otherwise; prefill keeps 1 |
+| unset, `per-shape` | 2 for a decode-shaped call (`size_m` at or below 8) whose K is at least 2560 and 64-aligned, 1 otherwise; prefill keeps 1 |
 | `off` | leave `SM70_MARLIN_MOE_SPLIT_K` as the extension finds it |
 | `1`, `2`, `4`, `8` | pin that value for every call |
 
 The decode gate is the cut `_record_moe_stats` uses. Split-K buys back a
 half-empty wave, and a prefill chunk has none to fill. Nothing here measures
 prefill; the gate is what keeps the rule off the unmeasured case.
+
+`size_m` is not the same quantity at the two call sites: `fused_marlin_moe.py`
+passes `M`, the token count, to gate_up and `M * top_k` to down. For gate_up
+the gate therefore reads as "at most 8 tokens in the batch": concurrency 1 to
+8 keeps split-K 2, and a 16-token decode batch gets 1. Down's K is 160 on this
+profile, which fails the K gate first, so its convention does not change the
+choice today. The measurement below is single-stream; nothing here says what
+the gate does to a wider decode batch.
 
 Trace measurement, ten decode steps at 4,096 context, GPUs 0-3 with the other
 cards idle, device time per launch:
@@ -141,16 +149,22 @@ slope at every step. At 48 calls each per step the MoE term is 6.98-7.21 ms for
 the rule against 8.42-8.46 at split-K 1 and 8.59-8.62 at split-K 2, and the
 step follows: 29.76 and 30.10 ms against 31.08 and 31.14.
 
-These are trace numbers. Decode tok/s for this configuration has not been taken
-under the receipt protocol.
+These are trace numbers, device time per launch. The receipt for this change
+(`evidence-cbc56116-splitk`) also records end-to-end decode on the same
+configuration: 128 output tokens at 4,096 context, single stream, one V100
+island, at 78.31 and 89.12 tok/s on its two reps (TTFT 2.37 and 2.81 s). It
+has no split-K 1 arm, so it does not measure the 1.3 ms itself; what it does
+is fix the configuration the trace above was taken on, and show that the
+served launch is the one this section describes.
 
 **Numerics.** Only gate_up runs at split-K 2, so the difference enters before
 the activation and every expert output downstream carries it. On the
 `sm70_fp4_moe.check` case (K=256, N=256, output magnitude 56), split-K 1
 matches the dequantized reference bit-exactly and split-K 2 differs from it by
-at most 3.125e-2, which is 1.1 fp16 ulp at that magnitude. Two identical
-prompts can therefore diverge at the first token where the two accumulation
-orders round differently; a diff between runs is not by itself a bug report.
+at most 3.125e-2, which is exactly one fp16 ulp at that magnitude: 56 is in
+[32, 64), where the ulp is 2^(5-10) = 0.03125. Two identical prompts can
+therefore diverge at the first token where the two accumulation orders round
+differently; a diff between runs is not by itself a bug report.
 
 One measurement to not repeat: a single earlier trace showed the TP all-reduce
 behind the down call at 2.81 ms/step under split-K 2 against 0.59 at split-K 1,

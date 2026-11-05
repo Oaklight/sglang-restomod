@@ -109,7 +109,12 @@ def _select_split_k(size_m: int, size_k: int) -> None:
     the win comes from filling a half-empty wave, and a chunk has no partial
     wave to fill. ``size_m`` is the whole grid variable here: N is fixed per
     call site and CTA_N follows from it, so the grid scales with M and the two
-    regimes differ in it by three orders of magnitude.
+    regimes differ in it by three orders of magnitude. The two call sites do
+    not count it the same way — gate_up is passed ``M``, the token count, and
+    down is passed ``M * top_k`` — so for gate_up the cut means "at most 8
+    tokens in the batch": concurrency 1 to 8 keeps split-K 2, and a 16-token
+    decode batch gets 1. Down's K is 160 on this profile and fails the K gate
+    first, so its convention does not change the choice today.
 
     The split hands each CTA a whole number of CTA_K tiles
     (``sm70_splitk_partition``) and the launch checks
