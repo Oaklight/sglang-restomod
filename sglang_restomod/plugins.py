@@ -71,6 +71,11 @@ COMPONENTS: dict[str, Component] = {
         module="sglang_restomod.quant.sm70_marlin_v100",
         description="Dense WNA16 (int4 GPTQ) linear GEMM through the marlin_v100 extension",
     ),
+    "moe_align_sm70": Component(
+        name="moe_align_sm70",
+        module="sglang_restomod.moe.align_sm70",
+        description="Route tiny-batch MoE alignment to the CUDA pair on SM70",
+    ),
     "fp4_moe": Component(
         name="fp4_moe",
         module="sglang_restomod.quant.sm70_fp4_moe",
