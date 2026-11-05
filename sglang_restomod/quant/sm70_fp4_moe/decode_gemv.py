@@ -10,9 +10,11 @@ Eligibility is deliberately narrow, because the kernel decodes the repacked
 weight layout by hand:
 
 * the tensor is NVFP4 with no bias, zeros, ``g_idx`` or permutation;
-* ``N % 64 == 0`` and ``N / 64`` is **odd** -- the repack tiles the output
-  differently for an even number of 64-column tiles and only the odd ordering
-  is decoded (``notes/nvfp4-marlin-layout-2026-11-05.md``);
+* ``N % 64 == 0`` and ``N / 64`` is **odd**. Both orderings are decoded now
+  (``notes/nvfp4-marlin-layout-2026-11-05.md``), but the even case is the down
+  projection, where ``k / CtaK = 5`` leaves too little work to amortise the
+  top-k reduction: 49.3 us against Marlin's 48.3 us. So the restriction is
+  deliberate, not a limitation;
 * ``K % 16 == 0`` and the route tile is 8 rows, which is what the align kernel
   emits at decode;
 * the output is routed by ``sorted_token_ids`` as the Marlin call expects.
