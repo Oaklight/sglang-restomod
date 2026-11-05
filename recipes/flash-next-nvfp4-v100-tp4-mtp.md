@@ -7,7 +7,7 @@
 | Topology | TP4, `--ep-size 1` |
 | Context | 4,096 |
 | Engine | upstream `v0.5.22 @ baa9befa` + `sglang_restomod` |
-| Components | `attention_v100`, `fp4_moe`, `ple_sm70`, `spec_sm70` |
+| Components | `attention_v100`, `fp4_moe`, `moe_align_sm70`, `ple_sm70`, `spec_sm70` |
 | External | `marlin_v100` extension (`SM70_MARLIN_DIR`) |
 | Date | 2026-11-01 |
 
