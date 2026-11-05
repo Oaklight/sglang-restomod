@@ -132,6 +132,12 @@ def maybe_call(
         return None
 
     rows = c.size(0)
+    # The kernel treats ``sorted_token_ids`` as route indices and derives
+    # the activation row as ``row / top_k``. The server's align kernel emits
+    # token indices instead, so the two only agree when the output has one
+    # row per route tile. Refuse anything else rather than compute garbage.
+    if rows != expert_ids.size(0):
+        return None
     workspace = _workspace_for(rows, size_n, c.device)
     return module.decode_moe_gemv(
         a, c, b_q_weight, b_scales, global_scale, sorted_token_ids,
