@@ -313,7 +313,11 @@ torch::Tensor decode_moe_gemv(torch::Tensor a, torch::Tensor c,
                               torch::Tensor workspace, int64_t k_split) {
     const int route_tiles = expert_ids.size(0);
     dim3 grid(size_n / kTileN, route_tiles, k_split);
-    decode_moe_gemv_kernel<<<grid, kThreads>>>(
+    // Launch on the current stream: a bare <<<...>>> goes to the legacy
+    // default stream, which CUDA graph capture does not record, so the
+    // captured graph comes out empty and the server fails at capture time.
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream(a.get_device()).stream();
+    decode_moe_gemv_kernel<<<grid, kThreads, 0, stream>>>(
         reinterpret_cast<const __half*>(a.data_ptr()),
         reinterpret_cast<__half*>(c.data_ptr()),
         b_q_weight.data_ptr<int>(),
@@ -326,7 +330,7 @@ torch::Tensor decode_moe_gemv(torch::Tensor a, torch::Tensor c,
         mul_topk_weights, topk_weights.data_ptr<float>(),
         workspace.data_ptr<float>(), static_cast<int>(k_split));
     const int reduce_grid = (size_n + 255) / 256;
-    reduce_split_k_kernel<<<dim3(reduce_grid, num_rows), 256>>>(
+    reduce_split_k_kernel<<<dim3(reduce_grid, num_rows), 256, 0, stream>>>(
         workspace.data_ptr<float>(),
         reinterpret_cast<__half*>(c.data_ptr()),
         topk_weights.data_ptr<float>(),
