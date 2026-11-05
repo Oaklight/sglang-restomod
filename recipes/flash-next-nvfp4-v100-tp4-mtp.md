@@ -143,6 +143,33 @@ larger gap than exists.
 Memory: about 23 GiB resident per card; `--mem-fraction-static 0.85` leaves
 only 0.89 GiB free, so MTP runs at 0.82.
 
+## The dense path in block FP8 (2026-11-04)
+
+Add `fp8_dense,fp8_lm_head,fp8_dense_quant` to `SGLANG_RESTOMOD_COMPONENTS`.
+The checkpoint stores every non-expert weight in BF16, and at M=1..4 those
+GEMMs are bandwidth-bound, so the byte count is the cost. `fp8_lm_head`
+quantizes the head after load; `fp8_dense_quant` does the same for every dense
+linear whose shape is a multiple of the 128 block.
+
+Measured with `profile_fn_decode.py`, 4k prefix, 10 decode steps, TP-0/TP-1
+traces:
+
+| build | step | cutlass 16x16 | cutlass 32x32 | TurboMind GEMM |
+|---|---:|---:|---:|---:|
+| base | 32.79 ms | 8.45 ms | 2.40 ms | 0 |
+| `fp8_lm_head` | 31.54 ms | 6.57 ms | 2.41 ms | 0.84 ms |
+| + `fp8_dense_quant` | **31.08 ms** | 4.56 ms | 2.44 ms | 2.29 ms |
+
+That is -1.71 ms per step, -5.2%. The bench cannot resolve it on this box
+(82.75 / 97.79 / 84.28 tok/s against an 82-84 baseline across three fresh
+reps), so the trace is the evidence.
+
+Only 49 linears per rank are converted: the rest of the dense weights have an N
+that is not a multiple of 128 (864, 1076, 320, 24, 1), which the TurboMind
+kernel's contract does not admit. `--quantization modelopt_fp4` keeps the
+experts out of this path; they stay on the marlin NVFP4 GEMM.
+
+
 ## Known gaps
 
 - The first forward pass JIT-compiles the `moe_sum_reduce` replacement; the
