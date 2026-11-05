@@ -54,18 +54,26 @@ _STATS: dict[str, float] = {}
 def _is_nvfp4(b_q_type) -> bool:
     """True when ``b_q_type`` names the NVFP4 scalar type.
 
-    Callers pass the enum member, or its integer id. The name is read first, so
-    the usual path never imports sgl_kernel; the id path imports it lazily
-    rather than repeating the value as a literal.
+    Callers pass the enum member, an object with an ``id``, or the integer id.
+    The name is read first, so the usual path never imports sgl_kernel. The id
+    path resolves the value from the enum rather than repeating the literal.
+    It returns False when sgl_kernel is absent, which happens only in the CPU
+    unit tests, where this kernel cannot run in any case.
     """
     if b_q_type is None:
         return False
     name = getattr(b_q_type, "name", None)
     if name is not None:
         return str(name) == "float4_e2m1f"
-    from sgl_kernel.scalar_type import scalar_types
-
-    return int(b_q_type) == scalar_types.float4_e2m1f.id
+    try:
+        value = int(getattr(b_q_type, "id", b_q_type))
+    except (TypeError, ValueError):
+        return False
+    try:
+        from sgl_kernel.scalar_type import scalar_types
+    except ImportError:
+        return False
+    return value == scalar_types.float4_e2m1f.id
 
 
 def _record_moe_stats(expert_ids, num_tokens_post_padded, size_m: int, block: int) -> None:
