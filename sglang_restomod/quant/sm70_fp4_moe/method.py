@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 
 import torch
 
@@ -38,10 +39,14 @@ ENV_MODE = "SGLANG_SM70_FP4_MOE"
 ENV_STATS = "SGLANG_SM70_FP4_MOE_STATS"
 ENV_SPLIT_K = "SGLANG_SM70_FP4_MOE_SPLIT_K"
 MARLIN_SPLIT_K = "SM70_MARLIN_MOE_SPLIT_K"
-_SPLIT_K_OFF = ("0", "off", "auto", "none", "false")
+_SPLIT_K_OFF = ("0", "off", "none", "false")
+_SPLIT_K_LOCK = threading.Lock()
 _SPLIT_K_SUPPORTED = ("1", "2", "4", "8")
 _SPLIT_K_LONG = "2"
 _SPLIT_K_LONG_MIN = 2560
+# The same decode cut ``_record_moe_stats`` uses. Split-K buys back
+# partial-wave waste, and a prefill chunk has no partial wave.
+_SPLIT_K_DECODE_MAX_M = 8
 _SPLIT_K_ALIGN = 64
 _STATS: dict[str, float] = {}
 
@@ -85,7 +90,7 @@ def _record_moe_stats(expert_ids, num_tokens_post_padded, size_m: int, block: in
         _STATS.clear()
 
 
-def _select_split_k(size_k: int) -> None:
+def _select_split_k(size_m: int, size_k: int) -> None:
     """Pick the Marlin split-K for this launch.
 
     Split-K hands one output tile's K loop to ``grid.z`` CTAs that accumulate
@@ -93,15 +98,25 @@ def _select_split_k(size_k: int) -> None:
     Measured on the TP4 profile at 4,096 context over ten decode steps, one
     V100 island: the gate_up call (``size_k`` 2560) runs 130.7 us per launch at
     split-K 1 and 102.7 us at 2; the down call (``size_k`` 160) runs 44.7 us at
-    1 and 76.8 us at 2. One value for the whole model loses either way, because
-    splitting the down call also costs the step more than the GEMM delta shows:
-    the TP all-reduce behind it goes 0.59 -> 2.81 ms/step.
+    1 and 76.8 us at 2, and 113.3 us at 4. One value for the whole model loses
+    either way: at 48 calls each per step, split-K 2 everywhere is 8.6 ms of
+    MoE against 6.98-7.21 for this rule and 8.42-8.46 for split-K 1.
 
     ``SGLANG_SM70_FP4_MOE_SPLIT_K`` takes ``per-shape`` (the default), ``off``,
-    or one of 1/2/4/8 to pin every call. ``per-shape`` uses 2 for a K of at
-    least 2560 that is 64-aligned, so a CTA_K of 32 or 64 divides it, and 1
-    otherwise. The value this writes wins over ``SM70_MARLIN_MOE_SPLIT_K`` set
-    outside the component.
+    or one of 1/2/4/8 to pin every call. ``per-shape`` uses 2 only for a decode
+    call (``size_m`` at or below 8, the cut ``_record_moe_stats`` uses) whose K
+    is at least 2560 and 64-aligned, and 1 otherwise. Prefill chunks keep 1:
+    the win comes from filling a half-empty wave, and a chunk has no partial
+    wave to fill. ``size_m`` is the whole grid variable here: N is fixed per
+    call site and CTA_N follows from it, so the grid scales with M and the two
+    regimes differ in it by three orders of magnitude.
+
+    The split hands each CTA a whole number of CTA_K tiles
+    (``sm70_splitk_partition``) and the launch checks
+    ``size_k % CTA_K == 0``, so 64-alignment is the requirement, not
+    divisibility by the per-split chunk; 64 covers both CTA_K values the MoE
+    geometry accepts, 32 and 64. The value this writes wins over
+    ``SM70_MARLIN_MOE_SPLIT_K`` set outside the component.
 
     The extension reads the variable with ``std::getenv`` on every launch, so a
     per-call value is honoured. CUDA-graph capture runs this once per shape and
@@ -109,8 +124,11 @@ def _select_split_k(size_k: int) -> None:
     """
     mode = os.environ.get(ENV_SPLIT_K, "").strip().lower()
     if mode in ("", "per-shape", "per_shape"):
+        decode = size_m <= _SPLIT_K_DECODE_MAX_M
         long_call = size_k >= _SPLIT_K_LONG_MIN and size_k % _SPLIT_K_ALIGN == 0
-        os.environ[MARLIN_SPLIT_K] = _SPLIT_K_LONG if long_call else "1"
+        os.environ[MARLIN_SPLIT_K] = (
+            _SPLIT_K_LONG if decode and long_call else "1"
+        )
         return
     if mode in _SPLIT_K_OFF:
         return
@@ -307,39 +325,43 @@ def moe_wna16_marlin_gemm(
             "launch with --ep-size 1"
         )
     _record_moe_stats(expert_ids, num_tokens_post_padded, size_m, moe_block_size)
-    _select_split_k(size_k)
     op = ensure_loaded().gemm
-    return op(
-        a,
-        c_or_none,
-        b_q_weight,
-        b_bias_or_none,
-        b_scales,
-        None,
-        global_scale_or_none,
-        b_zeros_or_none,
-        g_idx_or_none,
-        perm_or_none,
-        workspace,
-        sorted_token_ids,
-        expert_ids,
-        num_tokens_post_padded,
-        topk_weights,
-        moe_block_size,
-        top_k,
-        mul_topk_weights,
-        int(b_q_type.id),
-        size_m,
-        size_n,
-        size_k,
-        is_k_full,
-        use_atomic_add,
-        use_fp32_reduce,
-        is_zp_float,
-        -1,
-        -1,
-        -1,
-    )
+    # The split-K value travels in a process-global variable that the extension
+    # reads inside the call below, so the write and the call have to be atomic
+    # against another thread capturing a graph or launching an MoE GEMM.
+    with _SPLIT_K_LOCK:
+        _select_split_k(size_m, size_k)
+        return op(
+            a,
+            c_or_none,
+            b_q_weight,
+            b_bias_or_none,
+            b_scales,
+            None,
+            global_scale_or_none,
+            b_zeros_or_none,
+            g_idx_or_none,
+            perm_or_none,
+            workspace,
+            sorted_token_ids,
+            expert_ids,
+            num_tokens_post_padded,
+            topk_weights,
+            moe_block_size,
+            top_k,
+            mul_topk_weights,
+            int(b_q_type.id),
+            size_m,
+            size_n,
+            size_k,
+            is_k_full,
+            use_atomic_add,
+            use_fp32_reduce,
+            is_zp_float,
+            -1,
+            -1,
+            -1,
+        )
 
 
 _INSTALLED = False

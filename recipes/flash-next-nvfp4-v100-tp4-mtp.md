@@ -119,28 +119,44 @@ hurting the other. `sglang_restomod` picks it per launch through
 
 | value | behaviour |
 |---|---|
-| unset, `per-shape` | 2 for a K of at least 2560 that is 64-aligned, 1 otherwise |
+| unset, `per-shape` | 2 for a decode call (`size_m` at or below 8) whose K is at least 2560 and 64-aligned, 1 otherwise; prefill keeps 1 |
 | `off` | leave `SM70_MARLIN_MOE_SPLIT_K` as the extension finds it |
 | `1`, `2`, `4`, `8` | pin that value for every call |
+
+The decode gate is the cut `_record_moe_stats` uses. Split-K buys back a
+half-empty wave, and a prefill chunk has none to fill. Nothing here measures
+prefill; the gate is what keeps the rule off the unmeasured case.
 
 Trace measurement, ten decode steps at 4,096 context, GPUs 0-3 with the other
 cards idle, device time per launch:
 
-| call | N | K | split-K 1 | split-K 2 |
-|---|---:|---:|---:|---:|
-| gate_up | 320 | 2560 | 130.7 us | 102.7 us |
-| down | 2560 | 160 | 44.7 us | 76.8 us |
+| call | N | K | split-K 1 | split-K 2 | split-K 4 |
+|---|---:|---:|---:|---:|---:|
+| gate_up | 320 | 2560 | 130.7 us | 102.7 us | 102.1 us |
+| down | 2560 | 160 | 44.7 us | 76.8 us | 113.3 us |
 
-Splitting the down call also costs the step more than its GEMM delta: the TP
-all-reduce behind it goes 0.59 -> 2.81 ms/step. That is why one value for the
-whole model loses either way, and why the per-shape rule exists: it puts the
-step at 29.76 and 30.10 ms against 31.08 and 31.14 for split-K 1 everywhere.
+gate_up plateaus at 2: 400 CTAs fill the machine, so a fourth share buys
+nothing, and a per-split K of 640 is no slower than 1280. down has the opposite
+slope at every step. At 48 calls each per step the MoE term is 6.98-7.21 ms for
+the rule against 8.42-8.46 at split-K 1 and 8.59-8.62 at split-K 2, and the
+step follows: 29.76 and 30.10 ms against 31.08 and 31.14.
 
 These are trace numbers. Decode tok/s for this configuration has not been taken
 under the receipt protocol.
 
-Split-K 2 accumulates with `atomicAdd` on `__half`, so the gate_up output is
-not bitwise reproducible across runs at that setting; split-K 1 is.
+**Numerics.** Only gate_up runs at split-K 2, so the difference enters before
+the activation and every expert output downstream carries it. On the
+`sm70_fp4_moe.check` case (K=256, N=256, output magnitude 56), split-K 1
+matches the dequantized reference bit-exactly and split-K 2 differs from it by
+at most 3.125e-2, which is 1.1 fp16 ulp at that magnitude. Two identical
+prompts can therefore diverge at the first token where the two accumulation
+orders round differently; a diff between runs is not by itself a bug report.
+
+One measurement to not repeat: a single earlier trace showed the TP all-reduce
+behind the down call at 2.81 ms/step under split-K 2 against 0.59 at split-K 1,
+and that was written up as a second cost of splitting down. A repeat of the
+same configuration put it back at 0.68, so it was a transient, not the
+mechanism. The rule rests on the GEMM numbers only.
 
 ## Measured
 
