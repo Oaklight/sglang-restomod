@@ -76,6 +76,7 @@ here is comparable across those axes.
 | Flash-Next | NVFP4 | 4 | TP4, no EP | 3/4 | temperature 0 | 993 | 87.27 / 87.24 | receipt `evidence-6294562-nvfp4` |
 | Flash-Next | NVFP4 | 4 | TP4, no EP | 3/4 | temperature 0 | 3473 | 72.43 / 90.68 | receipt `evidence-6294562-nvfp4` |
 | Flash-Next | NVFP4 | 4 | TP4, no EP | 3/4 | temp 1, top-p 0.95, top-k 20 | 74 | 81.83 / 88.06 | receipt `evidence-6294562-nvfp4` |
+| Flash-Next | NVFP4 | 4 | TP4, no EP | 3/4 | temp 1, top-p 0.95, top-k 20 | 4027 | 87.59 / 86.97 | receipt `evidence-199-ef2662a` |
 | 27B | FP8 | 2 | TP2, no EP | 3/4 | temp 1, top-p 0.95, top-k 20 | 8037 | 69.30 / 63.24 | receipt `evidence-e5a5740-draft-extend` |
 | 27B | FP8 | 2 | TP2, no EP | 3/4 | temp 1, top-p 0.95, top-k 20 | 31109 | 44.59 / 45.79 | receipt `evidence-e5a5740-draft-extend` |
 | 27B | FP8 | 2 | TP2, no EP, 40 KV splits | 3/4 | temp 1, top-p 0.95, top-k 20 | 8037 | 73.33 / 66.43 | receipt `evidence-153a4c2-kv-splits` |
