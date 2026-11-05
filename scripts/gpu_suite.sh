@@ -63,6 +63,7 @@ git rev-parse --git-dir >/dev/null 2>&1 || {
   echo "error: run this script from a git checkout" >&2
   exit 2
 }
+REPO_ROOT="$(git rev-parse --show-toplevel)"
 
 # Measure dirt before creating the output directory. Otherwise a default
 # in-repo --out marks the run dirty and every receipt needs --allow-dirty.
@@ -148,34 +149,112 @@ with urllib.request.urlopen(f"http://{host}{endpoint}", timeout=30) as r:
   # A component that fails to register is skipped silently by the plugin
   # loader, and the launch then serves with the engine's own backend under the
   # same flag. The endpoint's own view is the only thing that can tell the two
-  # apart, so record it and fail when the selection is not the one that served.
+  # apart, so record it and fail when what served is not what the launch asked
+  # a selected component for.
   if [[ -f "$OUT/server_info.json" ]]; then
     check_rc=0
-    "$PYTHON" - "$OUT/server_info.json" "${SGLANG_RESTOMOD_COMPONENTS:-}" \
+    "$PYTHON" - "$OUT/server_info.json" "${SGLANG_RESTOMOD_COMPONENTS:-}" "$REPO_ROOT" \
       > "$OUT/launch_check.txt" 2>&1 <<'PY' || check_rc=$?
 import json
 import sys
 
-path, components = sys.argv[1], sys.argv[2]
+path, components, repo_root = sys.argv[1], sys.argv[2], sys.argv[3]
+# The heredoc inherits the operator's working directory, which is not
+# necessarily the checkout, so put the checkout on the path here rather than
+# exporting PYTHONPATH, which the inner pytest would inherit too.
+sys.path.insert(0, repo_root)
+try:
+    from sglang_restomod.attention.v100.backend_registry import BACKEND_NAMES
+except ImportError as exc:
+    print(f"MISMATCH\tBACKEND_NAMES\timportable from {repo_root}\t{exc}")
+    sys.exit(1)
+
 with open(path) as fh:
     info = json.load(fh)
 selected = {c.strip() for c in components.split(",") if c.strip()}
-expected = {}
-if "attention_v100" in selected:
-    expected["attention_backend"] = "tilelang_fa_v100"
-if "lsa_sm70" in selected:
-    expected["attention_backend"] = "lsa_sm70"
-if "spec_sm70" in selected:
-    expected["speculative_draft_attention_backend"] = "tilelang_fa_v100"
-mismatched = 0
-for key, want in expected.items():
-    got = info.get(key)
-    status = "ok" if got == want else "MISMATCH"
-    mismatched += got != want
-    print(f"{status}\t{key}\twant={want}\tgot={got}")
-if not expected:
+
+failures = 0
+
+
+def report(ok, key, want, got):
+    global failures
+    failures += not ok
+    print(f"{'ok' if ok else 'MISMATCH'}\t{key}\twant={want}\tgot={got}")
+
+
+def check(key, want, got):
+    report(got == want, key, want, got)
+
+
+launch_command = info.get("launch_command")
+argv = launch_command.split() if isinstance(launch_command, str) else None
+
+
+def unquote(token):
+    """Drop one matched pair of quotes: launch_command is argv joined by spaces."""
+    if len(token) > 1 and token[0] == token[-1] and token[0] in "\"'":
+        return token[1:-1]
+    return token
+
+
+def requested(name):
+    """The value the launch passed for a flag, or None when it passed none."""
+    for i, token in enumerate(argv or ()):
+        if token == name:
+            return unquote(argv[i + 1]) if i + 1 < len(argv) else None
+        if token.startswith(name + "="):
+            return unquote(token.split("=", 1)[1])
+    return None
+
+
+def attention_v100():
+    want = requested("--attention-backend")
+    got = info.get("attention_backend")
+    if want is None:
+        # The component installs choices, not a default: it promises only that
+        # one of its names served, not which one.
+        report(got in BACKEND_NAMES, "attention_backend", " or ".join(BACKEND_NAMES), got)
+    elif want in BACKEND_NAMES:
+        check("attention_backend", want, got)
+    else:
+        report(False, "--attention-backend", " or ".join(BACKEND_NAMES), want)
+
+
+def lsa_sm70():
+    check("attention_backend", "lsa_sm70", info.get("attention_backend"))
+
+
+def spec_sm70():
+    # Installing the draft override changes nothing unless the launch asks for
+    # it, so only a launch that asks can be checked.
+    want = requested("--speculative-draft-attention-backend")
+    got = info.get("speculative_draft_attention_backend")
+    if want is not None:
+        check("speculative_draft_attention_backend", want, got)
+    else:
+        print(f"ok\tspeculative_draft_attention_backend\tnot requested by the launch\tgot={got}")
+
+
+# One entry per component whose effect reaches server_info, and the only place
+# this script names a component. A selection with none of them has nothing to
+# compare.
+CHECKS = {
+    "attention_v100": attention_v100,
+    "lsa_sm70": lsa_sm70,
+    "spec_sm70": spec_sm70,
+}
+
+if not selected & CHECKS.keys():
     print("ok\tno component in the selection maps to a server_info field")
-sys.exit(1 if mismatched else 0)
+elif argv is None:
+    # Not every server_info carries the launch, and without it every row below
+    # would compare against a guess and print ok. Fail instead.
+    report(False, "launch_command", "present in server_info", "missing")
+else:
+    for component, check_component in CHECKS.items():
+        if component in selected:
+            check_component()
+sys.exit(1 if failures else 0)
 PY
     if [[ "$check_rc" -ne 0 ]]; then
       echo "error: the serving configuration does not match SGLANG_RESTOMOD_COMPONENTS; see $OUT/launch_check.txt" >&2
