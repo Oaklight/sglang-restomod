@@ -49,6 +49,9 @@ _SPLIT_K_LONG_MIN = 2560
 _SPLIT_K_DECODE_MAX_M = 8
 _SPLIT_K_ALIGN = 64
 _STATS: dict[str, float] = {}
+# scalar_types.float4_e2m1f.id, spelled out so the dispatch below does not have
+# to import sgl_kernel on a path that never reaches the kernel.
+_NVFP4_TYPE_ID = 562949953487106
 
 
 def _record_moe_stats(expert_ids, num_tokens_post_padded, size_m: int, block: int) -> None:
@@ -330,6 +333,39 @@ def moe_wna16_marlin_gemm(
             "launch with --ep-size 1"
         )
     _record_moe_stats(expert_ids, num_tokens_post_padded, size_m, moe_block_size)
+
+    # The decode-shaped kernel has no M tile, so it is worth a call whenever the
+    # routed batch is small. It declines every shape it cannot read exactly and
+    # returns None, which leaves the Marlin call below unchanged.
+    if (
+        b_bias_or_none is None
+        and b_zeros_or_none is None
+        and g_idx_or_none is None
+        and perm_or_none is None
+        and int(getattr(b_q_type, "id", b_q_type)) == _NVFP4_TYPE_ID
+    ):
+        from sglang_restomod.quant.sm70_fp4_moe import decode_gemv
+
+        out = decode_gemv.maybe_call(
+            a,
+            c_or_none,
+            b_q_weight,
+            b_scales,
+            global_scale_or_none,
+            sorted_token_ids,
+            expert_ids,
+            num_tokens_post_padded,
+            topk_weights,
+            moe_block_size,
+            top_k,
+            mul_topk_weights,
+            size_m,
+            size_n,
+            size_k,
+        )
+        if out is not None:
+            return out
+
     op = ensure_loaded().gemm
     # The split-K value travels in a process-global variable that the extension
     # reads inside the call below, so the write and the call have to be atomic
