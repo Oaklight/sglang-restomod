@@ -171,6 +171,10 @@ def build(out: Path, experts: int, with_marlin: bool) -> None:
     tensors: dict[str, np.ndarray] = {}
     manifest = {
         "version": VERSION,
+        # Revision 2 corrected the pair case: route indices (0, 1) instead of a
+        # repeated 0, and per-route expected rows instead of a 2x sum. The
+        # stream keys and every primary tensor are unchanged from revision 1.
+        "revision": 2,
         "experts": experts,
         "route_rows": ROUTE_ROWS,
         "shapes": {},
@@ -214,16 +218,20 @@ def build(out: Path, experts: int, with_marlin: bool) -> None:
             )
 
         # Routing in the shipping layout: block r carries route r in slot 0 and
-        # the sentinel in the other slots. The second case is the general path
-        # the probe does not cover: one block, two routes of the same expert
-        # (token 0 in both top-k slots), so its output is the route sum.
+        # the sentinel in the other slots. The second case carries token 0's
+        # two top-k routes, both to expert 0. With top_k=2 the route index is
+        # token*2 + slot, so the slots hold 0 and 1; a repeated index would
+        # alias one output row and leave the other unwritten. Each route row's
+        # output is the single-route value; the 2x belongs after the top-k
+        # reduce, not in the row.
         sorted_ids = np.full((experts, MOE_BLOCK), SENTINEL, dtype=np.int32)
         sorted_ids[np.arange(experts), 0] = np.arange(experts, dtype=np.int32)
         pair_sorted_ids = np.full((MOE_BLOCK,), SENTINEL, dtype=np.int32)
-        pair_sorted_ids[:2] = 0
-        pair_expected = (
-            2.0 * (dense[0].astype(np.float64) @ act[0].astype(np.float64))
-        ).astype(np.float32)
+        pair_sorted_ids[:2] = (0, 1)
+        pair_route = (dense[0].astype(np.float64) @ act[0].astype(np.float64)).astype(
+            np.float32
+        )
+        pair_expected = np.stack([pair_route, pair_route])
 
         entry = {
             "n": n,
@@ -235,6 +243,10 @@ def build(out: Path, experts: int, with_marlin: bool) -> None:
             "moe_block_size": MOE_BLOCK,
             "sentinel_value": SENTINEL,
             "pair_top_k": 2,
+            # top_k=2: routes 0 and 1 are token 0's two slots, both expert 0.
+            # Per-route outputs are the single-route value; the sum is after
+            # the top-k reduce.
+            "pair_routes": [0, 1],
             # Recorded so the harness labels the arm it actually ran: the
             # shipping path serves w13 from decode_gemv (N/64 odd) and w2 from
             # Marlin (N/64 even) at M <= 8.
@@ -443,10 +455,13 @@ def verify(directory: Path) -> None:
         if _tensor_digest(expected) != case["tensors"]["expected"]["sha256"]:
             failures += 1
             print(f"MISMATCH {shape}: expected outputs sha256 differs")
-        pair_expected = (
-            2.0 * (dense[0].astype(np.float64) @ data["activation"][0].astype(np.float64))
+        pair_route = (
+            dense[0].astype(np.float64) @ data["activation"][0].astype(np.float64)
         ).astype(np.float32)
-        if not np.array_equal(pair_expected, data["pair_expected"]):
+        pair_expected = np.stack([pair_route, pair_route])
+        if data["pair_expected"].shape != (2, n) or not np.array_equal(
+            pair_expected, data["pair_expected"]
+        ):
             failures += 1
             print(f"MISMATCH {shape}: pair-case expected output differs")
         print(f"ok {shape}: QPN2 decode == dense reference, expected outputs match")

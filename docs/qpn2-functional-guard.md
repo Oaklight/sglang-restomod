@@ -42,7 +42,9 @@ It carries, per shape, the ModelOpt checkpoint tensors (`codes` [E, N, K/2],
 `scale_bytes` [E, N, K/16] E4M3, raw `global_scale` [E]), the QPN2 bytes from
 the independent oracle, one activation row per route, the shipping routing
 metadata (`sorted_token_ids`, `expert_ids`, `num_tokens_post_padded`, block 8,
-top-k 1) and a second case with two routes of one expert in a block. The dense
+top-k 1) and a second case carrying token 0's two top-k routes (top_k 2, route
+indices 0 and 1), each writing its own output row, so the multi-route path is
+exercised; the 2x sum belongs after the top-k reduce, not in the row. The dense
 reference and expected outputs are derived on load from the codes and scales,
 so a packed-buffer bug cannot hide behind a reference built from it.
 
