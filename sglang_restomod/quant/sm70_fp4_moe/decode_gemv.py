@@ -34,6 +34,8 @@ logger = logging.getLogger(__name__)
 ENV_ENABLE = "SM70_MOE_DECODE_GEMV"
 BLOCK_M = 8
 K_SPLIT = 4
+# Workspace is sized for this many route tiles, above any decode capture batch.
+_WORKSPACE_ROUTE_TILES = 1024
 
 _LOCK = threading.Lock()
 _MODULE = None
@@ -95,7 +97,10 @@ def supports(size_m: int, size_n: int, size_k: int, top_k: int,
 
 def _workspace_for(rows: int, size_n: int, device):
     global _WORKSPACE
-    need = K_SPLIT * rows * size_n
+    # Size for the largest capture batch up front: a resize inside a
+    # torch.cuda.graph capture is what turns into an illegal memory access
+    # on the server, because each batch size is captured exactly once.
+    need = K_SPLIT * max(rows, _WORKSPACE_ROUTE_TILES) * size_n
     if _WORKSPACE is None or _WORKSPACE.numel() < need or _WORKSPACE.device != device:
         import torch
 
