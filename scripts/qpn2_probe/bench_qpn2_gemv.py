@@ -12,8 +12,8 @@ scales, not from the packed buffer, so a pack bug shows up as an error.
 Run inside the image, on a free card:
 
     singularity exec --nv --bind /nfs:/nfs --bind /homes:/homes \
-      /nfs/lambda_stor_01/homes/pding/qlab/env/cuda_12.8.0-devel-ubuntu24.04.sif \
-      env CUDA_VISIBLE_DEVICES=4 TORCH_CUDA_ARCH_LIST=7.0 \
+      <cuda-image>.sif \
+      env CUDA_VISIBLE_DEVICES=<gpu> TORCH_CUDA_ARCH_LIST=7.0 \
         PATH=/usr/local/cuda/bin:<conda>/bin:/usr/bin:/bin \
       <conda>/bin/python scripts/qpn2_probe/bench_qpn2_gemv.py
 """

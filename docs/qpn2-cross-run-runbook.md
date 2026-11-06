@@ -23,8 +23,7 @@ decode kernel; this run covers the model.
       commits is the review surface.
 - [ ] The P2 fixture guard passes at the branch head (worst 6.4e-4 on
       2026-11-06).
-- [ ] Four cards on one NVLink island free (lambda6 0-3 at the time of
-      writing). `--ep-size 1`.
+- [ ] Four cards on one NVLink island free. `--ep-size 1`.
 - [ ] Same checkpoint path and same `UPSTREAM_PIN.toml` in both runs; record
       the checkpoint manifest/mtime and the `.so` hashes (`sha256sum
       $SM70_MARLIN_DIR/*.so`) in both run logs.
