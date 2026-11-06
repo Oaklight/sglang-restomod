@@ -47,7 +47,7 @@ def _reference(torch, q, k_cache, v_cache, index_rows, scale):
         k = k.transpose(0, 1).unsqueeze(0).repeat_interleave(repeat, dim=1)
         v = v.transpose(0, 1).unsqueeze(0).repeat_interleave(repeat, dim=1)
         out[row] = torch.nn.functional.scaled_dot_product_attention(
-            q[row].unsqueeze(0).unsqueeze(0),
+            q[row].unsqueeze(0).unsqueeze(2),
             k.unsqueeze(0),
             v.unsqueeze(0),
             scale=scale,
