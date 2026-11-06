@@ -14,9 +14,10 @@ import pytest
 
 pytestmark = pytest.mark.gpu
 
+torch = pytest.importorskip("torch")
+
 
 def _require_sm70():
-    torch = pytest.importorskip("torch")
     if not torch.cuda.is_available():
         pytest.skip("no CUDA device")
     cap = torch.cuda.get_device_capability()
