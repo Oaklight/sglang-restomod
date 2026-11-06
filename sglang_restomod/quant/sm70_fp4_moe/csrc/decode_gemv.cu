@@ -287,7 +287,7 @@ __global__ void reduce_split_k_kernel(const float* __restrict__ part,
                                       __half* __restrict__ c,
                                       const float* __restrict__ topk_weights,
                                       int k_split, int num_rows, int size_n,
-                                      bool mul_topk_weights) {
+                                      int top_k, bool mul_topk_weights) {
     const int n = blockIdx.x * blockDim.x + threadIdx.x;
     const int row = blockIdx.y;
     if (n >= size_n) return;
@@ -295,7 +295,8 @@ __global__ void reduce_split_k_kernel(const float* __restrict__ part,
     for (int z = 0; z < k_split; ++z) {
         sum += part[(static_cast<size_t>(z) * num_rows + row) * size_n + n];
     }
-    if (mul_topk_weights) sum *= topk_weights[row];
+    // topk_weights carries one entry per token, not per route row.
+    if (mul_topk_weights) sum *= topk_weights[row / top_k];
     c[static_cast<size_t>(row) * size_n + n] = __float2half(sum);
 }
 
@@ -335,7 +336,7 @@ torch::Tensor decode_moe_gemv(torch::Tensor a, torch::Tensor c,
         reinterpret_cast<__half*>(c.data_ptr()),
         topk_weights.data_ptr<float>(),
         static_cast<int>(k_split), static_cast<int>(num_rows),
-        static_cast<int>(size_n), mul_topk_weights);
+        static_cast<int>(size_n), static_cast<int>(top_k), mul_topk_weights);
     return c;
 }
 
