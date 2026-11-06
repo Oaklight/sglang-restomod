@@ -51,6 +51,31 @@ _SPLIT_K_ALIGN = 64
 _STATS: dict[str, float] = {}
 
 
+def _is_nvfp4(b_q_type) -> bool:
+    """True when ``b_q_type`` names the NVFP4 scalar type.
+
+    Callers pass the enum member, an object with an ``id``, or the integer id.
+    The name is read first, so the usual path never imports sgl_kernel. The id
+    path resolves the value from the enum rather than repeating the literal.
+    It returns False when sgl_kernel is absent, which happens only in the CPU
+    unit tests, where this kernel cannot run in any case.
+    """
+    if b_q_type is None:
+        return False
+    name = getattr(b_q_type, "name", None)
+    if name is not None:
+        return str(name) == "float4_e2m1f"
+    try:
+        value = int(getattr(b_q_type, "id", b_q_type))
+    except (TypeError, ValueError):
+        return False
+    try:
+        from sgl_kernel.scalar_type import scalar_types
+    except ImportError:
+        return False
+    return value == scalar_types.float4_e2m1f.id
+
+
 def _record_moe_stats(expert_ids, num_tokens_post_padded, size_m: int, block: int) -> None:
     """Count decode MoE blocks when ``SGLANG_SM70_FP4_MOE_STATS`` is set.
 
@@ -330,6 +355,39 @@ def moe_wna16_marlin_gemm(
             "launch with --ep-size 1"
         )
     _record_moe_stats(expert_ids, num_tokens_post_padded, size_m, moe_block_size)
+
+    # The decode-shaped kernel has no M tile, so it is worth a call whenever the
+    # routed batch is small. It declines every shape it cannot read exactly and
+    # returns None, which leaves the Marlin call below unchanged.
+    if (
+        b_bias_or_none is None
+        and b_zeros_or_none is None
+        and g_idx_or_none is None
+        and perm_or_none is None
+        and _is_nvfp4(b_q_type)
+    ):
+        from sglang_restomod.quant.sm70_fp4_moe import decode_gemv
+
+        out = decode_gemv.maybe_call(
+            a,
+            c_or_none,
+            b_q_weight,
+            b_scales,
+            global_scale_or_none,
+            sorted_token_ids,
+            expert_ids,
+            num_tokens_post_padded,
+            topk_weights,
+            moe_block_size,
+            top_k,
+            mul_topk_weights,
+            size_m,
+            size_n,
+            size_k,
+        )
+        if out is not None:
+            return out
+
     op = ensure_loaded().gemm
     # The split-K value travels in a process-global variable that the extension
     # reads inside the call below, so the write and the call have to be atomic
