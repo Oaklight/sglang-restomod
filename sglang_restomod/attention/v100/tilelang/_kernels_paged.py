@@ -1,5 +1,8 @@
-# Vendored from dg1kjd/sglang-sxm2 @ 73abfe1 (python/sglang/srt/layers/attention/tilelang_fa_v100/_kernels_paged.py),
-# with the Oaklight/lambda-v100-lab SM70 patches applied. See PROVENANCE.md.
+# Source of truth for the SM70 paged extend kernel. Vendored from
+# dg1kjd/sglang-sxm2 @ 73abfe1 (python/sglang/srt/layers/attention/tilelang_fa_v100/
+# _kernels_paged.py) with the Oaklight/lambda-v100-lab patches, then the
+# Q-in-registers change. sglang-restomod syncs this file
+# through UPSTREAM_PIN.toml, so the copy there is generated, not edited.
 """Paged FlashAttention forward kernel for V100 (SM70).
    4D page-by-page loading handles scattered vLLM page blocks correctly.
    Dynamic tensor shapes via T.dynamic. Supports causal full attention, causal
@@ -54,7 +57,7 @@ def _paged_kernel_func(batch, heads, heads_kv, dim, page_block_size,
                        max_blocks_per_seq, num_pages, is_causal,
                        sliding_window_size=-1,
                        block_M=32, block_N=128, num_stages=0, threads=256,
-                       num_splits=1):
+                       num_splits=1, q_in_regs=False):
     scale = (1.0 / dim) ** 0.5
     nt = T.dynamic("nt")
     use_kv_union = dim > _USE_KV_UNION_FOR_DIM
@@ -232,7 +235,16 @@ def _paged_kernel_func(batch, heads, heads_kv, dim, page_block_size,
             Output: T.Tensor([nt, heads, dim], T.float16),
         ):
                 with T.Kernel(T.ceildiv(max_tokens, block_M), heads, batch, threads=threads) as (bx, by, bz):
-                    Q_shared = T.alloc_shared([block_M, dim], T.float16)
+                    # Holding Q in registers halves the shared budget the QK
+                    # GEMM needs: at dim=256 the 32 KiB Q tile is the reason
+                    # block_N=64 did not fit (32+32+32+8 KiB > 96 KiB). With Q
+                    # in a fragment, block_N=64 costs 72 KiB and the loop runs
+                    # half as many iterations. The A operand of T.gemm accepts
+                    # a fragment on SM70.
+                    if q_in_regs:
+                        Q_tile = T.alloc_fragment([block_M, dim], T.float16)
+                    else:
+                        Q_tile = T.alloc_shared([block_M, dim], T.float16)
                     if use_kv_union:
                         KV_shared = T.alloc_shared([block_N, dim], T.float16)
                         K_ref = KV_shared
@@ -255,10 +267,10 @@ def _paged_kernel_func(batch, heads, heads_kv, dim, page_block_size,
                     start_q = query_start_loc[bz] + bx * block_M
 
                     with T.If(bx * block_M < q_len), T.Then():
-                        T.clear(Q_shared)
+                        T.clear(Q_tile)
                         for i, j in T.Parallel(block_M, dim):
                             if start_q + i < query_start_loc[bz + 1]:
-                                Q_shared[i, j] = Q[start_q + i, by, j]
+                                Q_tile[i, j] = Q[start_q + i, by, j]
                         T.fill(acc_o, 0)
                         T.fill(m_i, -T.infinity(T.float32))
                         T.fill(l_i, 0)
@@ -344,7 +356,7 @@ def _paged_kernel_func(batch, heads, heads_kv, dim, page_block_size,
                                         -T.infinity(acc_s.dtype),
                                     )
 
-                            T.gemm(Q_shared, K_ref, acc_s, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
+                            T.gemm(Q_tile, K_ref, acc_s, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
                             T.copy(m_i, m_prev)
                             T.reduce_max(acc_s, m_i, dim=1, clear=False)
                             for i in T.Parallel(block_M):
@@ -386,7 +398,11 @@ _KERNEL_CACHE = {}
 _BEST_CONFIGS = {
     64: dict(block_M=32, block_N=128, threads=256, num_stages=0, num_splits=1),
     128: dict(block_M=32, block_N=128, threads=256, num_stages=0, num_splits=1),
-    256: dict(block_M=64, block_N=32, threads=256, num_stages=0, num_splits=1),
+    # dim 256: Q in fragments frees 32 KiB, so block_N=64 fits (72 KiB) and
+    # the KV loop runs half as many iterations. Measured against the 64/32
+    # shared-Q tile at 8k/32k/98k: 0.76/0.79/0.82 of its time on one V100.
+    256: dict(block_M=64, block_N=64, threads=256, num_stages=0, num_splits=1,
+              q_in_regs=True),
     # HD 512: Uses KV-union (K+V share shared memory slot) to fit 96KB V100 limit.
     #   With union: Q(32KB) + KV(32KB) + P(2KB) = 66KB fits, enabling 4 warps.
     #   Without union: 99KB exceeds V100 limit.
@@ -398,10 +414,14 @@ _BEST_CONFIGS = {
 def get_paged_kernel(batch, heads, heads_kv, dim, block_size, num_pages,
                      max_blocks, causal, sliding_window_size=-1):
     """Return compiled kernel."""
-    cfg = _BEST_CONFIGS.get(dim, dict(block_M=32, block_N=128, threads=256, num_stages=0, num_splits=1))
+    cfg = _BEST_CONFIGS.get(
+        dim,
+        dict(block_M=32, block_N=128, threads=256, num_stages=0, num_splits=1,
+             q_in_regs=False),
+    )
     key = (heads, heads_kv, dim, block_size, causal, sliding_window_size,
            cfg["block_M"], cfg["block_N"], cfg["threads"], cfg["num_stages"], cfg["num_splits"],
-           batch, max_blocks, num_pages)
+           cfg.get("q_in_regs", False), batch, max_blocks, num_pages)
     if key not in _KERNEL_CACHE:
         kt = _paged_kernel_func(
             batch=batch, heads=heads, heads_kv=heads_kv, dim=dim,
