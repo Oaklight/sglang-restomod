@@ -95,19 +95,17 @@ def _prepare(torch, fixture, layout: str, tensors: str, device):
 def _routing(torch, fixture, shape: str, pair: bool, device):
     case = fixture[shape]
     if pair:
-        # Two routes of expert 0 in one block: route 0 and route 1 are token
-        # 0's two top-k slots, so the per-route output rows are 0 and 1. The
-        # fixture stores [0, 0, 8, ...], which aliases one route into both
-        # slots; both shipping kernels address output rows by route index, so
-        # that input leaves row 1 unwritten. Distinct indices are required to
-        # exercise the multi-route path.
-        sorted_ids = torch.full((BLOCK,), 8, dtype=torch.int32, device=device)
-        sorted_ids[0], sorted_ids[1] = 0, 1
+        # Two routes of expert 0 in one block (token 0's two top-k slots).
+        # Both kernels address output rows by route index, so the two slots
+        # must carry distinct indices; a repeated index leaves a row unwritten.
+        sorted_ids = torch.from_numpy(obytes(case["pair_sorted_token_ids"])).int().to(device)
+        real = [int(v) for v in sorted_ids.tolist() if int(v) != 8]
+        assert len(real) == len(set(real)), f"pair route indices alias: {real}"
         return dict(
             sorted_token_ids=sorted_ids,
-            expert_ids=torch.zeros(1, dtype=torch.int32, device=device),
-            padded=torch.tensor([BLOCK], dtype=torch.int32, device=device),
-            topk_weights=torch.ones(2, dtype=torch.float32, device=device),
+            expert_ids=torch.from_numpy(obytes(case["pair_expert_ids"])).int().to(device),
+            padded=torch.from_numpy(obytes(case["pair_num_tokens_post_padded"])).int().to(device),
+            topk_weights=torch.from_numpy(obytes(case["pair_topk_weights"])).float().to(device),
             top_k=2,
             rows=2,
             size_m=1,
