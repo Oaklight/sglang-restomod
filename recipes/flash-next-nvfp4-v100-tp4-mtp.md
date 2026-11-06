@@ -249,6 +249,10 @@ keeps the experts out of this path; they stay on the marlin NVFP4 GEMM.
   log warns `device-loaded after serving started`.
 - The checkpoint's FP4 nibble order is validated only indirectly, by
   generation quality. No independent dequantization comparison exists yet.
-- Accept length is 3.12, below the FP8 greedy run's 3.48—3.70. Cause not
-  confirmed.
+- Accept length is window-dependent, not a checkpoint constant: at a fixed
+  launch, input format alone moved it 3.88 -> 2.72 at ~1k tokens and prompt
+  length moved it 3.76 -> 2.65 at 64 output (issue #217, lab note
+  `flashnext-accept-attribution-2026-11-06.md`). The 3.12-3.20 recorded here is
+  a chat, 993/3,473 prompt, 128-output window; do not compare it with the FP8
+  8k/64 point.
 - Contexts above 4k are untested.
