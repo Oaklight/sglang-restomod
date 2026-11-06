@@ -44,11 +44,11 @@ For MTP/NEXTN the container is `NativeMultiStepDraftBackend` (#205): it keeps
 the pin's per-step `kv_indptr`/`kv_indices` production and converts each step
 into the page table the `attention_v100` split-KV kernel takes, so the draft
 chain runs the same native kernel as the target. On the 27B at 125,938 prompt
-tokens it measures 62.40 tok/s with MTP against 31.86 with MTP off (5 reps
-each, sd < 0.2%). The Triton container it replaced cost 80.3 ms per step at 8
-splits and 38.2 ms at 80 on the same model and context
-(`decode-at-130k-splits.md`). A scheme that drafts autoregressively shares this
-container; a scheme that does not (n-gram) does not pay it.
+tokens it measures 63.58 tok/s with MTP against 32.01 with MTP off (5 reps
+each, sd < 0.2%; receipt `evidence-2086790`). The Triton container it replaced
+cost 80.3 ms per step at 8 splits and 38.2 ms at 80 on the same model and
+context (`decode-at-130k-splits.md`). A scheme that drafts autoregressively
+shares this container; a scheme that does not (n-gram) does not pay it.
 
 ## Not confirmed
 
