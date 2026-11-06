@@ -117,6 +117,10 @@ MTP 5/6 的行是同一套 e5m2 启动加上 `--speculative-num-steps 5` 与 `--
 - 不同日期的行，差异既来自代码也来自主机状态。同一台机器上，`6294562` 在 16:00 测得 87.27 tok/s，
   一小时后 `303e162` 测得 70.32 tok/s。两个 head 在同等条件下的背靠背 A/B（pull request #96）显示
   commit 之间最多约 10% 的差异，因此那 19 tok/s 中剩下的部分来自主机状态，原因未确认。
+- prefill tok/s 只有在前缀缓存未命中时才是 prefill 速率。`scripts/bench.py`
+  默认给每个请求加盐（`--fresh`）；不加盐时 radix cache 会命中前缀，
+  `prompt_tokens / TTFT` 在 V100 的 3.5k prompt 上会报出 12-14k。
+  引用 prefill 数字时必须注明是冷前缀测量（#95）。
 - FP8 行是 8 卡，NVFP4 行是 4 卡；可比较的量是单卡吞吐，不是整行总和。
 - `evidence-175a630-e5m2-shift` 与 `evidence-79aef7a-vec-gather` 四行与 `8b7aaef` 行是同一个启动配置，差别在 verify kernel 内部：FP8 查表换成位移，随后 KV gather 加宽到每次读 4 字节。31.5k 处稳定 step 时间中位数为 57.1、53.1、50.9 ms；单次 512 token 的运行分辨不出这些差异，表中 32k 的两组在本行与 `175a630` 之间也有重叠。
 - 新的签名 receipt 落地时更新此表，且只收录能引用 receipt 或 recipe 的数字。没有来源的行不得写入。

@@ -6,6 +6,11 @@ Methodology follows the 1Cat-LLM release contract so numbers are comparable:
 i.e. TTFT/prefill is excluded from the decode rate.
 
 Prompts are built with the model's own tokenizer at exact token counts.
+
+Prefill is only meaningful with a cold prefix. Without one the radix cache
+serves the prompt and `prompt_tokens / TTFT` becomes a cache-hit rate, not a
+prefill rate. Requests are salted by default (`--fresh`); `--no-fresh` opts
+back into prefix-cache reuse.
 """
 import argparse
 import json
@@ -122,6 +127,10 @@ def summarize(r, label):
     dec = r["end_t"] - r["first_t"]
     prompt_tok = (r["usage"] or {}).get("prompt_tokens")
     out_tok = (r["usage"] or {}).get("completion_tokens") or r["n_tok"]
+    # Present only when the server runs with --enable-cache-report.
+    cached_tok = ((r["usage"] or {}).get("prompt_tokens_details") or {}).get(
+        "cached_tokens"
+    )
     return {
         "label": label,
         "prompt_tokens": prompt_tok,
@@ -131,6 +140,7 @@ def summarize(r, label):
         "pure_decode_tps": round(max(out_tok - 1, 0) / dec, 2) if dec > 0 else None,
         "prefill_tps": round(prompt_tok / ttft, 1) if (prompt_tok and ttft > 0) else None,
         "total_s": round(r["end_t"] - r["t0"], 3),
+        **({"cached_tokens": cached_tok} if cached_tok is not None else {}),
         **spec_fields(r.get("meta")),
     }
 
@@ -154,8 +164,9 @@ def main():
                     help="use /v1/chat/completions instead of /v1/completions")
     ap.add_argument("--no-think", action="store_true",
                     help="send chat_template_kwargs.enable_thinking=false")
-    ap.add_argument("--fresh", action="store_true",
-                    help="give each context a unique prefix so prefill is cold")
+    ap.add_argument("--fresh", action=argparse.BooleanOptionalAction, default=True,
+                    help="give each request a unique prefix so prefill is cold "
+                         "(default); --no-fresh lets the prefix cache serve it")
     ap.add_argument("--no-spec-accept", dest="spec_accept", action="store_false",
                     help="skip the /generate probe that records the accept "
                          "length and rate (run when the endpoint has no /generate)")

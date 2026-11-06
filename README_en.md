@@ -144,6 +144,10 @@ How to read it:
   an hour later. A back-to-back A/B of both heads under identical conditions
   (pull request #96) shows up to 10% between commits, so the rest of that
   19 tok/s spread is host state, and it is unexplained.
+- Prefill tok/s is a prefill rate only with a cold prefix. `scripts/bench.py`
+  salts each request by default (`--fresh`); without it the radix cache serves
+  the prompt and `prompt_tokens / TTFT` reports 12-14k at 3.5k tokens on V100.
+  Quote prefill only from a cold-prefix run (issue #95).
 - FP8 rows use 8 cards, NVFP4 rows use 4. Per-card throughput is the
   comparable quantity, not the row total.
 - The `evidence-175a630-e5m2-shift` and `evidence-79aef7a-vec-gather` rows
