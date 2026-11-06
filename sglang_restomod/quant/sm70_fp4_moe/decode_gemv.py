@@ -152,6 +152,13 @@ def maybe_call(
         logger.info("decode gemv skipped: non-contiguous a=%s c=%s",
                     a.is_contiguous(), c.is_contiguous())
         return None
+    # The reduce kernel indexes topk_weights by route row, so it needs one
+    # entry per route tile. The server passes one per token, which reads past
+    # the end of the tensor and faults.
+    if topk_weights.numel() < rows:
+        logger.info("decode gemv skipped: topk_weights %d < rows %d",
+                    topk_weights.numel(), rows)
+        return None
     if rows != expert_ids.size(0):
         logger.info("decode gemv skipped: rows=%d route_tiles=%d", rows, expert_ids.size(0))
         return None
