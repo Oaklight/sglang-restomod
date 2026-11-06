@@ -15,8 +15,6 @@ import pytest
 pytestmark = pytest.mark.gpu
 
 torch = pytest.importorskip("torch")
-# Installs Logger.info_once, which the vendored CUDA decode loader calls.
-import sglang.srt.utils.common  # noqa: E402,F401
 
 
 def _require_sm70():
@@ -25,6 +23,10 @@ def _require_sm70():
     cap = torch.cuda.get_device_capability()
     if cap != (7, 0):
         pytest.skip(f"needs SM70, found {cap[0]}.{cap[1]}")
+    # Installs Logger.info_once, which the vendored CUDA decode loader calls.
+    # Imported here so collection works without the engine (restomod-ci).
+    import sglang.srt.utils.common  # noqa: F401
+
     return torch
 
 
