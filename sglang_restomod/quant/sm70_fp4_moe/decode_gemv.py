@@ -127,13 +127,18 @@ def maybe_call(
 ):
     """Run the decode kernel, or return ``None`` to leave the call to Marlin."""
     if c is None or global_scale is None or topk_weights is None:
+        logger.info("decode gemv skipped: missing tensor")
         return None
     if not _is_cuda(a):
+        logger.info("decode gemv skipped: not cuda")
         return None
     if not supports(size_m, size_n, size_k, top_k, moe_block_size):
+        logger.info("decode gemv skipped: unsupported m=%d n=%d k=%d topk=%d block=%d",
+                    size_m, size_n, size_k, top_k, moe_block_size)
         return None
     module = _load()
     if module is None:
+        logger.info("decode gemv skipped: extension unavailable")
         return None
 
     rows = c.size(0)
