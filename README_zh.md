@@ -70,6 +70,7 @@ decode 吞吐（tok/s），数据来自 `scripts/bench.py`。一行数据只有�
 | Flash-Next | NVFP4 | 4 | TP4，无 EP | 3/4 | temperature 0 | 993 | 87.27 / 87.24 | receipt `evidence-6294562-nvfp4` |
 | Flash-Next | NVFP4 | 4 | TP4，无 EP | 3/4 | temperature 0 | 3473 | 72.43 / 90.68 | receipt `evidence-6294562-nvfp4` |
 | Flash-Next | NVFP4 | 4 | TP4，无 EP | 3/4 | temp 1, top-p 0.95, top-k 20 | 74 | 81.83 / 88.06 | receipt `evidence-6294562-nvfp4` |
+| Flash-Next | NVFP4 | 4 | TP4，无 EP | 3/4 | temperature 0 | 3481 | 81.47 / 89.22（kernel 关 / 开，400 个 greedy token，decode graph 开，8 次中位数，去掉 warmup） | receipt `evidence-07c26a2`（PR #202） |
 | 27B | FP8 | 2 | TP2，无 EP | 3/4 | temp 1, top-p 0.95, top-k 20 | 8037 | 69.30 / 63.24 | receipt `evidence-e5a5740-draft-extend` |
 | 27B | FP8 | 2 | TP2，无 EP | 3/4 | temp 1, top-p 0.95, top-k 20 | 31109 | 44.59 / 45.79 | receipt `evidence-e5a5740-draft-extend` |
 | 27B | FP8 | 2 | TP2，无 EP，40 KV splits | 3/4 | temp 1, top-p 0.95, top-k 20 | 8037 | 73.33 / 66.43 | receipt `evidence-153a4c2-kv-splits` |
