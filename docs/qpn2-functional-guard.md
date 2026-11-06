@@ -30,6 +30,35 @@ Fixture, both resident:
   pressure;
 - optionally a reduced NVFP4 MoE model on the same shapes for model-level arms.
 
+The bank itself is `scripts/qpn2_probe/fixture_qpn2.py`; both arms load it
+instead of building their own inputs:
+
+```sh
+python scripts/qpn2_probe/fixture_qpn2.py build --out DIR   # CPU, ~10 s, 11 MB
+python scripts/qpn2_probe/fixture_qpn2.py verify DIR
+```
+
+It carries, per shape, the ModelOpt checkpoint tensors (`codes` [E, N, K/2],
+`scale_bytes` [E, N, K/16] E4M3, raw `global_scale` [E]), the QPN2 bytes from
+the independent oracle, one activation row per route, the shipping routing
+metadata (`sorted_token_ids`, `expert_ids`, `num_tokens_post_padded`, block 8,
+top-k 1) and a second case with two routes of one expert in a block. The dense
+reference and expected outputs are derived on load from the codes and scales,
+so a packed-buffer bug cannot hide behind a reference built from it.
+
+Every input is a prefix of a SHAKE-256 stream, not a torch RNG draw: torch does
+not promise a stable stream across versions. `verify` rebuilds from the streams
+and compares SHA-256s; the manifest is byte-identical across hosts (checked on
+two numpy versions). The fixture's QPN2 bytes equal 9b's `pack_qpn2` on both
+shapes (8/8 experts, `max|delta| = 0`).
+
+The Marlin-layout bytes come from `build --with-marlin`, which runs the shipping
+`_repack_experts` / `encode_scales` / `encode_global_scale` once on a GPU host
+and stores the result. There is no CPU reimplementation of
+`gptq_marlin_repack`: the Marlin arm is the control, and a second implementation
+would be a second thing that can be wrong. Without that flag the harness calls
+the shipping conversion itself.
+
 Switch via `SGLANG_SM70_FP4_MOE_LAYOUT=marlin|qpn2` and
 `SGLANG_SM70_QPN2_TENSORS=both|w13|w2`. Only the decode-shaped expert GEMMs
 (`M <= 8`) switch; attention, shared experts, router, norms and LM head are
