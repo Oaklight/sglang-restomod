@@ -97,6 +97,7 @@ def _case(torch, lengths, dtype=torch.float16, heads=12, heads_kv=2, dim=256, pa
     assert seq_lens.tolist() == lengths
     want_pages = [
         [row[i * page_size] // page_size for i in range(count)]
+        + [0] * (max_pages - count)
         for row, count in zip(index_rows, pages_per_row)
     ]
     assert page_table.tolist() == want_pages
