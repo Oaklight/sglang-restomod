@@ -142,19 +142,21 @@ def maybe_call(
         return None
 
     rows = c.size(0)
-    # The kernel treats ``sorted_token_ids`` as route indices and derives
-    # the activation row as ``row / top_k``. The server's align kernel emits
-    # token indices instead, so the two only agree when the output has one
-    # row per route tile. Refuse anything else rather than compute garbage.
+    # ``rows`` is the route count, ``size_m * top_k``: the align kernel emits
+    # route indices (``token * top_k + slot``) and the kernel recovers the
+    # activation row as ``row / top_k``. The reference Marlin kernel reads the
+    # same metadata, so the two only agree when every block holds one route --
+    # which is what the decode shape produces. Refuse anything else rather
+    # than compute garbage.
     # The kernel addresses a and c as dense row-major buffers. A sliced or
     # otherwise strided view would write outside the tensor.
     if not (a.is_contiguous() and c.is_contiguous()):
         logger.info("decode gemv skipped: non-contiguous a=%s c=%s",
                     a.is_contiguous(), c.is_contiguous())
         return None
-    # The reduce kernel indexes topk_weights by route row, so it needs one
-    # entry per route tile. The server passes one per token, which reads past
-    # the end of the tensor and faults.
+    # The reduce kernel indexes topk_weights by route, so it needs one entry
+    # per route. The server passes ``topk_weights`` shaped ``[size_m, top_k]``,
+    # which flattens to exactly that.
     if topk_weights.numel() < rows:
         logger.info("decode gemv skipped: topk_weights %d < rows %d",
                     topk_weights.numel(), rows)
