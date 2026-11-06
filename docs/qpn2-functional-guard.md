@@ -162,6 +162,46 @@ pass, the near-tie-inside-the-prefix failure, the per-tensor arm mapping and the
 MTP path. Run it after any change to the comparator and before it judges a real
 run.
 
+## 4b. Collecting the artifacts
+
+`scripts/qpn2_probe/run_artifact.py` drives a running server and writes one
+`qpn2-run-v1` file per arm:
+
+```sh
+python scripts/qpn2_probe/run_artifact.py collect \
+    --base-url http://lambda4:30000 --out runA.json \
+    --layout marlin --commit "$(git rev-parse HEAD)" \
+    --model Qwen3.8-Flash-Next --checkpoint "$CKPT" --tp 4 \
+    --tokenizer "$TOKENIZER"
+# then the same against the QPN2 launch:
+#   --layout qpn2 --qpn2-tensors both --out runB.json
+python scripts/qpn2_probe/compare_runs.py runA.json both=runB.json
+```
+
+Each request asks `/generate` for `return_logprob`, `top_logprobs_num=2`, greedy
+sampling and `ignore_eos`, so every prompt returns exactly `--max-new-tokens`
+(default 128) tokens. The artifact records the launch metadata the comparator
+checks (`layout`, `qpn2_tensors`, `mtp`, `commit`, `tp`, `model`, `checkpoint`),
+and per prompt the ids, the chosen-token logprobs, the top-2, the accept length
+(`spec_accept_length`) and `verify_ct`. The 16 prompts are the section 3 set,
+and they are identical across arms because they are built from fixed seeds, not
+from a per-request salt.
+
+The harness is testable without the engine:
+
+```sh
+python scripts/qpn2_probe/run_artifact.py selftest       # fake /generate + both arms + the comparator
+python scripts/qpn2_probe/run_artifact.py fake-server --port 18400 --mode diverge
+python scripts/qpn2_probe/run_artifact.py collect --dry-run --out a.json --layout marlin --commit dry
+```
+
+The fake server serves well-formed canned responses in three modes (`match`,
+`diverge`, `offset`). The selftest asserts the request carries the logprob flags,
+that the artifact is schema-shaped, that matching arms pass the comparator end to
+end, that an offset arm fails as `scale-path`, a diverging arm as `layout`, an
+unreachable server as `crash`, and that `--dry-run` writes a 16-prompt artifact
+with no server.
+
 ## 5. What a failure localizes
 
 | observation | localization |

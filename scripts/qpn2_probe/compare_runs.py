@@ -93,8 +93,12 @@ def load_run(path: str | Path) -> dict:
         if key not in launch:
             raise UsageError(f"{path}: launch.{key} is required")
     prompts = data.get("prompts")
-    if not isinstance(prompts, list) or not prompts:
-        raise UsageError(f"{path}: no prompts")
+    if not isinstance(prompts, list):
+        raise UsageError(f"{path}: prompts must be a list")
+    if not prompts and not data.get("error"):
+        # A run that errored before its first prompt is still judgeable: it is
+        # a crash. An empty run without an error is not.
+        raise UsageError(f"{path}: no prompts and no error")
     seen = set()
     for prompt in prompts:
         for key in ("id", "token_ids", "logprobs"):
@@ -378,7 +382,10 @@ def apply_arm_mapping(reports: dict[str, dict]) -> None:
         if mine not in ("w13", "w2"):
             continue
         other = "w2" if mine == "w13" else "w13"
-        siblings = [r for l, r in reports.items() if l != label and tensors(r) == other]
+        siblings = [
+            r for other_label, r in reports.items()
+            if other_label != label and tensors(r) == other
+        ]
         if siblings and all(r["status"] != FAIL for r in siblings):
             report["cause"] = f"{mine}-layout"
 
