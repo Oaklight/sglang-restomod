@@ -24,7 +24,8 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    pin = tomllib.loads(PIN.read_text())["upstream"]
+    data = tomllib.loads(PIN.read_text())
+    pin = data["upstream"]
     manifest = json.loads(MANIFEST.read_text())
     errors: list[str] = []
 
@@ -32,6 +33,22 @@ def main() -> int:
         errors.append(
             f"manifest upstream {manifest.get('upstream')} != pin {pin['commit']}"
         )
+
+    # LSA ships as the standalone `lsa-sm70` package. The pin is optional to
+    # install, so check the version only when the package is importable.
+    lsa = data.get("lsa")
+    if lsa:
+        try:
+            import lsa_sm70
+        except ModuleNotFoundError:
+            pass
+        except Exception as exc:  # installed but broken: that is a real failure
+            errors.append(f"cannot import lsa-sm70: {exc}")
+        else:
+            if lsa_sm70.__version__ != lsa["version"]:
+                errors.append(
+                    f"installed lsa-sm70 {lsa_sm70.__version__} != pin {lsa['version']}"
+                )
 
     if args.check_remote:
         result = subprocess.run(

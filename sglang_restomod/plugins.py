@@ -64,7 +64,7 @@ COMPONENTS: dict[str, Component] = {
     "lsa_sm70": Component(
         name="lsa_sm70",
         module="sglang_restomod.attention.lsa_sm70",
-        description="Latent Sparse Attention selection core for SM70 (backend staged)",
+        description="Latent Sparse Attention on SM70: registers the standalone lsa-sm70 package",
     ),
     "sm70_marlin_v100": Component(
         name="sm70_marlin_v100",

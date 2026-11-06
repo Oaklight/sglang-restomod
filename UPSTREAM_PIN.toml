@@ -25,3 +25,12 @@ path = "third_party/sm70-kernels"
 source = "sm70_kernels/longctx_decode/csrc/sm70_longctx_decode.cu"
 dest = "sglang_restomod/attention/v100/kernels/sm70_longctx_decode.cu"
 sha256 = "3038250394ab872958e09a3eb98be914e471da8b99f5c4f199ccfc90b31b0b2f"
+
+# Latent Sparse Attention is not vendored either. The standalone package is the
+# only implementation; the `lsa_sm70` component in this repository is a shim
+# that registers it. scripts/check_pin.py compares the installed version when
+# the package is present.
+[lsa]
+repo = "https://github.com/Oaklight/lsa-sm70.git"
+commit = "3a4798093224933988175ee685084d521474da0b"
+version = "0.1.0"

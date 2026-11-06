@@ -35,6 +35,11 @@ Flash-Next TP4 row is the one pin cell still on a lab record, because a bundle
 for it needs four idle cards (#95). The `lsa_sm70` row is the one pin cell whose
 bundle is packed but not yet signed.
 
+The `lsa_sm70` component does not carry the implementation: it registers the
+standalone `Oaklight/lsa-sm70` package at the commit pinned in
+`UPSTREAM_PIN.toml` (`[lsa]`). The backend name, the launch flags and the
+`launch_check` comparison are unchanged.
+
 ## Known failures
 
 A cell that does not run is a result. Each row names the stage it stops at and
