@@ -38,22 +38,23 @@ def _row_tokens(pages, page_size, length):
 
 
 def _reference(torch, q, k_cache, v_cache, index_rows, scale):
+    """Per-head reference with the kernel's head mapping: head // group -> KV head."""
     rows, heads, dim = q.shape
     heads_kv = k_cache.shape[2]
+    group = heads // heads_kv
     out = torch.empty_like(q)
     for row, token_ids in enumerate(index_rows):
         ids = torch.tensor(token_ids, dtype=torch.int64, device=q.device)
-        k = k_cache.reshape(-1, heads_kv, dim)[ids]
-        v = v_cache.reshape(-1, heads_kv, dim)[ids]
-        repeat = heads // heads_kv
-        k = k.transpose(0, 1).unsqueeze(0).repeat_interleave(repeat, dim=1)
-        v = v.transpose(0, 1).unsqueeze(0).repeat_interleave(repeat, dim=1)
-        out[row] = torch.nn.functional.scaled_dot_product_attention(
-            q[row].unsqueeze(0).unsqueeze(2),
-            k.unsqueeze(0),
-            v.unsqueeze(0),
-            scale=scale,
-        ).squeeze()
+        k_all = k_cache.reshape(-1, heads_kv, dim)[ids]
+        v_all = v_cache.reshape(-1, heads_kv, dim)[ids]
+        for head in range(heads):
+            kv = head // group
+            out[row, head] = torch.nn.functional.scaled_dot_product_attention(
+                q[row, head].reshape(1, 1, 1, dim),
+                k_all[:, kv, :].reshape(1, 1, -1, dim),
+                v_all[:, kv, :].reshape(1, 1, -1, dim),
+                scale=scale,
+            ).squeeze()
     return out
 
 
