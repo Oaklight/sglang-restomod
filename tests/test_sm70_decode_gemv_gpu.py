@@ -93,10 +93,15 @@ def _build_case(torch, size_n: int, size_k: int, experts: int, tokens: int, top_
 def _run(torch, case, size_n: int, size_k: int, force_marlin: bool):
     """Call the patched entry point; ``force_marlin`` disables the new path."""
     from sglang_restomod.quant.sm70_fp4_moe.marlin import ensure_loaded
-    from sglang_restomod.quant.sm70_fp4_moe.method import moe_wna16_marlin_gemm
+    from sglang_restomod.quant.sm70_fp4_moe.method import MARLIN_SPLIT_K, moe_wna16_marlin_gemm
     from sgl_kernel.scalar_type import scalar_types
 
     previous = os.environ.get("SM70_MOE_DECODE_GEMV")
+    # The call below runs the per-shape split-K selector, which writes this
+    # variable and does not restore it. Leaving the value behind changes the
+    # next test's launch: check.run() calls the extension directly at K=256,
+    # where split-K 2 returns a wrong result.
+    previous_split_k = os.environ.get(MARLIN_SPLIT_K)
     if force_marlin:
         os.environ["SM70_MOE_DECODE_GEMV"] = "0"
     try:
@@ -116,6 +121,10 @@ def _run(torch, case, size_n: int, size_k: int, force_marlin: bool):
             os.environ.pop("SM70_MOE_DECODE_GEMV", None)
         else:
             os.environ["SM70_MOE_DECODE_GEMV"] = previous
+        if previous_split_k is None:
+            os.environ.pop(MARLIN_SPLIT_K, None)
+        else:
+            os.environ[MARLIN_SPLIT_K] = previous_split_k
 
 
 def test_decode_gemv_matches_marlin():
