@@ -258,6 +258,7 @@ def build_native(model_runner, topk, speculative_num_steps, stamp):
     _assert_draft_needs_no_conv_sidecar(model_runner)
     reason = unsupported_reason(model_runner, topk)
     if reason is not None:
-        logger.info("attention_v100: native draft decode off (%s); using triton", reason)
+        logger.info("attention_v100: draft decode on triton (%s)", reason)
         return None
+    logger.info("attention_v100: draft decode on the native split-KV kernel")
     return NativeMultiStepDraftBackend(model_runner, topk, speculative_num_steps, stamp)
