@@ -38,6 +38,15 @@ must be bf16 or fp16; an fp8 cache is refused at startup. Plain tensor parallel
 only: data-parallel attention, context parallel and speculative decoding are
 refused.
 
+## Install
+
+`lsa_sm70` is a registration shim; the implementation is the standalone
+package, pinned in `UPSTREAM_PIN.toml`:
+
+```sh
+pip install 'lsa-sm70 @ git+https://github.com/Oaklight/lsa-sm70@3a4798093224933988175ee685084d521474da0b'
+```
+
 ## Environment
 
 ```

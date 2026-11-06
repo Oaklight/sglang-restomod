@@ -4,73 +4,53 @@
 
 | Field | Value |
 |---|---|
-| Repository | `Prefrontal-AI/latent-sparse-attention` |
-| Commit | `97b82d695b74ca341965a16bbc2a951c8b0c567a` |
+| Repository | `Oaklight/lsa-sm70` |
+| Commit | `3a4798093224933988175ee685084d521474da0b` |
+| Version | `0.1.0` |
 | License | Apache-2.0 |
+| Upstream reference | `Prefrontal-AI/latent-sparse-attention` @ `97b82d695b74ca341965a16bbc2a951c8b0c567a`, Apache-2.0 |
 | Paper | arXiv 2610.42147, *Latent Sparse Attention: Towards Subquadratic Ultra-Long Context Attention* |
 
-## What is selected
+`Oaklight/lsa-sm70` is the only implementation. Its `PROVENANCE.md` records the
+file-level selection from the reference: the portable selection core, the
+serving path written against it, and what was deliberately left out (the
+Hopper/Blackwell CuTeDSL kernels, bucket shapes, the fixed/tree hierarchy, the
+MLA route and training).
 
-The portable selection core, adapted for this layer:
+## What is here
 
-| file here | source | change |
-|---|---|---|
-| `constants.py` | `src/lsa/constants.py` | `PAD` and `NORM_EPS` only |
-| `budget.py` | `src/lsa/budget.py` | imports made package-local |
-| `index_space.py` | `src/lsa/core/index_space.py` | the grouped-query route only |
-| `ward.py` | `src/lsa/core/ward.py` | imports made package-local; members built without a per-bucket loop |
-| `reference.py` | `src/lsa/core/reference.py` | flat design, no bucket shapes; tensors built on the input's device |
+Only the registration shim:
 
-The serving path, written here against those semantics:
-
-| file here | what it does |
+| file | what it does |
 |---|---|
-| `design.py` | the flat design's knobs and a request's bucket table |
-| `selection.py` | `reference.read` vectorized a chunk of rows at a time |
-| `kernels.py` | the same rules as two Triton programs, on CUDA |
-| `read.py` | the sparse read through the pinned `decode_attention_fwd` |
-| `backend.py` | `LsaSm70Backend(AttentionBackend)` |
-| `backend_registry.py` | registers `lsa_sm70` with the pinned engine |
+| `__init__.py` | `register()` imports `lsa_sm70` and delegates to the package's own `register()` |
 
-## What is not selected
+No selection, Triton program, read or backend code is vendored in this
+repository. The shim imports nothing heavy: the package loads only when
+`register()` runs, and the package itself defers torch, triton and sglang to
+first use.
 
-- `src/lsa/core/kernels/cutedsl/` - Hopper WGMMA and Blackwell `tcgen05`
-  kernels. The reference dispatches them only on H200/B300, so they are dead
-  weight on sm70.
-- `src/lsa/core/kernels/triton/` - the reference's fused scan, top-k and
-  expansion kernels. They carry the shape machinery this port does not use;
-  `kernels.py` implements the same rules as two smaller programs instead.
-- `src/lsa/core/shape.py` - bucket shapes. The target design scores centroids
-  (`bucket_shape: null`, `node_bucket_shape: null`).
-- `src/lsa/core/hierarchy.py` - the fixed/tree hierarchy. The first target is
-  the flat design (`top_level: 0`).
-- `LatentMetric` and `regroup_latent` - the MLA route. Qwen3.8-27B is a
-  grouped-query model; GLM-5.3-Flash is out of scope for V100.
-- `src/lsa/training/` - native and distilled training. This layer only serves.
+The backend name stays `lsa_sm70`, so a launch that selects
+`SGLANG_RESTOMOD_COMPONENTS=lsa_sm70` and the `launch_check` component check
+behave exactly as before. Only the implementation source moved.
 
-## Integration
+## Pin
 
-The component is selected with `SGLANG_RESTOMOD_COMPONENTS=lsa_sm70`. It is
-additive: no upstream file is edited and no patch is added. The backend is
-registered as `--attention-backend lsa_sm70`, replaces the full-attention
-layers of a hybrid model, and leaves the linear-attention layers to the
-engine's GDN backend.
+`UPSTREAM_PIN.toml` carries the `[lsa]` section with the repository, commit and
+version. `scripts/check_pin.py` compares the installed `lsa_sm70.__version__`
+with the pin when the package is present, and skips when it is absent, because
+the component is optional.
 
-The read is not vendored: it calls the pin's
-`sglang.kernels.ops.attention.decode_attention.decode_attention_fwd` with a
-per-query `kv_indptr`/`kv_indices` list at `page_size=1`, the same interface the
-reference uses when its CuTeDSL kernels are unavailable.
+Install the pinned commit:
+
+```sh
+pip install 'lsa-sm70 @ git+https://github.com/Oaklight/lsa-sm70@3a4798093224933988175ee685084d521474da0b'
+```
 
 ## Status
 
-| part | status |
-|---|---|
-| index space, Ward, flat selection | ported, CPU-tested |
-| vectorized selection | written here, CPU- and GPU-tested against the oracle |
-| sparse read | written here, GPU-tested against a dense gather |
-| `LsaSm70Backend` and Qwen wiring | written here, end-to-end on 4x V100 |
-| Triton scan/top-p and expansion | written here, GPU-tested against the oracle |
-| CUDA graph capture | refused; the selection is host-orchestrated |
-| signed GPU receipt | evidence packed, signing pending the operator key |
-
-No numbers are claimed in `COMPATIBILITY.md` until a receipted run exists.
+The package's README is the status of record. At this pin it is alpha: greedy
+output is token-identical to the dense `tilelang_fa_v100` baseline on 32 tokens
+at 2,048 and 16,384 prompt tokens; CUDA graph capture is refused because the
+selection is host-orchestrated; speculative decoding, DP attention, context
+parallel and an fp8 KV cache are not supported.
