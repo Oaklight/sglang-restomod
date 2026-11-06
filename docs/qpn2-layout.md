@@ -222,5 +222,12 @@ the defined columns exact -- for a future tensor whose `N` is not a multiple of
   - down N=2560 K=160, 40 rows, split-K 1: 23.4 us, 393 GB/s on 9.2 MB;
     loads-only 19.8 us. At split-K 4 the partial planes (16 x rows x N floats)
     dominate and the rate drops to 234 GB/s.
+- P2 decode-only guard on 6a's deterministic fixture (8 experts, production
+  per-rank shapes, `fixture_qpn2.py` at `review/qpn2-oracle-224`, run by
+  `scripts/qpn2_probe/guard_decode_fixture.py`): QPN2 vs the Marlin control,
+  both through the shipping `moe_wna16_marlin_gemm`, over the arms
+  `marlin`/`both`/`w13`/`w2` and both the one-route-per-block and
+  two-routes-in-one-block routings. Worst pairwise difference 6.4e-4 and worst
+  against the fixture's exact reference 5.2e-4, all under 1e-3.
 - The prefill reader is accepted only if its output matches the GEMV/reference
   on a small `M > 1` case, not just `M == 1`.

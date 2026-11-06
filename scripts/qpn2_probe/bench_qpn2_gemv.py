@@ -71,7 +71,7 @@ def pack_expert(codes: torch.Tensor, scale_bytes: torch.Tensor, n: int, k: int) 
     groups, tiles = k // 16, n // 32
     packed = (codes[:, 0::2] | (codes[:, 1::2] << 4)).to(torch.uint8)
     lanes = torch.arange(32, device=codes.device)
-    cols = torch.tensor([qpn2_col_from_lane(int(l)) for l in lanes], device=codes.device)
+    cols = torch.tensor([qpn2_col_from_lane(int(lane)) for lane in lanes], device=codes.device)
     src = packed.view(tiles, 32, groups, 8).index_select(1, cols).to(torch.int16)
     lo, hi = src & 0xF, src >> 4
     codes_out = torch.zeros(tiles, groups, 32, 8, dtype=torch.int16, device=codes.device)

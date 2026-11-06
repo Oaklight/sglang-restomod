@@ -30,6 +30,7 @@ import threading
 
 import torch
 
+from . import qpn2
 from .marlin import ENV_DIR, available, ensure_loaded
 from .scales import encode_global_scale, encode_scales
 
@@ -235,7 +236,13 @@ def _ep_size() -> int | None:
 
 
 def prepare_moe_nvfp4(layer, group_size: int | None = None) -> None:
-    """Replace the checkpoint expert layout with the SM70 Marlin layout."""
+    """Replace the checkpoint expert layout with the SM70 Marlin layout.
+
+    With ``SGLANG_SM70_FP4_MOE_LAYOUT=qpn2`` the projections named by
+    ``SGLANG_SM70_QPN2_TENSORS`` (default ``both``) are converted to QPN2
+    instead; the rest stay on Marlin. The layout is per tensor, so a small
+    bank can hold both copies for the #224 P2 guard.
+    """
     from sglang.srt.layers.utils import copy_or_rebind_param
 
     if layer.params_dtype != torch.float16:
@@ -262,7 +269,12 @@ def prepare_moe_nvfp4(layer, group_size: int | None = None) -> None:
     if any(getattr(layer, name, None) is not None for name in ("w13_bias", "w2_bias")):
         raise RuntimeError("The SM70 NVFP4 profile does not support expert bias")
 
-    ensure_loaded()  # fail before touching the parameters
+    qpn2_prefixes = qpn2.selected_prefixes()
+    if qpn2_prefixes != set(qpn2.PREFIXES):
+        # The Marlin extension is still the reader for every prefix that did
+        # not convert (and for every prefix when the layout is marlin); fail
+        # here, before the parameters are touched.
+        ensure_loaded()
 
     device = layer.w13_weight.device
     # The SM70 entry point ignores ``workspace`` (``(void)workspace`` in
@@ -277,6 +289,10 @@ def prepare_moe_nvfp4(layer, group_size: int | None = None) -> None:
     )
 
     for prefix in ("w13", "w2"):
+        if prefix in qpn2_prefixes:
+            qpn2.prepare_prefix(layer, prefix)
+            continue
+
         weight = getattr(layer, prefix + "_weight")
         scales = getattr(layer, prefix + "_weight_scale")
         global_scales = getattr(layer, prefix + "_weight_scale_2")
@@ -354,6 +370,38 @@ def moe_wna16_marlin_gemm(
             "SM70 NVFP4 Marlin does not support expert parallelism; "
             "launch with --ep-size 1"
         )
+    if qpn2.is_qpn2_weight(b_q_weight):
+        # The layout is read off the tensor: QPN2 weights are uint8, the Marlin
+        # layout is int32. The Marlin kernel cannot read this buffer, so a
+        # shape the QPN2 kernel declines raises instead of falling through.
+        from . import decode_qpn2
+
+        out = decode_qpn2.maybe_call(
+            a,
+            c_or_none,
+            b_q_weight,
+            global_scale_or_none,
+            sorted_token_ids,
+            expert_ids,
+            num_tokens_post_padded,
+            topk_weights,
+            moe_block_size,
+            top_k,
+            mul_topk_weights,
+            size_m,
+            size_n,
+            size_k,
+        )
+        if out is not None:
+            return out
+        raise RuntimeError(
+            "SM70 NVFP4 MoE: QPN2 expert weights reached a shape the QPN2 "
+            f"decode kernel does not cover (m={size_m} n={size_n} k={size_k} "
+            f"topk={top_k} block={moe_block_size}). The QPN2 prefill reader is "
+            "not integrated yet; set "
+            f"{qpn2.ENV_LAYOUT}=marlin to serve this shape on Marlin."
+        )
+
     _record_moe_stats(expert_ids, num_tokens_post_padded, size_m, moe_block_size)
 
     # The decode-shaped kernel has no M tile, so it is worth a call whenever the

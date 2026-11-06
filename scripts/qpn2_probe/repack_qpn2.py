@@ -59,7 +59,7 @@ def pack_qpn2(weight_packed: torch.Tensor, scales: torch.Tensor, n: int, k: int)
     lanes = torch.arange(32)
     physical = torch.arange(16)
     logical = torch.tensor([qpn2_logical_k(int(p)) for p in physical])
-    cols_in_tile = torch.tensor([qpn2_col_from_lane(int(l)) for l in lanes])
+    cols_in_tile = torch.tensor([qpn2_col_from_lane(int(lane)) for lane in lanes])
 
     out = torch.zeros(tiles * groups * 288, dtype=torch.uint8)
     for t in range(tiles):
@@ -82,7 +82,7 @@ def dequant_qpn2(buf: torch.Tensor, n: int, k: int, global_scale: float) -> torc
     groups, tiles = k // 16, n // 32
     out = torch.zeros(n, k, dtype=torch.float32)
     for t in range(tiles):
-        cols = t * 32 + torch.tensor([qpn2_col_from_lane(l) for l in range(32)])
+        cols = t * 32 + torch.tensor([qpn2_col_from_lane(lane) for lane in range(32)])
         for g in range(groups):
             base = (t * groups + g) * 288
             codes = buf[base:base + 256].reshape(32, 8)
