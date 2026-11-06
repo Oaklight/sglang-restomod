@@ -21,11 +21,19 @@ Admission is deliberately narrow: a layer is converted only when its weight is
 2-D BF16/FP16, both sides are a multiple of the 128 block, the layer is not an
 expert and not the LM head, and its quantization method is the engine's
 unquantized one. Everything else keeps its original path.
+
+``RowParallelLinear`` and ``ReplicatedLinear`` are ``LinearBase`` too, but only
+``ColumnParallelLinear`` sets ``output_size_per_partition``. The predicate now
+checks the class instead of that one attribute, which is what kept Flash-Next's
+151 row-parallel modules on bf16. ``ReplicatedLinear`` stays excluded: it
+carries the MoE router, whose forward is a fused kernel, so its conversion
+needs a numeric A/B of its own.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 
 import torch
 
@@ -34,6 +42,15 @@ logger = logging.getLogger(__name__)
 BLOCK = 128
 SKIP_PREFIX = ("experts",)
 SKIP_SUFFIX = ("lm_head",)
+# ReplicatedLinear carries the MoE router and the PLE/QSA key-value
+# projections. The router's forward is a fused Triton kernel, so its weight
+# conversion needs a numeric A/B of its own; keep the class on its path for
+# now. The RowParallelLinear family is the group this component was missing.
+SKIP_TYPES = ("ReplicatedLinear",)
+ENV_DETAILS = "SGLANG_SM70_FP8_DENSE_QUANT_DETAILS"
+
+_LINEAR_BASE = None
+_LINEAR_BASE_READY = False
 
 
 def _admitted(name: str, module) -> bool:
@@ -43,6 +60,8 @@ def _admitted(name: str, module) -> bool:
     if any(part in name for part in SKIP_PREFIX):
         return False
     if any(name.endswith(suffix) for suffix in SKIP_SUFFIX):
+        return False
+    if type(module).__name__ in SKIP_TYPES:
         return False
     weight = getattr(module, "weight", None)
     if weight is None or weight.dim() != 2:
@@ -62,7 +81,26 @@ def _admitted(name: str, module) -> bool:
 
 
 def _is_linear_base(module) -> bool:
-    """LinearBase exposes these two; a plain ``nn.Linear`` has neither."""
+    """True for the engine's ``LinearBase`` family.
+
+    ``output_size_per_partition`` is set only by ``ColumnParallelLinear``;
+    checking for it alone refuses ``RowParallelLinear`` and
+    ``ReplicatedLinear``, which are ``LinearBase`` too. That misclassification
+    is why Flash-Next's 151 row-parallel modules stayed on bf16. The import is
+    lazy so the CPU tests do not need the engine.
+    """
+    global _LINEAR_BASE, _LINEAR_BASE_READY
+    if not _LINEAR_BASE_READY:
+        try:
+            from sglang.srt.layers.linear import LinearBase
+        except ImportError:
+            _LINEAR_BASE = None
+        else:
+            _LINEAR_BASE = LinearBase
+        _LINEAR_BASE_READY = True
+    if _LINEAR_BASE is not None and isinstance(module, _LINEAR_BASE):
+        return True
+    # Test doubles and out-of-tree linear classes keep the old duck check.
     return hasattr(module, "quant_method") and hasattr(
         module, "output_size_per_partition"
     )
@@ -149,6 +187,8 @@ def refusal_reason(name: str, module) -> str | None:
         return "expert"
     if any(name.endswith(suffix) for suffix in SKIP_SUFFIX):
         return "lm_head"
+    if type(module).__name__ in SKIP_TYPES:
+        return "replicated"
     weight = getattr(module, "weight", None)
     if weight is None or weight.dim() != 2:
         return "no-2d-weight"
@@ -184,6 +224,28 @@ def admission_report(model) -> dict[str, dict[str, int]]:
     return report
 
 
+def admission_details(model) -> list[str]:
+    """One line per 2-D float weight, for the env-gated log.
+
+    The report aggregates by type; this names the modules behind a refusal so
+    a budget can say which projection stayed on bf16.
+    """
+    rows = []
+    for name, module in model.named_modules():
+        weight = getattr(module, "weight", None)
+        if weight is None or weight.dim() != 2:
+            continue
+        if weight.dtype not in (torch.float16, torch.bfloat16):
+            continue
+        reason = refusal_reason(name, module)
+        rows.append(
+            f"{name} type={type(module).__name__} "
+            f"shape={tuple(weight.shape)} "
+            f"{'admitted' if reason is None else reason}"
+        )
+    return rows
+
+
 def install() -> bool:
     """Quantize the dense linears once, after the model weights are loaded."""
     from sglang.srt.layers.quantization.fp8 import Fp8LinearMethod
@@ -208,6 +270,14 @@ def install() -> bool:
             # The report runs first: after conversion the admitted layers read
             # as already-fp8.
             report = admission_report(self.model)
+            if os.environ.get(ENV_DETAILS, "").strip().lower() in (
+                "1",
+                "true",
+                "on",
+                "yes",
+            ):
+                for line in admission_details(self.model):
+                    logger.info("sm70_fp8_dense_quant: %s", line)
             converted, refused = quantize_dense_linears(self.model)
             logger.info(
                 "sm70_fp8_dense_quant: %d dense linears quantized to block FP8, "
