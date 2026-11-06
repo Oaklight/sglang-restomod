@@ -94,12 +94,13 @@ def _prepare(torch, fixture, layout: str, tensors: str, device):
 
 def _routing(torch, fixture, shape: str, pair: bool, device):
     case = fixture[shape]
+    sentinel = int(fixture.manifest["shapes"][shape]["sentinel_value"])
     if pair:
         # Two routes of expert 0 in one block (token 0's two top-k slots).
         # Both kernels address output rows by route index, so the two slots
         # must carry distinct indices; a repeated index leaves a row unwritten.
         sorted_ids = torch.from_numpy(obytes(case["pair_sorted_token_ids"])).int().to(device)
-        real = [int(v) for v in sorted_ids.tolist() if int(v) != 8]
+        real = [int(v) for v in sorted_ids.tolist() if int(v) != sentinel]
         assert len(real) == len(set(real)), f"pair route indices alias: {real}"
         return dict(
             sorted_token_ids=sorted_ids,
