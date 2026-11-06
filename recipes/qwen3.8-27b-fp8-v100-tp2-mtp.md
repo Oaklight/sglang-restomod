@@ -305,7 +305,7 @@ Prefill, warm process: 1,680-1,708 tok/s at 2k, 1,331-1,364 at 8k.
 > 27B measures **53.37 tok/s at 31.1k against 35.44 with MTP off**, at an accept
 > length of 2.88-3.50. MTP therefore still wins at 32k on the pin, and this
 > crossover table should not be used to choose the setting there. Above 32k the
-> pin now measures 62.40 against 31.86 tok/s at 125,938 prompt tokens with the
+> pin now measures 63.58 against 32.01 tok/s at 125,938 prompt tokens with the
 > native draft decode; see the 126k table below.
 
 **With the native draft decode, MTP wins at 126k.** The ~48k cutoff below was
@@ -319,11 +319,13 @@ tokens, warm prefix, 5 reps), 125,938 prompt tokens:
 
 | MTP | tok/s, 5 reps | mean | sd |
 |---|---|---:|---:|
-| on, native draft decode | 62.47 / 62.52 / 62.33 / 62.42 / 62.26 | 62.40 | 0.10 |
-| off | 31.82 / 31.87 / 31.88 / 31.89 / 31.85 | 31.86 | 0.03 |
+| on, native draft decode | 63.65 / 63.66 / 63.46 / 63.65 / 63.49 | 63.58 | 0.10 |
+| off | 32.01 / 32.01 / 32.02 / 31.99 / 32.00 | 32.01 | 0.01 |
 
-MTP is 1.96x no-MTP at 126k. Do not turn MTP off by context on this launch.
-262k is unmeasured with the native path.
+MTP is 1.99x no-MTP at 126k. Do not turn MTP off by context on this launch.
+262k is unmeasured with the native path. The first run of this change, before
+main's #220 kernel sync, measured 62.40 / 31.86 (mean of the same 5-rep
+protocol); the table cites the receipted run at the merged head.
 
 The table and the 48k rule below were measured 2026-10-27 with every draft step
 on Triton, before #205. They are kept as the record of that path.
