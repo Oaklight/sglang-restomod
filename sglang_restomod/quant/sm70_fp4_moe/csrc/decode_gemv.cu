@@ -76,13 +76,20 @@ decode_moe_gemv_kernel(const __half* __restrict__ a,
                        const float* __restrict__ global_scale,
                        const int* __restrict__ sorted_token_ids,
                        const int* __restrict__ expert_ids,
+                       const int* __restrict__ num_tokens_post_padded,
                        int num_rows, int top_k, int size_n, int size_k,
                        bool mul_topk_weights,
                        const float* __restrict__ topk_weights,
                        float* __restrict__ part, int k_split) {
     const int n_tile = blockIdx.x;
     const int route_tile = blockIdx.y;
+    // `expert_ids` is sized for the worst case and the align kernel writes only
+    // the blocks it fills; the rest is uninitialised memory. The padded token
+    // count is the authority, exactly as `prob_m_top_k` is in the reference
+    // kernel, so read it before touching `expert_ids`.
+    if (route_tile * kBlockM >= num_tokens_post_padded[0]) return;
     const int expert = expert_ids[route_tile];
+    if (expert < 0) return;  // EP filter sentinel; never valid with ep_size 1
 
     const int k16 = size_k / 16;
     const int n2 = size_n * 2;
@@ -315,7 +322,8 @@ torch::Tensor decode_moe_gemv(torch::Tensor a, torch::Tensor c,
                               int64_t num_rows, int64_t top_k,
                               int64_t size_n, int64_t size_k,
                               bool mul_topk_weights,
-                              torch::Tensor workspace, int64_t k_split) {
+                              torch::Tensor workspace, int64_t k_split,
+                              torch::Tensor num_tokens_post_padded) {
     const int route_tiles = expert_ids.size(0);
     dim3 grid(size_n / kTileN, route_tiles, k_split);
     // Launch on the current stream: a bare <<<...>>> goes to the legacy
@@ -330,6 +338,7 @@ torch::Tensor decode_moe_gemv(torch::Tensor a, torch::Tensor c,
         global_scale.data_ptr<float>(),
         sorted_token_ids.data_ptr<int>(),
         expert_ids.data_ptr<int>(),
+        num_tokens_post_padded.data_ptr<int>(),
         static_cast<int>(num_rows), static_cast<int>(top_k),
         static_cast<int>(size_n), static_cast<int>(size_k),
         mul_topk_weights, topk_weights.data_ptr<float>(),

@@ -33,6 +33,9 @@ logger = logging.getLogger(__name__)
 
 ENV_ENABLE = "SM70_MOE_DECODE_GEMV"
 BLOCK_M = 8
+# Largest token count the decode path is admitted for; the same cut
+# ``method._select_split_k`` uses.
+MAX_M = 8
 K_SPLIT = 4
 # Workspace is sized for this many route tiles, above any decode capture batch.
 _WORKSPACE_ROUTE_TILES = 1024
@@ -41,6 +44,7 @@ _LOCK = threading.Lock()
 _MODULE = None
 _FAILED = False
 _WORKSPACE = None
+_DEBUGGED: list[int] = []
 
 _CSRC = Path(__file__).resolve().parent / "csrc" / "decode_gemv.cu"
 
@@ -92,7 +96,14 @@ def supports(size_m: int, size_n: int, size_k: int, top_k: int,
     k_groups = size_k // 16
     if k_groups % K_SPLIT != 0:
         return False
-    return size_m > 0 and top_k > 0
+    # Decode only. The kernel has no M tile and every number behind it is a
+    # decode number; a prefill chunk routes many tokens per block, which is a
+    # regime Marlin already covers. `size_m` is the token count for the gate_up
+    # call and `tokens * top_k` for the down call, which this shape rejects on
+    # N before the cut matters.
+    if size_m > MAX_M or top_k <= 0:
+        return False
+    return True
 
 
 def _workspace_for(rows: int, size_n: int, device):
@@ -161,15 +172,34 @@ def maybe_call(
         logger.info("decode gemv skipped: topk_weights %d < rows %d",
                     topk_weights.numel(), rows)
         return None
-    if rows != expert_ids.size(0):
-        logger.info("decode gemv skipped: rows=%d route_tiles=%d", rows, expert_ids.size(0))
+    # `expert_ids` is allocated for the worst case and the align kernel writes
+    # only the blocks it fills; the rest of the tensor is uninitialised. The
+    # padded token count is the authority on how many blocks exist, and the
+    # kernel bounds itself on it before it reads `expert_ids`.
+    if not (_is_cuda(num_tokens_post_padded) and num_tokens_post_padded.numel() >= 1):
+        logger.info("decode gemv skipped: no padded-token count")
         return None
-    logger.info("decode gemv: rows=%d route_tiles=%d n=%d k=%d", rows, expert_ids.size(0), size_n, size_k)
+    if os.environ.get("SM70_MOE_GEMV_DEBUG") == "1" and not _DEBUGGED:
+        _DEBUGGED.append(1)
+        import torch as _t
+
+        if not _t.cuda.is_current_stream_capturing():
+            logger.info(
+                "decode gemv inputs: a=%s%s c=%s%s bq=%s bs=%s%s gs=%s%s "
+                "si=[%d,%d] ei=[%d,%d] tw=%s topk=%d rows=%d",
+                tuple(a.shape), a.dtype, tuple(c.shape), c.dtype,
+                tuple(b_q_weight.shape), tuple(b_scales.shape), b_scales.dtype,
+                tuple(global_scale.shape), global_scale.dtype,
+                int(sorted_token_ids.min()), int(sorted_token_ids.max()),
+                int(expert_ids.min()), int(expert_ids.max()),
+                tuple(topk_weights.shape), top_k, rows,
+            )
+    logger.info("decode gemv: rows=%d tiles=%d n=%d k=%d", rows, expert_ids.size(0), size_n, size_k)
     workspace = _workspace_for(rows, size_n, c.device)
     return module.decode_moe_gemv(
         a, c, b_q_weight, b_scales, global_scale, sorted_token_ids,
         expert_ids, topk_weights, rows, top_k, size_n, size_k,
-        bool(mul_topk_weights), workspace, K_SPLIT,
+        bool(mul_topk_weights), workspace, K_SPLIT, num_tokens_post_padded,
     )
 
 
