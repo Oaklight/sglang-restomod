@@ -70,6 +70,7 @@ decode 吞吐（tok/s），数据来自 `scripts/bench.py`。一行数据只有�
 | Flash-Next | NVFP4 | 4 | TP4，无 EP | 3/4 | temperature 0 | 993 | 87.27 / 87.24 | receipt `evidence-6294562-nvfp4` |
 | Flash-Next | NVFP4 | 4 | TP4，无 EP | 3/4 | temperature 0 | 3473 | 72.43 / 90.68 | receipt `evidence-6294562-nvfp4` |
 | Flash-Next | NVFP4 | 4 | TP4，无 EP | 3/4 | temp 1, top-p 0.95, top-k 20 | 74 | 81.83 / 88.06 | receipt `evidence-6294562-nvfp4` |
+| Flash-Next | NVFP4 | 4 | TP4，无 EP | 3/4 | temp 1, top-p 0.95, top-k 20 | 4027 | 87.59 / 86.97 | receipt `evidence-199-ef2662a` |
 | Flash-Next | NVFP4 | 4 | TP4，无 EP | 3/4 | temperature 0 | 3481 | 81.47 / 89.22（kernel 关 / 开，400 个 greedy token，decode graph 开，8 次中位数，去掉 warmup） | receipt `evidence-07c26a2`（PR #202） |
 | 27B | FP8 | 2 | TP2，无 EP | 3/4 | temp 1, top-p 0.95, top-k 20 | 8037 | 69.30 / 63.24 | receipt `evidence-e5a5740-draft-extend` |
 | 27B | FP8 | 2 | TP2，无 EP | 3/4 | temp 1, top-p 0.95, top-k 20 | 31109 | 44.59 / 45.79 | receipt `evidence-e5a5740-draft-extend` |
@@ -79,6 +80,8 @@ decode 吞吐（tok/s），数据来自 `scripts/bench.py`。一行数据只有�
 | 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits | 3/4 | temp 1, top-p 0.95, top-k 20 | 32112 | 54.39 / 46.69 | receipt `evidence-7e15a2b-fp8-draft-extend` |
 | 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits | 5/6 | temp 1, top-p 0.95, top-k 20 | 8034 | 80.01 / 66.98 | receipt `evidence-5097450-spec-steps` |
 | 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits | 5/6 | temp 1, top-p 0.95, top-k 20 | 32138 | 61.62 / 46.39 | receipt `evidence-5097450-spec-steps` |
+| 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits | 5/6 | temperature 0 | 4023 | 80.62 / 85.07 | receipt `evidence-d0054cfd-bench-spec` |
+| 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits | 5/6 | temperature 0 | 32138 | 61.57 / 69.99 | receipt `evidence-d0054cfd-bench-spec` |
 | 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits | 5/6 | temp 1, default | 8041 | 107.1 / 106.4（2 请求，512 输出 token，合计） | receipt `evidence-e1924f3-serving-active` |
 | 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits | 5/6 | temp 1, default | 8041 | 181.8 / 181.3（4 请求，512 输出 token，合计） | receipt `evidence-e1924f3-serving-active` |
 | 27B | FP8，e5m2 KV | 2 | TP2，无 EP，40 KV splits | 5/6 | temp 1, default | 31372 | 80.7 / 82.6（2 请求，512 输出 token，合计） | receipt `evidence-e1924f3-serving-active` |
