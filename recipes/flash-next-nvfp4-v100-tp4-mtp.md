@@ -225,10 +225,22 @@ That is -1.71 ms per step, -5.2%. The bench cannot resolve it on this box
 (82.75 / 97.79 / 84.28 tok/s against an 82-84 baseline across three fresh
 reps), so the trace is the evidence.
 
-Only 49 linears per rank are converted: the rest of the dense weights have an N
-that is not a multiple of 128 (864, 1076, 320, 24, 1), which the TurboMind
-kernel's contract does not admit. `--quantization modelopt_fp4` keeps the
-experts out of this path; they stay on the marlin NVFP4 GEMM.
+Only 49 linears per rank were converted with the predicate as it stood then:
+the admission test required `output_size_per_partition`, which only
+`ColumnParallelLinear` sets, so every `RowParallelLinear` was refused. Testing
+`LinearBase` membership instead (2026-11-06, PR #230) converts 49 more per
+rank — the 36 `linear_attn.out_proj` and 12 `o_proj`, all `[2560, 1536]`, plus
+one vision merger — for 98 in total. On the same launch the dense term moves
+10.372 -> 10.106 ms/step and the unprofiled anchor 156.1 -> 157.76 tok/s.
+
+What is still refused, from `SGLANG_SM70_FP8_DENSE_QUANT_DETAILS`: the
+shared-expert down projections (K=160), the vision block GEMMs (outputs 864
+and 1076, inputs 288 and 1076, 27 of each), the 320-wide hyper-connection
+low-rank pair, and the `ReplicatedLinear` router layers, which are excluded by
+policy rather than by shape. The first group have an unaligned block
+dimension that the TurboMind kernel's contract does not admit; the router
+needs its own numeric A/B before it can move. `--quantization modelopt_fp4`
+keeps the experts out of this path; they stay on the marlin NVFP4 GEMM.
 
 
 ## Known gaps
