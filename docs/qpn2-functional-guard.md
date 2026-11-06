@@ -133,6 +133,35 @@ output by O(1).
 - **Draft check** (fixture or P3/P4 with MTP on): accept length within 0.05 of
   Marlin. A larger drop with matching target tokens localizes to the draft.
 
+## 4a. Running the comparator
+
+`scripts/qpn2_probe/compare_runs.py` implements section 4 and the section 5
+table, so the P3/P4 run is turnkey:
+
+```sh
+python scripts/qpn2_probe/compare_runs.py runA.json both=runB.json \
+    [w13=runB13.json w2=runB2.json] [--json verdict.json]
+python scripts/qpn2_probe/compare_runs.py --selftest
+```
+
+Each run writes one JSON artifact (schema in the script docstring): launch
+metadata (`layout`, `qpn2_tensors`, `mtp`, `commit`, `tp`, `model`,
+`checkpoint`), and per prompt the 128 greedy token ids, the chosen token's
+logprob at each position, the top-2 logprobs and token ids at each position
+(the near-tie rule reads the baseline's), and the accept length. The comparator
+prints the per-prompt table, the cause from the section 5 table, and a verdict;
+it exits 0 on pass, 1 on fail, and 2 when the inputs cannot be judged
+(incomparable launches, MTP on, malformed artifact).
+
+It refuses MTP-on artifacts unless `--mtp-secondary` is given, because rejection
+sampling makes token equality unattributable; with that flag it judges accept
+length and logprob drift only, per the MTP-on note above.
+
+`--selftest` runs 17 synthetic checks, one per failure class plus the near-tie
+pass, the near-tie-inside-the-prefix failure, the per-tensor arm mapping and the
+MTP path. Run it after any change to the comparator and before it judges a real
+run.
+
 ## 5. What a failure localizes
 
 | observation | localization |
