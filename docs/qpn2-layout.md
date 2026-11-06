@@ -80,6 +80,11 @@ Simplification when expanding with the word trick in §3: the four half2 of one
 so a reader that uses the trick has no separate un-permute step and its
 activation operand stays in plain logical K order.
 
+Reader note for an N-major transpose (df): a source lane holds **two** 32-bit
+code registers, word 0 = logical K 0..7 and word 1 = K 8..15 of that lane's
+column. A transpose must fetch both registers from each source lane and select
+the register with the target k; fetching one register loses half the group.
+
 ## 3. Code values and scaling
 
 Nibble `c` (0..15) is E2M1: bit 3 is the sign, magnitude
@@ -116,22 +121,23 @@ exactly this.
 Input: ModelOpt packed weight `[N, K/2]` uint8 (low nibble = even K, high nibble
 = odd K), E4M3 scales `[N, K/16]`, and the per-expert FP32 global scale.
 
-For every output code byte index `i` in `[0, tiles*groups*32*8)`:
+For every `(t, g, storage_lane, physical_byte)` with `t < tiles`, `g < groups`,
+`storage_lane < 32`, `physical_byte < 8`:
 
 ```
-physical_byte = i & 7
-outer         = i >> 3
-storage_lane  = outer & 31
-outer       >>= 5
-g             = outer % groups
-t             = outer / groups
+base          = (t*groups + g) * 288        # section 1, NOT a flat byte index
+address       = base + storage_lane*8 + physical_byte
 column        = t*32 + qpn2_col_from_lane(storage_lane)
 k0            = g*16 + qpn2_logical_k(2*physical_byte)
 k1            = g*16 + qpn2_logical_k(2*physical_byte + 1)
 c0            = (weight[column, k0/2] >> ((k0 & 1)*4)) & 0xF
 c1            = (weight[column, k1/2] >> ((k1 & 1)*4)) & 0xF
-out[i]        = c0 | (c1 << 4)
+out[address]  = c0 | (c1 << 4)
 ```
+
+Do not use a flat code-byte index as the output address: the 32 scale bytes
+sit between the code regions of two groups, so a flat index and the section-1
+address diverge from group 2 onward (they coincide only for `g == 0`).
 
 For every `(t, g, storage_lane)`:
 
@@ -143,10 +149,11 @@ This is a pure permutation of bytes: the buffer size is the same as the source
 (0.5 B/weight code + 0.0625 B/weight scale = **0.5625 B/weight**). The global
 scale is **not** baked into the buffer; the reader multiplies it in, as in §3.
 
-The repack allocates the buffer zero-filled and writes every defined byte. A
-padded column (`N % 32 != 0`) therefore has code bytes `0x00` and scale byte
-`0`, so a coalesced load of a whole 288-byte group always reads defined data.
-Zero codes decode to 0.0; the reader must still not emit padded columns.
+The repack allocates the buffer zero-filled, so every byte of a 288-byte group
+is defined even in the padded region of an oracle buffer whose `tiles` is
+`ceil(N/32)`. In P1 `N % 32 == 0` and every column is defined; a coalesced
+whole-group load is always safe, and the reader still must not emit padded
+columns. Zero codes decode to 0.0.
 
 ## 4.1 Expert stacking (MoE)
 
@@ -162,6 +169,14 @@ scale byte = that base + 256 + lane
 `w13` 460,800 B/expert, `w2` 230,400 B/expert at TP4. The repack writes the
 experts in this order and the reader indexes them with this stride.
 
+Tensor parallel sharding happens **before** the repack: each rank packs its own
+slice, so the expert stride above is per-rank. At TP4 `w13` splits N (tiles:
+1280 -> 320) and `w2` splits K (groups: 640 -> 160); both remain aligned, and
+each rank's byte range is a contiguous slice of a full-width pack for `w13`.
+For `w2` the ranks own different K ranges of every tile, so a full-width pack
+cannot be sliced without a per-tile copy -- repack after sharding is the direct
+path. The per-rank shape must satisfy `N % 32 == 0` and `K % 16 == 0`.
+
 ## 5. Shapes
 
 Per rank at TP4 for Qwen3.8-Flash-Next NVFP4:
@@ -171,9 +186,12 @@ Per rank at TP4 for Qwen3.8-Flash-Next NVFP4:
 | `w13` gate_up | 320 | 2560 | 10 | 160 | 460,800 |
 | `w2` down | 2560 | 160 | 80 | 10 | 230,400 |
 
-`N % 32 == 0` and `K % 16 == 0` are required. For an `N` not divisible by 32,
-pad the last column tile and write scale 0; the reader must not use the padded
-columns.
+`N % 32 == 0` and `K % 16 == 0` are required by `pack_qpn2` in P1; the guard is
+the scope, not a placeholder for a padded layout. The oracle (`6a`,
+`scripts/qpn2_probe/oracle_qpn2.py`) implements the padded path --
+`tiles = ceil(N/32)` with zero code bytes and scale 0 in the padded lanes, and
+the defined columns exact -- for a future tensor whose `N` is not a multiple of
+32. Until that path lands in the repack, `N % 32 != 0` is out of scope.
 
 ## 6. What the prefill reader must not do
 
@@ -186,9 +204,23 @@ columns.
 
 ## 7. Verification
 
-- CPU round trip: random packed weights + E4M3 scales -> QPN2 -> dequantized
-  dense; compare bitwise to the source decode.
-- GPU: GEMV vs an FP32 dequantized reference, relative error <= 1e-3 (the #224
-  P1 probe).
+- Repack bytes: bit-exact against the CPU source decode on N=64/K=32,
+  N=320/K=64, N=64/K=160; byte-identical to 6a's independently written oracle
+  on the three supported shapes, and the oracle's independent decode of those
+  bytes equals the source decode (`max|d| = 0`). Permutation risk closed at the
+  spec level.
+- The CPU decoder (`dequant_qpn2`) is a **layout-only** reference: it computes
+  exact FP32 products, not the §3 FP16 rounding, so it checks bytes and
+  permutations, not the kernel's scale rounding. The kernel's rounding is
+  measured on GPU against both references.
+- GPU decode GEMV (`scripts/qpn2_probe/decode_gemv_qpn2.cu`, one V100,
+  `bench_qpn2_gemv.py`):
+  - gate_up N=320 K=2560, 40 route rows, split-K 4: 35.0 us, 527 GB/s on
+    18.4 MB; `max|d|/max|ref|` = 4.7e-4 vs exact FP32 and 2.5e-4 vs the §3
+    FP16-RNE path. Loads-only floor 32.4 us (569 GB/s), so dequant + dot
+    product add 7%.
+  - down N=2560 K=160, 40 rows, split-K 1: 23.4 us, 393 GB/s on 9.2 MB;
+    loads-only 19.8 us. At split-K 4 the partial planes (16 x rows x N floats)
+    dominate and the rate drops to 234 GB/s.
 - The prefill reader is accepted only if its output matches the GEMV/reference
   on a small `M > 1` case, not just `M == 1`.

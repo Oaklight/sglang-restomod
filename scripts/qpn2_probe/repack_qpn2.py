@@ -3,6 +3,11 @@
 The layout is defined in ``docs/qpn2-layout.md``; this module is the reference
 implementation the probe and the CUDA kernel are checked against. Pure torch,
 no CUDA: it runs on the laptop.
+
+The decoder here is a **layout-only** reference. It computes exact FP32
+products, not the spec's one FP16 RNE of ``e4m3 * global_scale``, so it
+validates bytes and permutations, not the kernel's scale rounding; the GPU
+probe measures the kernel against both references.
 """
 
 from __future__ import annotations
@@ -125,8 +130,51 @@ def _round_trip(n: int, k: int, seed: int = 0) -> None:
     assert diff == 0.0, "QPN2 round trip is not bit-exact against the source decode"
 
 
+def expand_word_codes(word: int) -> list[int]:
+    """The CUDA ``expand_word`` bit sequence, returning the 8 E2M1 codes.
+
+    The half2 of a word pair physical codes (p, p+4), which are logical K
+    (2i, 2i+1): the expansion absorbs the K permutation and the result is in
+    logical order. Codes come back as ``((bits >> 9) & 7) | sign << 3``.
+    """
+    sign, exp_mant = 0x80008000, 0x0E000E00
+    words = [((word << 12) & sign) | ((word << 9) & exp_mant),
+             ((word << 8) & sign) | ((word << 5) & exp_mant),
+             ((word << 4) & sign) | ((word << 1) & exp_mant),
+             (word & sign) | ((word >> 3) & exp_mant)]
+    codes = []
+    for packed in words:
+        for half in (0, 1):
+            bits = (packed >> (16 * half)) & 0xFFFF
+            codes.append(((bits >> 9) & 7) | ((bits >> 15) << 3))
+    return codes
+
+
+def _word_trick_check(n: int, k: int, seed: int = 0) -> None:
+    """QPN2 bytes -> CUDA bit sequence -> the source codes, in logical K order."""
+    g = torch.Generator().manual_seed(seed)
+    codes = torch.randint(0, 16, (n, k), generator=g, dtype=torch.int32)
+    packed = (codes[:, 0::2] | (codes[:, 1::2] << 4)).to(torch.uint8)
+    scales = torch.zeros(n, k // 16, dtype=torch.uint8).view(torch.float8_e4m3fn)
+    buf = pack_qpn2(packed, scales, n, k)
+    tiles, groups = n // 32, k // 16
+    for t in range(tiles):
+        for grp in range(groups):
+            for lane in range(32):
+                base = (t * groups + grp) * 288 + lane * 8
+                w0 = int.from_bytes(bytes(buf[base:base + 4].tolist()), "little")
+                w1 = int.from_bytes(bytes(buf[base + 4:base + 8].tolist()), "little")
+                got = expand_word_codes(w0) + expand_word_codes(w1)
+                col = t * 32 + qpn2_col_from_lane(lane)
+                want = [int(codes[col, grp * 16 + i]) for i in range(16)]
+                assert got == want, f"t={t} g={grp} lane={lane} col={col}: {got} != {want}"
+    print(f"N={n} K={k}: word-trick codes match the source in logical K order")
+
+
 if __name__ == "__main__":
     _round_trip(64, 32)
     _round_trip(320, 64)
     _round_trip(64, 160)
+    _word_trick_check(64, 32)
+    _word_trick_check(320, 64)
     print("QPN2 repack round trip OK")
