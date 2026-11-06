@@ -141,8 +141,16 @@ def maybe_call(
     # the activation row as ``row / top_k``. The server's align kernel emits
     # token indices instead, so the two only agree when the output has one
     # row per route tile. Refuse anything else rather than compute garbage.
-    if rows != expert_ids.size(0):
+    # The kernel addresses a and c as dense row-major buffers. A sliced or
+    # otherwise strided view would write outside the tensor.
+    if not (a.is_contiguous() and c.is_contiguous()):
+        logger.info("decode gemv skipped: non-contiguous a=%s c=%s",
+                    a.is_contiguous(), c.is_contiguous())
         return None
+    if rows != expert_ids.size(0):
+        logger.info("decode gemv skipped: rows=%d route_tiles=%d", rows, expert_ids.size(0))
+        return None
+    logger.info("decode gemv: rows=%d route_tiles=%d n=%d k=%d", rows, expert_ids.size(0), size_n, size_k)
     workspace = _workspace_for(rows, size_n, c.device)
     return module.decode_moe_gemv(
         a, c, b_q_weight, b_scales, global_scale, sorted_token_ids,
