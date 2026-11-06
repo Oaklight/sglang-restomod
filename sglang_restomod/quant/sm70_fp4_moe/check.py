@@ -23,6 +23,7 @@ pins the byte encoder separately on CPU.
 
 from __future__ import annotations
 
+import os
 from types import SimpleNamespace
 
 import torch
@@ -121,6 +122,12 @@ def run() -> float:
     padded = torch.tensor([tokens], dtype=torch.int32, device=device)
     topk_weights = torch.ones(tokens, 1, device=device)
     op = ensure_loaded().gemm
+
+    # This calls the extension directly, so the per-shape split-K selector in
+    # ``method`` never runs. Pin the value instead of inheriting whatever an
+    # earlier caller left in the process environment: at these K sizes
+    # split-K 2 returns a wrong result.
+    os.environ["SM70_MARLIN_MOE_SPLIT_K"] = "1"
 
     def gemm(x, weight, scale, scale_2, size_n, size_k):
         out = torch.empty(tokens, size_n, dtype=torch.float16, device=device)
