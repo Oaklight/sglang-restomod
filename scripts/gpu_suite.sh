@@ -274,7 +274,8 @@ PY
     # prefix so the batch starts together and the all-active window is real;
     # with cold prefills the later streams are still prefilling long after the
     # first one decodes, and the rate collapses into the prefill stagger.
-    FRESH=""
+    # bench.py now salts by default, so the shared case has to opt out.
+    FRESH="--no-fresh"
     if [[ "$c" == "1" ]]; then
       FRESH="--fresh"
     fi
