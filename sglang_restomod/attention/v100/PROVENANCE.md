@@ -85,6 +85,14 @@ read from the engine for the combine: `tilelang/_decode_cuda.py` binds the
 TileLang combine, and neither `sglang.kernels.ops.attention.sm70_qsa_combine`
 nor `SGLANG_SM70_QSA_COMBINE` exists at the pin.
 
+The pin also imports the external `flash_mla` wheel at module scope on the
+decode-graph path: `eagle_worker_v2` imports `flashmla_backend`, which imports
+`kernels.ops.attention.flash_mla_interface`. That wheel has no SM70 build, and
+without it graph capture aborted before the QSA backend was asked to capture.
+`flash_mla_compat.py` installs a stub when that import fails, keyed on the
+import rather than on a device name, so a host with the wheel is left alone and
+a launch that really runs FlashMLA still fails with an install instruction.
+
 Validated through its own module path. Since 2026-11-02 every 27B measurement in
 this repository runs this component rather than the fork: the launchers set
 `SGLANG_RESTOMOD_COMPONENTS=attention_v100,fp8_dense,spec_sm70,gdn_tilelang_sm70`
