@@ -1,5 +1,5 @@
 diff --git a/python/sglang/srt/layers/moe/fused_moe_triton/fused_marlin_moe.py b/python/sglang/srt/layers/moe/fused_moe_triton/fused_marlin_moe.py
-index 98fc1b1..8d81006 100644
+index 98fc1b1..74dce3e 100644
 --- a/python/sglang/srt/layers/moe/fused_moe_triton/fused_marlin_moe.py
 +++ b/python/sglang/srt/layers/moe/fused_moe_triton/fused_marlin_moe.py
 @@ -208,10 +208,27 @@ def fused_marlin_moe(
@@ -34,15 +34,16 @@ index 98fc1b1..8d81006 100644
      assert hidden_states.is_contiguous(), "Hidden_states must be contiguous"
      assert w1.is_contiguous(), "Expert weights1 must be contiguous"
      assert w2.is_contiguous(), "Expert weights2 must be contiguous"
-@@ -246,7 +263,12 @@ def fused_marlin_moe(
+@@ -246,7 +263,13 @@ def fused_marlin_moe(
  
      M, K = hidden_states.shape
      E = w1.shape[0]
 -    N = w2.shape[1] * 16
 +    if w1.dtype == torch.uint8:
-+        # One bank holds (N / 32) * (K / 16) * 288 bytes per expert, and K is
-+        # the activation width, so N follows from the bank's size.
-+        N = (w1.numel() // E) * 16 // (9 * K)
++        # One bank holds (N / 32) * (K / 16) * 288 bytes per expert. N here is
++        # the intermediate size, i.e. w2's contraction width, so read it from
++        # w2: w1 holds 2N when gated and would double gemm1_n.
++        N = (w2.numel() // E) * 16 // (9 * K)
 +    else:
 +        N = w2.shape[1] * 16
      topk = topk_ids.shape[1]

@@ -152,10 +152,18 @@ def prefill_shim(qpn2_weight, global_scale, size_n: int, size_k: int):
     key = (size_n, size_k)
     ptr = qpn2_weight.data_ptr()
     idx = _INDEX.get(ptr)
-    shape = _scratch(
-        int(qpn2_weight.numel() // ((size_n // 32) * (size_k // 16) * 288)),
-        size_n, size_k, qpn2_weight.device,
-    )
+    experts = int(qpn2_weight.numel() // ((size_n // 32) * (size_k // 16) * 288))
+    # One global scale per expert. A mismatch means the caller's size_n/size_k
+    # do not describe this bank (for example the fused gate+up width used as if
+    # it were the weight's N), and the repack would silently serve the wrong
+    # expert count to the Marlin reader.
+    if global_scale is not None and int(global_scale.numel()) != experts:
+        raise RuntimeError(
+            "SM70 QPN2: the bank holds %d experts but global_scale has %d "
+            "entries (n=%d k=%d); the caller's size_n/size_k do not describe "
+            "this bank" % (experts, global_scale.numel(), size_n, size_k)
+        )
+    shape = _scratch(experts, size_n, size_k, qpn2_weight.device)
     owner = _OWNER.get(key)
 
     if owner != ptr:

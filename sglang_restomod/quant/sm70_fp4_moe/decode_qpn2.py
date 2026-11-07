@@ -138,6 +138,16 @@ def maybe_call(
             size_m, size_n, size_k, top_k, moe_block_size,
         )
         return None
+    from . import qpn2 as _qpn2
+
+    per_expert = (size_n // 32) * (size_k // 16) * _qpn2.GROUP_BYTES
+    experts = int(b_q_weight.numel() // per_expert)
+    if int(global_scale.numel()) != experts:
+        raise RuntimeError(
+            "SM70 QPN2: the bank holds %d experts but global_scale has %d "
+            "entries (n=%d k=%d); the caller's size_n/size_k do not describe "
+            "this bank" % (experts, global_scale.numel(), size_n, size_k)
+        )
     module = _load()
     if module is None:
         return None
