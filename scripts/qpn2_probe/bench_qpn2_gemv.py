@@ -1,4 +1,10 @@
-"""QPN2 repack + direct-register GEMV probe (#224 P1).
+"""QPN2 decode GEMV probe, measured on the shipped kernel (#224 P1).
+
+The kernel built here is ``sglang_restomod/quant/sm70_fp4_moe/csrc/
+decode_gemv_qpn2.cu`` itself, through the same loader the plugin uses. An
+earlier version of this probe compiled its own copy, which turned out to be the
+P1 prototype rather than the integrated kernel: numbers produced before that
+change are prototype figures and must not be quoted as the shipped kernel's.
 
 Two gates, measured on one V100:
 
@@ -91,21 +97,28 @@ def pack_expert(codes: torch.Tensor, scale_bytes: torch.Tensor, n: int, k: int) 
     return out.reshape(-1)
 
 
-def build_extension():
-    from torch.utils.cpp_extension import load_inline
+SHIPPED_KERNEL = (
+    HERE.parents[1] / "sglang_restomod" / "quant" / "sm70_fp4_moe" / "csrc"
+    / "decode_gemv_qpn2.cu"
+)
 
-    return load_inline(
-        name="qpn2_gemv_ext",
-        cpp_sources="""
-torch::Tensor decode_qpn2_gemv(torch::Tensor weights, torch::Tensor global_scale,
-                               torch::Tensor activation, torch::Tensor expert_ids,
-                               torch::Tensor token_ids, torch::Tensor out,
-                               torch::Tensor workspace, int64_t split_k,
-                               bool loads_only);
-""",
-        cuda_sources=(HERE / "decode_gemv_qpn2.cu").read_text(),
-        functions=["decode_qpn2_gemv"],
-        extra_cuda_cflags=["-O3", "--use_fast_math", "-std=c++17"],
+
+def build_extension():
+    """Build the kernel the server runs, not a copy of it.
+
+    An earlier version of this probe carried its own copy, which drifted: the
+    copy was the #224 P1 prototype rather than the integrated kernel, so the
+    numbers it produced were not the shipped kernel's. This builds the shipped
+    source directly, through the same ``load`` call and module name
+    ``decode_qpn2.py`` uses, so a cached build is shared.
+    """
+    from torch.utils.cpp_extension import load
+
+    return load(
+        name="sm70_decode_moe_gemv_qpn2",
+        sources=[str(SHIPPED_KERNEL)],
+        extra_cuda_cflags=["-O3", "--use_fast_math", "-std=c++17",
+                           "--expt-relaxed-constexpr"],
         verbose=False,
     )
 
@@ -142,7 +155,21 @@ def build_case(shape: dict, device: torch.device, seed: int = 0) -> dict:
         codes=codes, scale_bytes=scale_bytes,
         out=torch.empty(rows, n, dtype=torch.float16, device=device),
         workspace=torch.empty(32 * rows * n, dtype=torch.float32, device=device),
+        # The shipped kernel takes the align kernel's route layout: one block of
+        # 8 slots per route tile, sentinels past the real routes, and `top_k` 1
+        # so a route index is the activation row. `act_rows` materializes the
+        # activation once per route, which is what the token mapping means.
+        sorted_token_ids=_sorted_ids(rows, device),
+        padded=torch.tensor([rows * 8], dtype=torch.int32, device=device),
+        topk_weights=torch.ones(rows, dtype=torch.float32, device=device),
+        act_rows=activation.index_select(0, (torch.arange(rows) % tokens)).to(device),
     )
+
+
+def _sorted_ids(rows: int, device) -> torch.Tensor:
+    ids = torch.full((rows * 8,), rows, dtype=torch.int32, device=device)
+    ids[::8] = torch.arange(rows, dtype=torch.int32, device=device)
+    return ids
 
 
 def reference(case: dict, fp16_scale: bool = False) -> torch.Tensor:
@@ -195,10 +222,13 @@ def main() -> int:
         want16 = reference(case, fp16_scale=True)
 
         def run(loads_only: bool):
-            return ext.decode_qpn2_gemv(
-                case["weights"], case["gscale"], case["activation"],
-                case["expert_ids"], case["token_ids"], case["out"],
-                case["workspace"], args.split_k, loads_only)
+            entry = (ext.decode_moe_gemv_qpn2_loads if loads_only
+                     else ext.decode_moe_gemv_qpn2)
+            return entry(
+                case["act_rows"], case["out"], case["weights"], case["gscale"],
+                case["sorted_token_ids"], case["expert_ids"],
+                case["topk_weights"], case["rows"], 1, case["n"], case["k"],
+                False, case["workspace"], args.split_k, case["padded"])
 
         got = run(args.loads_only).float()
         torch.cuda.synchronize()
