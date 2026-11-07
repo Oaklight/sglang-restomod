@@ -7,12 +7,25 @@
 | Repository | `zhinianqin/marlin_v100` |
 | Commit | `3f16d442cdb4c24dd225bbec196c982a54d9a31c` |
 | License | Apache-2.0 by lineage (vLLM and Marlin); the repository ships no `LICENSE` file |
-| Built artifacts | `_C.abi3.so` (sm_70), the same build `fp4_moe` and `sm70_marlin_v100` use |
+| Built artifacts | `_sm70_marlin_v100_dense.abi3.so` (sm_70) for this path; `_moe_C` stays with `fp4_moe` |
 
 No new source is vendored and no CUDA is added. This component binds the two
 operators the build already exports -- `gptq_marlin_repack` and `marlin_gemm`
 -- and reuses the argument mapping `quant/sm70_marlin_v100` established for the
 19-slot `marlin_gemm` signature.
+
+**Which build.** Point `SM70_MARLIN_DIR` at a directory that symlinks the
+prebuilt dense library as `_C.so`:
+
+```sh
+mkdir -p ~/marlin-ops && cd ~/marlin-ops
+ln -sf .../prebuilt/_sm70_marlin_v100_dense.abi3.so _C.so
+```
+
+A smaller schema-only `_C.abi3.so` also loads and exports the name, but has no
+CUDA implementation, so the first GEMM fails with `Could not run
+'_C::marlin_gemm' with arguments from the 'CUDA' backend`. The check in
+`check.py` names both builds.
 
 ## What this component uses
 
