@@ -210,3 +210,77 @@ def test_qpn2_matches_marlin(tensors):
         assert pairwise <= TOLERANCE, (
             f"{prefix}: QPN2 vs Marlin {pairwise:.3e} > {TOLERANCE:.0e}"
         )
+
+
+def test_down_projection_at_the_server_decode_shape():
+    """The down GEMM's real decode call: 1 token x top_k 10, size_m = 10.
+
+    ``fused_marlin_moe`` passes ``size_m = M`` for the first GEMM and
+    ``size_m = M * topk`` with ``top_k=1`` for the second, so gating the QPN2
+    kernel on ``size_m <= 8`` rejected the down projection of an ordinary
+    decode batch and sent it to the Marlin fallback on every step. This runs
+    that exact call for both layouts and compares them.
+    """
+    torch = _skip_unless_usable()
+    from sgl_kernel.scalar_type import scalar_types
+
+    from sglang_restomod.quant.sm70_fp4_moe import decode_qpn2
+    from sglang_restomod.quant.sm70_fp4_moe.method import (
+        MARLIN_SPLIT_K,
+        moe_wna16_marlin_gemm,
+    )
+
+    if decode_qpn2._load() is None:
+        pytest.skip("QPN2 GEMV extension did not build")
+
+    tokens, top_k, size_m = 1, 10, 10
+    rows = tokens * top_k
+    size_n, size_k = SHAPES["w2"]
+    bank = _build_bank(torch)
+    marlin = _prepare(torch, bank, "marlin")
+    qpn2_layer = _prepare(torch, bank, "qpn2", "w2")
+
+    sorted_ids = torch.full((rows * BLOCK,), rows, dtype=torch.int32, device="cuda")
+    for row in range(rows):
+        sorted_ids[row * BLOCK] = row
+    routing = dict(
+        sorted_token_ids=sorted_ids,
+        expert_ids=torch.arange(rows, dtype=torch.int32, device="cuda") % EXPERTS,
+        padded=torch.tensor([rows * BLOCK], dtype=torch.int32, device="cuda"),
+        topk_weights=torch.full((rows,), 0.1, dtype=torch.float32, device="cuda"),
+    )
+    # The second GEMM's activation is the intermediate cache, which has one row
+    # per route, not per token; upstream passes the same count as size_m.
+    x = torch.randn(rows, size_k, device="cuda", dtype=torch.float16)
+
+    def call(layer, force_marlin):
+        previous = (os.environ.get("SM70_MOE_DECODE_GEMV"), os.environ.get(MARLIN_SPLIT_K))
+        if force_marlin:
+            os.environ["SM70_MOE_DECODE_GEMV"] = "0"
+        try:
+            out = torch.empty(rows, size_n, dtype=torch.float16, device="cuda")
+            moe_wna16_marlin_gemm(
+                x, out, layer.w2_weight, None, layer.w2_weight_scale,
+                layer.w2_weight_scale_2, None, None, None,
+                torch.empty(0, dtype=torch.int32, device="cuda"),
+                routing["sorted_token_ids"], routing["expert_ids"], routing["padded"],
+                routing["topk_weights"], BLOCK, 1, False, False,
+                scalar_types.float4_e2m1f, size_m, size_n, size_k,
+            )
+            return out
+        finally:
+            for key, value in zip(("SM70_MOE_DECODE_GEMV", MARLIN_SPLIT_K), previous):
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+    got_marlin = call(marlin, True).float()
+    got_qpn2 = call(qpn2_layer, False).float()
+    torch.cuda.synchronize()
+
+    scale = got_marlin.abs().max().item()
+    pairwise = (got_qpn2 - got_marlin).abs().max().item() / scale
+    print(f"  w2 at rows={rows} size_m={size_m}: pairwise={pairwise:.3e}")
+    assert pairwise < TOLERANCE
+    assert decode_qpn2.supports(rows, size_n, size_k, 1, BLOCK)

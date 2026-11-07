@@ -90,10 +90,18 @@ def test_layout_marker_is_the_dtype():
 
 
 def test_supports_covers_the_decode_regime(monkeypatch):
+    # The argument is the routed-row count the kernel runs on, not size_m:
+    # upstream passes tokens for the first GEMM and M*topk for the second, and
+    # gating on size_m rejected the down projection of an ordinary decode batch
+    # (rows=40, top_k=1) as if it were a 40-token prefill.
     monkeypatch.delenv(decode_qpn2.ENV_ENABLE, raising=False)
-    assert decode_qpn2.supports(4, 320, 2560, 10, 8)
-    assert decode_qpn2.supports(8, 2560, 160, 10, 8)
-    assert not decode_qpn2.supports(64, 320, 2560, 10, 8), "prefill is not covered"
+    assert decode_qpn2.supports(4, 320, 2560, 10, 8), "gate_up, short batch"
+    assert decode_qpn2.supports(40, 2560, 160, 1, 8), "down projection of 5x8 routes"
+    assert not decode_qpn2.supports(0, 320, 2560, 10, 8), "no routes"
+    assert not decode_qpn2.supports(
+        decode_qpn2._WORKSPACE_ROUTE_TILES + 1, 320, 2560, 10, 8
+    ), "above the workspace bound"
+    assert not decode_qpn2.supports(4, 320, 2560, 10, 64), "prefill route block"
     assert not decode_qpn2.supports(4, 320, 2560, 10, 16), "route block is 8"
     assert not decode_qpn2.supports(4, 320, 2552, 10, 8), "K must be a multiple of 16"
     assert not decode_qpn2.supports(4, 312, 2560, 10, 8), "N must be a multiple of 32"

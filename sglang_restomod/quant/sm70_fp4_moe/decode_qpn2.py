@@ -80,16 +80,25 @@ def _load():
         return _MODULE
 
 
-def supports(size_m: int, size_n: int, size_k: int, top_k: int,
+def supports(rows: int, size_n: int, size_k: int, top_k: int,
              moe_block_size: int) -> bool:
-    """Whether the QPN2 decode kernel covers this shape."""
+    """Whether the QPN2 decode kernel covers this call.
+
+    ``rows`` is the routed-row count the kernel actually runs on, not the
+    ``size_m`` argument: the fused wrapper passes tokens for the first GEMM and
+    ``M * topk`` for the second, so gating on ``size_m`` rejected the down
+    projection of an ordinary decode batch as if it were a 40-token prefill.
+
+    The decode marker is the block size the align kernel emits; the row bound
+    is what the workspace is sized for.
+    """
     if not enabled():
         return False
     if moe_block_size != BLOCK_M:
         return False
     if size_n % 32 or size_k % 16:
         return False
-    if size_m > MAX_M or top_k <= 0:
+    if rows <= 0 or rows > _WORKSPACE_ROUTE_TILES or top_k <= 0:
         return False
     return True
 
@@ -132,10 +141,11 @@ def maybe_call(
     if not (isinstance(a, torch.Tensor) and a.is_cuda):
         logger.info("qpn2 gemv skipped: not cuda")
         return None
-    if not supports(size_m, size_n, size_k, top_k, moe_block_size):
+    rows = c.size(0)
+    if not supports(rows, size_n, size_k, top_k, moe_block_size):
         logger.info(
-            "qpn2 gemv skipped: unsupported m=%d n=%d k=%d topk=%d block=%d",
-            size_m, size_n, size_k, top_k, moe_block_size,
+            "qpn2 gemv skipped: unsupported rows=%d n=%d k=%d topk=%d block=%d",
+            rows, size_n, size_k, top_k, moe_block_size,
         )
         return None
     from . import qpn2 as _qpn2
@@ -151,7 +161,6 @@ def maybe_call(
     module = _load()
     if module is None:
         return None
-    rows = c.size(0)
     if not (a.is_contiguous() and c.is_contiguous()):
         logger.info("qpn2 gemv skipped: non-contiguous a or c")
         return None
