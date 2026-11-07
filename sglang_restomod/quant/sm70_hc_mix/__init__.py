@@ -16,6 +16,12 @@ still ``nn.Linear`` at that point -- ``fp8_dense_quant`` converts after the
 model loads -- so the choice is made on the first ``mix`` call, and an
 unconverted launch keeps the upstream (compiled) path unchanged.
 
+Measured on the Flash-Next launch (TP4, mem fraction 0.80, deterministic
+3294-token prompt): the dense-FP8 arm with this override runs at 29.80 ms per
+decode step against 27.13 for the same launch without the conversion, +2.7 ms
+(+10%). Capture is what this fixes; the package does not pay for itself on
+SM70, so the component is experimental.
+
 It is opt-in by component name (``hc_mix_fp8``), off by default. The install
 asserts the class layout it depends on and raises when a pin bump changes it,
 so the failure is a startup error rather than a silent return to ``F.linear``.
