@@ -47,6 +47,11 @@ On the operator host it is a dedicated venv's `oob`.
 
 ## Operator runbook
 
+Host and measurement prerequisites — device class, kernel libraries, build
+space, contexts, and what must not run alongside — are in
+[measurement-prerequisites.md](measurement-prerequisites.md). A receipt from a
+host that misses them is green and about the wrong machine.
+
 ### 1. Run the suite on the GPU host
 
 Check out the exact commit under test (the receipt binds the commit and its
