@@ -24,6 +24,28 @@ import pytest
 pytestmark = pytest.mark.gpu
 
 
+def _skip_when_the_layout_is_qpn2():
+    """Refuse to run a Marlin-reader check against a QPN2 bank.
+
+    ``prepare_moe_nvfp4`` reads ``SGLANG_SM70_FP4_MOE_LAYOUT`` at call time, so
+    an ambient ``qpn2`` converts this check's checkpoint-layout bank before the
+    Marlin reader it exercises sees it, and the reader rejects the bank width
+    (``b_q_weight.size(1) = 36864, size_k = 256``). The QPN2 path is covered by
+    its own tests: ``test_sm70_fp4_moe_qpn2.py`` (CPU) and
+    ``test_sm70_qpn2_gemv_gpu.py`` (decode kernel).
+    """
+    from sglang_restomod.quant.sm70_fp4_moe import qpn2
+
+    if qpn2.layout() == "qpn2":
+        prefixes = ",".join(sorted(qpn2.selected_prefixes())) or "none"
+        pytest.skip(
+            f"{qpn2.ENV_LAYOUT}=qpn2 (tensors={prefixes}) converts this check's "
+            "bank to the QPN2 expert layout before the Marlin reader runs; the "
+            "QPN2 path is covered by tests/test_sm70_fp4_moe_qpn2.py and "
+            "tests/test_sm70_qpn2_gemv_gpu.py"
+        )
+
+
 def test_nvfp4_expert_gemm_matches_dequantized_reference():
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available():
@@ -33,6 +55,7 @@ def test_nvfp4_expert_gemm_matches_dequantized_reference():
         pytest.skip(f"needs SM70, found {cap[0]}.{cap[1]}")
     if not os.environ.get("SM70_MARLIN_DIR"):
         pytest.skip("SM70_MARLIN_DIR is unset; the marlin_v100 extension is external")
+    _skip_when_the_layout_is_qpn2()
 
     from sglang_restomod.quant.sm70_fp4_moe.check import run
 

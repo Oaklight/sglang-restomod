@@ -16,6 +16,14 @@
       "reason": "The cuda_ipc JIT extension does not compile against tvm_ffi 0.1.9: Array's const iterator yields a const Tuple, and the free get<I> overloads fail to resolve on it. The build failure is non-fatal, so custom allreduce is silently disabled and every run falls back to NCCL. Take the element by value and use the member get<I>().",
       "source": "local, 2026-11-02 (issue #97)",
       "upstream_status": "pending"
+    },
+    "0003-qpn2-marlin-moe-shape.patch": {
+      "paths": [
+        "python/sglang/srt/layers/moe/fused_moe_triton/fused_marlin_moe.py"
+      ],
+      "reason": "fused_marlin_moe asserts the Marlin weight layout before it calls moe_wna16_marlin_gemm, which is the only seam sglang-restomod replaces, so a QPN2 expert bank can never reach the QPN2 reader. Derive E/K/N from the bank when w1 is a uint8 QPN2 tensor, and gate the path to the NVFP4, single-rank, gated envelope.",
+      "source": "local, 2026-11-07 (issue #224)",
+      "upstream_status": "pending"
     }
   }
 }

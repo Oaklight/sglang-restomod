@@ -30,6 +30,7 @@ import threading
 
 import torch
 
+from . import qpn2
 from .marlin import ENV_DIR, available, ensure_loaded
 from .scales import encode_global_scale, encode_scales
 
@@ -234,8 +235,65 @@ def _ep_size() -> int | None:
         return None
 
 
+_DECODE_FALLBACK_WARNED = False
+# One decode step routes at most one batch through the experts: at
+# max-running-requests=1 that is M * topk, tens of rows. A short prefill chunk
+# also gets block 8 from the align heuristic, but its size_m is the chunk's
+# route count, hundreds to thousands, so the bound is what separates them.
+_DECODE_ROUTE_LIMIT = 64
+
+
+def _is_decode_fallback(size_m: int, block: int) -> bool:
+    """Whether this shim entry is a decode step that fell back."""
+    return block == 8 and size_m <= _DECODE_ROUTE_LIMIT
+
+
+def _warn_decode_fallback(size_m, size_n, size_k, top_k, block) -> None:
+    """Say once per process that a decode-shaped call fell back to a repack.
+
+    A decode call that reaches the prefill shim repacks its prefix on every
+    step; that cost is invisible in a trace unless you read the kernel table.
+    One line at the first occurrence makes the next one a five-second
+    diagnosis.
+    """
+    global _DECODE_FALLBACK_WARNED
+    if _DECODE_FALLBACK_WARNED:
+        return
+    _DECODE_FALLBACK_WARNED = True
+    logger.warning(
+        "SM70 QPN2: a decode-shaped call (m=%d n=%d k=%d topk=%d block=%d) "
+        "reached the prefill repack; this prefix will be repacked on every "
+        "step until the decode kernel covers the shape",
+        size_m, size_n, size_k, top_k, block,
+    )
+
+
+def _log_load_memory() -> None:
+    """Split the load-time memory figure the receipt gate reads.
+
+    ``Load weight end ... mem usage=`` in the engine log is a free-memory drop,
+    i.e. allocated plus reserved growth. Logging the two separately lets a
+    reserved-only regression (allocator behaviour) be told apart from real
+    retention. Fires once per MoE layer per rank; the reader takes the maximum,
+    so the last layer's line is the post-load figure. Runs on both layouts.
+    """
+    if not torch.cuda.is_available():
+        return
+    logger.info(
+        "restomod-load-memory: allocated=%.2f reserved=%.2f",
+        torch.cuda.memory_allocated() / 2**30,
+        torch.cuda.memory_reserved() / 2**30,
+    )
+
+
 def prepare_moe_nvfp4(layer, group_size: int | None = None) -> None:
-    """Replace the checkpoint expert layout with the SM70 Marlin layout."""
+    """Replace the checkpoint expert layout with the SM70 Marlin layout.
+
+    With ``SGLANG_SM70_FP4_MOE_LAYOUT=qpn2`` the projections named by
+    ``SGLANG_SM70_QPN2_TENSORS`` (default ``both``) are converted to QPN2
+    instead; the rest stay on Marlin. The layout is per tensor, so a small
+    bank can hold both copies for the #224 P2 guard.
+    """
     from sglang.srt.layers.utils import copy_or_rebind_param
 
     if layer.params_dtype != torch.float16:
@@ -262,7 +320,12 @@ def prepare_moe_nvfp4(layer, group_size: int | None = None) -> None:
     if any(getattr(layer, name, None) is not None for name in ("w13_bias", "w2_bias")):
         raise RuntimeError("The SM70 NVFP4 profile does not support expert bias")
 
-    ensure_loaded()  # fail before touching the parameters
+    qpn2_prefixes = qpn2.selected_prefixes()
+    if qpn2_prefixes != set(qpn2.PREFIXES):
+        # The Marlin extension is still the reader for every prefix that did
+        # not convert (and for every prefix when the layout is marlin); fail
+        # here, before the parameters are touched.
+        ensure_loaded()
 
     device = layer.w13_weight.device
     # The SM70 entry point ignores ``workspace`` (``(void)workspace`` in
@@ -277,6 +340,10 @@ def prepare_moe_nvfp4(layer, group_size: int | None = None) -> None:
     )
 
     for prefix in ("w13", "w2"):
+        if prefix in qpn2_prefixes:
+            qpn2.prepare_prefix(layer, prefix)
+            continue
+
         weight = getattr(layer, prefix + "_weight")
         scales = getattr(layer, prefix + "_weight_scale")
         global_scales = getattr(layer, prefix + "_weight_scale_2")
@@ -308,6 +375,17 @@ def prepare_moe_nvfp4(layer, group_size: int | None = None) -> None:
         swizzled = prefix + "_blockscale_swizzled"
         if hasattr(layer, swizzled):
             setattr(layer, swizzled, None)
+
+    _log_load_memory()
+
+    if qpn2_prefixes and torch.cuda.is_available():
+        # Each conversion replaces a packed source (plus, now, its redundant
+        # scale tensor) with one bank of the same total size but a different
+        # block size, so the freed blocks cannot always serve the next layer's
+        # bank and the caching allocator keeps them. Returning them to the
+        # driver here keeps the model at the Marlin footprint. Load time only,
+        # a few milliseconds per layer; with expandable_segments it is exact.
+        torch.cuda.empty_cache()
 
 
 def moe_wna16_marlin_gemm(
@@ -354,6 +432,50 @@ def moe_wna16_marlin_gemm(
             "SM70 NVFP4 Marlin does not support expert parallelism; "
             "launch with --ep-size 1"
         )
+    if qpn2.is_qpn2_weight(b_q_weight):
+        # The layout is read off the tensor: QPN2 weights are uint8, the Marlin
+        # layout is int32. The Marlin kernel cannot read this buffer, so a
+        # shape the QPN2 kernel declines raises instead of falling through.
+        from . import decode_qpn2
+
+        out = decode_qpn2.maybe_call(
+            a,
+            c_or_none,
+            b_q_weight,
+            global_scale_or_none,
+            sorted_token_ids,
+            expert_ids,
+            num_tokens_post_padded,
+            topk_weights,
+            moe_block_size,
+            top_k,
+            mul_topk_weights,
+            size_m,
+            size_n,
+            size_k,
+        )
+        if out is not None:
+            return out
+        # Prefill shape: repack this layer into the reused scratch and fall
+        # through to the unchanged Marlin call below. The QPN2 buffer stays
+        # resident; only one layer's Marlin copy exists at a time.
+        from . import qpn2_repack
+
+        shim = qpn2_repack.prefill_shim(
+            b_q_weight, global_scale_or_none, size_n, size_k
+        )
+        if shim is None:
+            raise RuntimeError(
+                "SM70 NVFP4 MoE: QPN2 expert weights reached a shape the QPN2 "
+                f"decode kernel does not cover (m={size_m} n={size_n} k={size_k} "
+                f"topk={top_k} block={moe_block_size}) and the prefill repack "
+                f"is unavailable; set {qpn2.ENV_LAYOUT}=marlin to serve this "
+                "shape on Marlin."
+            )
+        b_q_weight, b_scales, global_scale_or_none = shim
+        if _is_decode_fallback(size_m, moe_block_size):
+            _warn_decode_fallback(size_m, size_n, size_k, top_k, moe_block_size)
+
     _record_moe_stats(expert_ids, num_tokens_post_padded, size_m, moe_block_size)
 
     # The decode-shaped kernel has no M tile, so it is worth a call whenever the
