@@ -1,22 +1,640 @@
-From ef791baa8bf83ac2c19967cef139068b680f3338 Mon Sep 17 00:00:00 2001
-From: Peng Ding <pding.dp@foxmail.com>
-Date: Fri, 6 Nov 2026 16:33:05 -0600
-Subject: [PATCH 2/9] qpn2: FP16 staging producer arm (0.79x/0.88x Marlin),
- verified logical K order
-
----
- tests/qpn2_producer_bench.cu  | 162 ++++++++++++++++++++++++++++++++--
- tests/qpn2_producer_bench.txt |  74 +++++++++-------
- 2 files changed, 196 insertions(+), 40 deletions(-)
-
+diff --git a/csrc/quantization/marlin/qpn2_layout.cuh b/csrc/quantization/marlin/qpn2_layout.cuh
+new file mode 100644
+index 0000000..3285cd5
+--- /dev/null
++++ b/csrc/quantization/marlin/qpn2_layout.cuh
+@@ -0,0 +1,116 @@
++#pragma once
++
++// QPN2 NVFP4 weight layout for SM70. One definition, from
++// docs/qpn2-layout.md in the sglang-restomod #224 worktree.
++//
++// A weight tensor [N, K] is stored as tiles*groups 288-byte groups:
++//   [0, 256) : 32 storage lanes x 8 code bytes, lane-major
++//   [256,288): 32 scale bytes, one E4M3 byte per (column, K16 group)
++// Group (t, g) starts at (t*groups + g) * 288.
++//
++// This header is pure C++ (no CUDA types) so the host model and the device
++// reader share the index math and cannot diverge.
++
++#include <cmath>
++#include <cstdint>
++
++#if defined(__CUDACC__)
++#define QPN2_HD __host__ __device__
++#else
++#define QPN2_HD
++#endif
++
++namespace marlin::sm70::qpn2 {
++
++constexpr int kGroupBytes = 288;
++constexpr int kCodeBytes = 256;
++constexpr int kScaleOffset = 256;
++constexpr int kLanes = 32;
++constexpr int kKPerGroup = 16;
++constexpr int kColsPerTile = 32;
++
++// Storage lane of a column inside its 32-column tile (spec section 1).
++QPN2_HD inline int col_from_lane(int lane) {
++  return (((lane >> 2) & 3) * 8) + (lane & 3) + ((lane & 16) ? 4 : 0);
++}
++
++// Inverse: logical column % 32 -> storage lane.
++QPN2_HD inline int lane_from_col(int col) {
++  return ((col & 24) >> 1) | (col & 3) | ((col & 4) << 2);
++}
++
++// Physical nibble index p within a K16 group -> logical K offset (spec §2).
++QPN2_HD inline int logical_k(int p) {
++  return (p & 8) + (((p & 7) & 3) << 1) + ((p & 7) >> 2);
++}
++
++// Inverse: logical K offset (0..15) -> physical nibble index p.
++QPN2_HD inline int physical_k(int k) {
++  const int r = k & 7;
++  return (k & 8) | ((r >> 1) | ((r & 1) << 2));
++}
++
++QPN2_HD inline int64_t group_offset(int tile, int group, int groups) {
++  return static_cast<int64_t>(tile * groups + group) * kGroupBytes;
++}
++
++QPN2_HD inline uint8_t nibble_at(uint8_t byte, int high) {
++  return static_cast<uint8_t>(high ? (byte >> 4) : (byte & 0x0f));
++}
++
++// E2M1 magnitude table; bit 3 is the sign.
++QPN2_HD inline float e2m1_magnitude(int code) {
++  const float table[8] = {0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f};
++  return table[code & 7];
++}
++
++QPN2_HD inline float e2m1_to_float(uint8_t code) {
++  const float m = e2m1_magnitude(code);
++  return (code & 8) ? -m : m;
++}
++
++// IEEE binary16 bit pattern -> float. Used by the host model; the device
++// reader uses __half.
++QPN2_HD inline float fp16_bits_to_float(uint16_t bits) {
++  const int sign = (bits >> 15) & 1;
++  const int exp = (bits >> 10) & 0x1f;
++  const int mant = bits & 0x3ff;
++  float value;
++  if (exp == 0) {
++    value = (mant == 0) ? 0.0f : (static_cast<float>(mant) * (1.0f / 1024.0f) * (1.0f / 16384.0f));
++  } else if (exp == 31) {
++    value = (mant == 0) ? 1e30f : -1e30f;  // inf/nan not expected here
++  } else {
++    value = (1.0f + static_cast<float>(mant) * (1.0f / 1024.0f)) *
++            ldexpf(1.0f, exp - 15);
++  }
++  return sign ? -value : value;
++}
++
++// E4M3 byte -> FP16 bit pattern, exactly the shift used by spec section 3.
++QPN2_HD inline uint16_t e4m3_to_fp16_bits(uint8_t byte) {
++  return static_cast<uint16_t>(((byte & 0x80) << 8) | ((byte & 0x7f) << 7));
++}
++
++// raw = fp16(bits) * 256, per spec section 3.
++QPN2_HD inline float e4m3_raw(uint8_t byte) {
++  return fp16_bits_to_float(e4m3_to_fp16_bits(byte)) * 256.0f;
++}
++
++// Value of logical (k, n) in an expert buffer, decoded independently of the
++// reader's transpose. Slow; for tests only.
++QPN2_HD inline float value_at(const uint8_t* base, int k, int n, int groups,
++                              float global_scale) {
++  const int tile = n / kColsPerTile;
++  const int col = n % kColsPerTile;
++  const int group = k / kKPerGroup;
++  const int lane = lane_from_col(col);
++  const int p = physical_k(k % kKPerGroup);
++  const int64_t off = group_offset(tile, group, groups);
++  const uint8_t byte = base[off + lane * 8 + (p >> 1)];
++  const uint8_t code = nibble_at(byte, p & 1);
++  const float scale = e4m3_raw(base[off + kScaleOffset + lane]) * global_scale;
++  return e2m1_to_float(code) * scale;
++}
++
++}  // namespace marlin::sm70::qpn2
+diff --git a/tests/qpn2_layout_host_test.cpp b/tests/qpn2_layout_host_test.cpp
+new file mode 100644
+index 0000000..64a81d2
+--- /dev/null
++++ b/tests/qpn2_layout_host_test.cpp
+@@ -0,0 +1,196 @@
++// Host-side QPN2 model: layout identities, repack round trip, and the exact
++// nibble-slot permutation of the section-3 word trick.
++//
++// Build and run on any host (no CUDA):
++//   g++ -std=c++17 -O2 -Icsrc tests/qpn2_layout_host_test.cpp -o /tmp/qpn2_host
++//   /tmp/qpn2_host
++
++#include <cmath>
++#include <cstdint>
++#include <cstdio>
++#include <cstdlib>
++#include <random>
++#include <vector>
++
++#include "quantization/marlin/qpn2_layout.cuh"
++#include "qpn2_repack_model.h"
++
++namespace q = marlin::sm70::qpn2;
++
++static int g_failures = 0;
++
++#define CHECK(cond)                                                        \
++  do {                                                                     \
++    if (!(cond)) {                                                         \
++      std::printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond);          \
++      ++g_failures;                                                        \
++    }                                                                      \
++  } while (0)
++
++// Four half2 from one 32-bit word, exactly section 3. Returns the eight
++// decoded magnitudes of the code nibbles (before the 2^14 correction).
++static void trick_decode(uint32_t w, uint16_t out[8]) {
++  const uint32_t kSign = 0x80008000u, kExpMant = 0x0e000e00u;
++  uint32_t v[4];
++  v[0] = ((w << 12) & kSign) | ((w << 9) & kExpMant);
++  v[1] = ((w << 8) & kSign) | ((w << 5) & kExpMant);
++  v[2] = ((w << 4) & kSign) | ((w << 1) & kExpMant);
++  v[3] = (w & kSign) | ((w >> 3) & kExpMant);
++  for (int i = 0; i < 4; ++i) {
++    out[2 * i] = static_cast<uint16_t>(v[i] & 0xffff);
++    out[2 * i + 1] = static_cast<uint16_t>(v[i] >> 16);
++  }
++}
++
++static float trick_value(uint16_t bits) {
++  return q::fp16_bits_to_float(bits) * 16384.0f;
++}
++
++static uint32_t pack_nibble(uint32_t word, int position, uint8_t code) {
++  return word | (static_cast<uint32_t>(code & 0xf) << (4 * position));
++}
++
++static void test_lane_column_identity() {
++  bool seen[32] = {false};
++  for (int lane = 0; lane < 32; ++lane) {
++    const int col = q::col_from_lane(lane);
++    CHECK(col >= 0 && col < 32);
++    CHECK(!seen[col]);
++    seen[col] = true;
++    CHECK(q::lane_from_col(col) == lane);
++  }
++  static const int kExpected[32] = {0, 1, 2, 3, 8, 9, 10, 11, 16, 17, 18, 19,
++                                    24, 25, 26, 27, 4, 5, 6, 7, 12, 13, 14, 15,
++                                    20, 21, 22, 23, 28, 29, 30, 31};
++  for (int lane = 0; lane < 32; ++lane) {
++    CHECK(q::col_from_lane(lane) == kExpected[lane]);
++  }
++}
++
++static void test_k_order() {
++  static const int kExpected[16] = {0, 2, 4, 6, 1, 3, 5, 7,
++                                    8, 10, 12, 14, 9, 11, 13, 15};
++  bool seen[16] = {false};
++  for (int p = 0; p < 16; ++p) {
++    const int k = q::logical_k(p);
++    CHECK(k >= 0 && k < 16);
++    CHECK(k == kExpected[p]);
++    CHECK(q::physical_k(k) == p);
++    CHECK(!seen[k]);
++    seen[k] = true;
++  }
++}
++
++static void test_repack_round_trip() {
++  const int n = 64, k = 32;
++  const int groups = k / 16;
++  std::mt19937 rng(1234);
++  std::vector<uint8_t> weight(static_cast<size_t>(n) * (k / 2));
++  std::vector<uint8_t> scales(static_cast<size_t>(n) * groups);
++  for (auto& b : weight) b = static_cast<uint8_t>(rng() & 0xff);
++  // Normal E4M3 bytes (exp != 0), so the section-3 shift is exact.
++  for (auto& s : scales) s = static_cast<uint8_t>(0x30 | (rng() & 0x07));
++
++  const qpn2_test::Packed packed = qpn2_test::repack(weight, scales, n, k);
++  const float gscale = 1.0f;
++  for (int col = 0; col < n; ++col) {
++    for (int kk = 0; kk < k; ++kk) {
++      const uint8_t byte = weight[static_cast<size_t>(col) * (k / 2) + kk / 2];
++      const uint8_t code = q::nibble_at(byte, kk & 1);
++      const float scale = q::e4m3_raw(scales[static_cast<size_t>(col) * groups + kk / 16]) * gscale;
++      const float want = q::e2m1_to_float(code) * scale;
++      const float got = q::value_at(packed.bytes.data(), kk, col, groups, gscale);
++      CHECK(got == want);
++    }
++  }
++}
++
++// Empirically derive which output slot each input nibble position lands in.
++static void test_trick_slot_mapping() {
++  int slot_of_position[16];
++  for (int p = 0; p < 16; ++p) {
++    slot_of_position[p] = -1;
++    for (uint8_t code = 1; code < 8; ++code) {
++      const uint32_t word = pack_nibble(0, p, code);
++      uint16_t halves[8];
++      trick_decode(word, halves);
++      int found = -1;
++      for (int s = 0; s < 8; ++s) {
++        if (trick_value(halves[s]) != 0.0f) {
++          CHECK(found == -1);
++          found = s;
++        }
++      }
++      CHECK(found >= 0);
++      if (slot_of_position[p] < 0) slot_of_position[p] = found;
++      CHECK(slot_of_position[p] == found);
++    }
++  }
++  // Two 32-bit words make 16 nibbles; positions 0..7 come from word 0 and
++  // 8..15 from word 1. Report the map so the reader and the test agree.
++  std::printf("slot mapping (nibble position -> output slot):");
++  for (int p = 0; p < 16; ++p) std::printf(" %d", slot_of_position[p]);
++  std::printf("\n");
++  static const int kExpected[16] = {0, 2, 4, 6, 1, 3, 5, 7, 0, 2, 4, 6, 1, 3, 5, 7};
++  for (int p = 0; p < 8; ++p) CHECK(slot_of_position[p] == kExpected[p]);
++  for (int p = 8; p < 16; ++p) CHECK(slot_of_position[p] == kExpected[p]);
++
++  // Now verify the assembly rule used by the prefill transpose: to get
++  // columns 0..7 in output order, place column c at position inverse_slot(c).
++  int inverse_slot[8];
++  for (int p = 0; p < 8; ++p) inverse_slot[kExpected[p]] = p;
++  for (int c = 0; c < 8; ++c) {
++    CHECK(inverse_slot[c] >= 0 && inverse_slot[c] < 8);
++  }
++  const uint32_t packed_word =
++      pack_nibble(pack_nibble(pack_nibble(pack_nibble(pack_nibble(pack_nibble(
++          pack_nibble(pack_nibble(0, inverse_slot[0], 1), inverse_slot[1], 2),
++          inverse_slot[2], 3), inverse_slot[3], 4), inverse_slot[4], 5),
++          inverse_slot[5], 6), inverse_slot[6], 7), inverse_slot[7], 0);
++  uint16_t halves[8];
++  trick_decode(packed_word, halves);
++  // Column c holds code c+1 for c<7 and code 0 for c=7, so the output slots
++  // must read 0.5,1,1.5,2,3,4,6,0.
++  const float magnitudes[8] = {0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f, 0.0f};
++  for (int s = 0; s < 8; ++s) {
++    CHECK(trick_value(halves[s]) == magnitudes[s]);
++  }
++}
++
++static void test_padded_columns() {
++  // N = 40: the second tile has 8 real columns and 24 padded, zero-filled.
++  const int n = 40, k = 16;
++  std::mt19937 rng(99);
++  std::vector<uint8_t> weight(static_cast<size_t>(n) * (k / 2));
++  std::vector<uint8_t> scales(static_cast<size_t>(n) * (k / 16));
++  for (auto& b : weight) b = static_cast<uint8_t>(rng() & 0xff);
++  for (auto& s : scales) s = static_cast<uint8_t>(0x30 | (rng() & 0x07));
++  const qpn2_test::Packed packed = qpn2_test::repack(weight, scales, n, k);
++  for (int col = 40; col < 64; ++col) {
++    // Padded columns (40..63) read as zero through the reference.
++    const float got = q::value_at(packed.bytes.data(), 0, col, 1, 1.0f);
++    CHECK(got == 0.0f);
++  }
++  // Real columns still match.
++  for (int col = 32; col < 40; ++col) {
++    const uint8_t byte = weight[static_cast<size_t>(col) * (k / 2)];
++    const uint8_t code = q::nibble_at(byte, 0);
++    const float want = q::e2m1_to_float(code) *
++                       q::e4m3_raw(scales[static_cast<size_t>(col) * 1]);
++    CHECK(q::value_at(packed.bytes.data(), 0, col, 1, 1.0f) == want);
++  }
++}
++
++int main() {
++  test_lane_column_identity();
++  test_k_order();
++  test_repack_round_trip();
++  test_trick_slot_mapping();
++  test_padded_columns();
++  if (g_failures) {
++    std::printf("FAILED (%d checks)\n", g_failures);
++    return 1;
++  }
++  std::printf("OK: layout identities, repack round trip, trick slots, padding\n");
++  return 0;
++}
 diff --git a/tests/qpn2_producer_bench.cu b/tests/qpn2_producer_bench.cu
-index 6323448..23573b2 100644
---- a/tests/qpn2_producer_bench.cu
+new file mode 100644
+index 0000000..23573b2
+--- /dev/null
 +++ b/tests/qpn2_producer_bench.cu
-@@ -305,6 +305,115 @@ __global__ void qpn2_loop_shared_b(const uint8_t* __restrict__ qpn2, float gscal
-   if (blockIdx.x == 0) out[1 + tid] = acc;
- }
- 
+@@ -0,0 +1,598 @@
++// Producer-cost bench: Marlin B iterator vs QPN2 reader, same CTA tile.
++//
++// Gate-up geometry (CtaM=64, CtaN=64, CtaK=32, 4 warps, K=2560, N=320):
++//   Marlin: per thread 2 words + 2 scale uint2 loads, dequant 16 values.
++//   QPN2:   per lane 8B codes + 1B scale, 24 shuffles, dequant 16 values.
++// Times each loop for one CTA over the real K, and prints cycles per K-tile
++// against the MMA budget of the same tile (462 MAC/cycle/SM measured on this
++// part by benchmarks/mma_probe.cu).
++//
++//   nvcc -std=c++17 -O2 -arch=sm_70 -Icsrc -Itests tests/qpn2_producer_bench.cu
++
++#include <cuda_fp16.h>
++#include <cuda_runtime.h>
++
++#include <cstdint>
++#include <cstdio>
++#include <cstring>
++#include <random>
++#include <vector>
++
++#include "quantization/marlin/qpn2_layout.cuh"
++#include "qpn2_repack_model.h"
++
++namespace q = marlin::sm70::qpn2;
++
++constexpr int kThreads = 128;
++constexpr int kCtaK = 32;
++constexpr int kCtaN = 64;
++constexpr int kSizeN = 320;   // gate_up per rank
++constexpr int kSizeK = 2560;
++constexpr int kIters = kSizeK / kCtaK;  // 80 K-tiles
++constexpr float kMmaMacPerCycle = 462.0f;
++
++#define CUDA_CHECK(call)                                                     \
++  do {                                                                       \
++    cudaError_t s = (call);                                                  \
++    if (s != cudaSuccess) {                                                  \
++      std::printf("CUDA error %s at %s:%d\n", cudaGetErrorString(s),         \
++                  __FILE__, __LINE__);                                       \
++      return 1;                                                              \
++    }                                                                        \
++  } while (0)
++
++__device__ __forceinline__ void trick_half2(uint32_t w, __half2 out[4]) {
++  const uint32_t kSign = 0x80008000u, kExpMant = 0x0e000e00u;
++  uint32_t v[4];
++  v[0] = ((w << 12) & kSign) | ((w << 9) & kExpMant);
++  v[1] = ((w << 8) & kSign) | ((w << 5) & kExpMant);
++  v[2] = ((w << 4) & kSign) | ((w << 1) & kExpMant);
++  v[3] = (w & kSign) | ((w >> 3) & kExpMant);
++#pragma unroll
++  for (int i = 0; i < 4; ++i) {
++    out[i] = __halves2half2(__ushort_as_half(static_cast<uint16_t>(v[i] & 0xffff)),
++                            __ushort_as_half(static_cast<uint16_t>(v[i] >> 16)));
++  }
++}
++
++__device__ __forceinline__ void dequant_word(uint32_t word, const __half2 scales[4],
++                                             __half2 out[4]) {
++  __half2 v[4];
++  trick_half2(word, v);
++#pragma unroll
++  for (int i = 0; i < 4; ++i) {
++    out[i] = __hmul2(__hmul2(v[i], __float2half2_rn(16384.0f)), scales[i]);
++  }
++}
++
++// Marlin B thread map, gate_up geometry: 4 warps over K, 2 accesses/thread.
++__global__ void marlin_loop(const uint32_t* __restrict__ qweight,
++                            const uint8_t* __restrict__ scales, __half2* out) {
++  const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
++  __half2 acc = __float2half2_rn(0.0f);
++  const int base_k = warp * 8 + lane / 8;
++  const int n_block = (lane % 8) * 8;
++  long long t0 = clock64();
++#pragma unroll 1
++  for (int tile = 0; tile < kIters; ++tile) {
++    const int k0 = tile * kCtaK + base_k;
++    const int k1 = k0 + 4;
++#pragma unroll
++    for (int i = 0; i < 2; ++i) {
++      const int kk = i ? k1 : k0;
++      const int group = kk / 16;
++      // Marlin layout: one 32-bit word per access, 8 N values.
++      const int qword = (kk / 16) * (kSizeN * 2) +
++                        ((n_block / 64) / (64 / 64)) * 0 +
++                        (kk % 16) * 8 + (n_block % 64) / 8;
++      const uint32_t word = qweight[qword];
++      const uint2 sw = *reinterpret_cast<const uint2*>(scales + group * kSizeN + n_block);
++      __half2 sc[4];
++      // Two E4M3 bytes per 32-bit half of the pair; same one-rounding path.
++      sc[0] = __halves2half2(__ushort_as_half(q::e4m3_to_fp16_bits(sw.x & 0xff)),
++                             __ushort_as_half(q::e4m3_to_fp16_bits((sw.x >> 8) & 0xff)));
++      sc[1] = __halves2half2(__ushort_as_half(q::e4m3_to_fp16_bits((sw.x >> 16) & 0xff)),
++                             __ushort_as_half(q::e4m3_to_fp16_bits((sw.x >> 24) & 0xff)));
++      sc[2] = __halves2half2(__ushort_as_half(q::e4m3_to_fp16_bits(sw.y & 0xff)),
++                             __ushort_as_half(q::e4m3_to_fp16_bits((sw.y >> 8) & 0xff)));
++      sc[3] = __halves2half2(__ushort_as_half(q::e4m3_to_fp16_bits((sw.y >> 16) & 0xff)),
++                             __ushort_as_half(q::e4m3_to_fp16_bits((sw.y >> 24) & 0xff)));
++      __half2 d[4];
++      dequant_word(word, sc, d);
++#pragma unroll
++      for (int j = 0; j < 4; ++j) acc = __hadd2(acc, d[j]);
++    }
++  }
++  long long t1 = clock64();
++  if (blockIdx.x == 0 && tid == 0) out[0] = __float2half2_rn(static_cast<float>(t1 - t0));
++  if (blockIdx.x == 0) out[1 + tid] = acc;
++}
++
++// QPN2 reader: warp owns one 288-byte group per K-tile (gate_up).
++__global__ void qpn2_loop(const uint8_t* __restrict__ qpn2, float gscale,
++                          __half2* out) {
++  const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
++  __half2 acc = __float2half2_rn(0.0f);
++  const int b = lane & 3, qq = lane >> 2;
++  static const int kInv[8] = {0, 4, 1, 5, 2, 6, 3, 7};
++  long long t0 = clock64();
++#pragma unroll 1
++  for (int tile = 0; tile < kIters; ++tile) {
++    const int n_tile = warp >> 1;               // 64-column CTA tile -> 2 QPN2 tiles
++    const int g = tile * 2 + (warp & 1);        // K16 group, 0..159
++    const int64_t off = static_cast<int64_t>(n_tile * (kSizeK / 16) + g) * q::kGroupBytes;
++    const uint2 codes = *reinterpret_cast<const uint2*>(qpn2 + off + lane * 8);
++    const uint8_t sbyte = qpn2[off + q::kScaleOffset + lane];
++    const __half my_scale = __float2half_rn(
++        __half2float(__ushort_as_half(q::e4m3_to_fp16_bits(sbyte))) * 256.0f * gscale);
++    uint32_t sx[8], sy[8];
++    __half sc8[8];
++#pragma unroll
++    for (int c = 0; c < 8; ++c) {
++      const int src = q::lane_from_col(b * 8 + c);
++      sx[c] = __shfl_sync(0xffffffffu, codes.x, src);
++      sy[c] = __shfl_sync(0xffffffffu, codes.y, src);
++      sc8[c] = __ushort_as_half(static_cast<uint16_t>(
++          __shfl_sync(0xffffffffu, __half_as_ushort(my_scale), src)));
++    }
++#pragma unroll
++    for (int j = 0; j < 2; ++j) {
++      const int p = q::physical_k(2 * qq + j);
++      const int byte_in_reg = (p >> 1) & 3, high = p & 1;
++      const bool low_word = (p >> 1) < 4;
++      uint32_t word = 0;
++#pragma unroll
++      for (int c = 0; c < 8; ++c) {
++        const uint32_t reg = low_word ? sx[c] : sy[c];
++        word |= ((reg >> (byte_in_reg * 8 + (high ? 4 : 0))) & 0xf) << (4 * kInv[c]);
++      }
++      __half2 sc4[4] = {__halves2half2(sc8[0], sc8[1]), __halves2half2(sc8[2], sc8[3]),
++                        __halves2half2(sc8[4], sc8[5]), __halves2half2(sc8[6], sc8[7])};
++      __half2 d[4];
++      dequant_word(word, sc4, d);
++#pragma unroll
++      for (int jj = 0; jj < 4; ++jj) acc = __hadd2(acc, d[jj]);
++    }
++  }
++  long long t1 = clock64();
++  if (blockIdx.x == 0 && tid == 0) out[0] = __float2half2_rn(static_cast<float>(t1 - t0));
++  if (blockIdx.x == 0) out[1 + tid] = acc;
++}
++
++// Same as qpn2_loop without the warp transpose, to attribute the shuffle cost.
++__global__ void qpn2_loop_notranspose(const uint8_t* __restrict__ qpn2, float gscale,
++                                      __half2* out) {
++  const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
++  __half2 acc = __float2half2_rn(0.0f);
++  const int qq = lane >> 2;
++  long long t0 = clock64();
++#pragma unroll 1
++  for (int tile = 0; tile < kIters; ++tile) {
++    const int n_tile = warp >> 1;
++    const int g = tile * 2 + (warp & 1);
++    const int64_t off = static_cast<int64_t>(n_tile * (kSizeK / 16) + g) * q::kGroupBytes;
++    const uint2 codes = *reinterpret_cast<const uint2*>(qpn2 + off + lane * 8);
++    const uint8_t sbyte = qpn2[off + q::kScaleOffset + lane];
++    const __half my_scale = __float2half_rn(
++        __half2float(__ushort_as_half(q::e4m3_to_fp16_bits(sbyte))) * 256.0f * gscale);
++    const uint32_t word = qq ? codes.y : codes.x;
++    __half2 sc4[4] = {__half2half2(my_scale), __half2half2(my_scale), __half2half2(my_scale),
++                      __half2half2(my_scale)};
++    __half2 d[4];
++    dequant_word(word, sc4, d);
++#pragma unroll
++    for (int jj = 0; jj < 4; ++jj) acc = __hadd2(acc, d[jj]);
++  }
++  long long t1 = clock64();
++  if (blockIdx.x == 0 && tid == 0) out[0] = __float2half2_rn(static_cast<float>(t1 - t0));
++  if (blockIdx.x == 0) out[1 + tid] = acc;
++}
++
++
++// Shared-staging transpose, variant A: column-major staging (codes at
++// lane*8, converted half scales at 256 + col*2). Writer: 1 STS.64 + 1 STS.U16.
++// Reader: 16 LDS.U8 (8-way multicast) + 1 LDS.128.
++__global__ void qpn2_loop_shared_a(const uint8_t* __restrict__ qpn2, float gscale,
++                                   __half2* out) {
++  constexpr int kStride = 320;
++  __shared__ uint8_t sbuf[4 * kStride];
++  const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
++  __half2 acc = __float2half2_rn(0.0f);
++  const int b = lane & 3, qq = lane >> 2;
++  static const int kInv[8] = {0, 4, 1, 5, 2, 6, 3, 7};
++  uint8_t* s = sbuf + warp * kStride;
++  long long t0 = clock64();
++#pragma unroll 1
++  for (int tile = 0; tile < kIters; ++tile) {
++    const int n_tile = warp >> 1;
++    const int g = tile * 2 + (warp & 1);
++    const int64_t off = static_cast<int64_t>(n_tile * (kSizeK / 16) + g) * q::kGroupBytes;
++    const uint2 codes = *reinterpret_cast<const uint2*>(qpn2 + off + lane * 8);
++    const uint8_t sbyte = qpn2[off + q::kScaleOffset + lane];
++    *reinterpret_cast<uint2*>(s + lane * 8) = codes;
++    const __half my_scale = __float2half_rn(
++        __half2float(__ushort_as_half(q::e4m3_to_fp16_bits(sbyte))) * 256.0f * gscale);
++    reinterpret_cast<__half*>(s + 256)[q::col_from_lane(lane)] = my_scale;
++    __syncwarp();
++    const uint4 sv = *reinterpret_cast<const uint4*>(s + 256 + b * 16);
++    __half2 sc4[4] = {
++        __halves2half2(__ushort_as_half(sv.x & 0xffffu), __ushort_as_half(sv.x >> 16)),
++        __halves2half2(__ushort_as_half(sv.y & 0xffffu), __ushort_as_half(sv.y >> 16)),
++        __halves2half2(__ushort_as_half(sv.z & 0xffffu), __ushort_as_half(sv.z >> 16)),
++        __halves2half2(__ushort_as_half(sv.w & 0xffffu), __ushort_as_half(sv.w >> 16))};
++#pragma unroll
++    for (int j = 0; j < 2; ++j) {
++      const int p = q::physical_k(2 * qq + j);
++      const int pb = p >> 1;
++      const bool high = (p & 1) != 0;
++      uint32_t word = 0;
++#pragma unroll
++      for (int c = 0; c < 8; ++c) {
++        const int n = b * 8 + c;
++        const uint8_t byte = s[q::lane_from_col(n) * 8 + pb];
++        const uint32_t nib = high ? (byte >> 4) : (byte & 0x0f);
++        word |= nib << (4 * kInv[c]);
++      }
++      __half2 d[4];
++      dequant_word(word, sc4, d);
++#pragma unroll
++      for (int jj = 0; jj < 4; ++jj) acc = __hadd2(acc, d[jj]);
++    }
++  }
++  long long t1 = clock64();
++  if (blockIdx.x == 0 && tid == 0) out[0] = __float2half2_rn(static_cast<float>(t1 - t0));
++  if (blockIdx.x == 0) out[1 + tid] = acc;
++}
++
++// Shared-staging transpose, variant B: plane-major staging (byte pb of column
++// col at pb*32 + col, converted half scales at 256 + col*2). Writer: 8 STS.U8
++// + 1 STS.U16. Reader: 1 LDS.64 per K-half word + 1 LDS.128 for scales.
++__global__ void qpn2_loop_shared_b(const uint8_t* __restrict__ qpn2, float gscale,
++                                   __half2* out) {
++  constexpr int kStride = 320;
++  __shared__ uint8_t sbuf[4 * kStride];
++  const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
++  __half2 acc = __float2half2_rn(0.0f);
++  const int b = lane & 3, qq = lane >> 2;
++  static const int kInv[8] = {0, 4, 1, 5, 2, 6, 3, 7};
++  uint8_t* s = sbuf + warp * kStride;
++  long long t0 = clock64();
++#pragma unroll 1
++  for (int tile = 0; tile < kIters; ++tile) {
++    const int n_tile = warp >> 1;
++    const int g = tile * 2 + (warp & 1);
++    const int64_t off = static_cast<int64_t>(n_tile * (kSizeK / 16) + g) * q::kGroupBytes;
++    const uint2 codes = *reinterpret_cast<const uint2*>(qpn2 + off + lane * 8);
++    const uint8_t sbyte = qpn2[off + q::kScaleOffset + lane];
++    const int col = q::col_from_lane(lane);
++#pragma unroll
++    for (int pb = 0; pb < 8; ++pb) {
++      const uint32_t half_word = pb < 4 ? codes.x : codes.y;
++      s[pb * 32 + col] = static_cast<uint8_t>((half_word >> ((pb & 3) * 8)) & 0xff);
++    }
++    const __half my_scale = __float2half_rn(
++        __half2float(__ushort_as_half(q::e4m3_to_fp16_bits(sbyte))) * 256.0f * gscale);
++    reinterpret_cast<__half*>(s + 256)[col] = my_scale;
++    __syncwarp();
++    const uint4 sv = *reinterpret_cast<const uint4*>(s + 256 + b * 16);
++    __half2 sc4[4] = {
++        __halves2half2(__ushort_as_half(sv.x & 0xffffu), __ushort_as_half(sv.x >> 16)),
++        __halves2half2(__ushort_as_half(sv.y & 0xffffu), __ushort_as_half(sv.y >> 16)),
++        __halves2half2(__ushort_as_half(sv.z & 0xffffu), __ushort_as_half(sv.z >> 16)),
++        __halves2half2(__ushort_as_half(sv.w & 0xffffu), __ushort_as_half(sv.w >> 16))};
++#pragma unroll
++    for (int j = 0; j < 2; ++j) {
++      const int p = q::physical_k(2 * qq + j);
++      const int pb = p >> 1;
++      const bool high = (p & 1) != 0;
++      const uint2 packed = *reinterpret_cast<const uint2*>(s + pb * 32 + b * 8);
++      uint32_t word = 0;
++#pragma unroll
++      for (int c = 0; c < 8; ++c) {
++        const uint32_t half_word = c < 4 ? packed.x : packed.y;
++        const uint8_t byte = static_cast<uint8_t>((half_word >> ((c & 3) * 8)) & 0xff);
++        const uint32_t nib = high ? (byte >> 4) : (byte & 0x0f);
++        word |= nib << (4 * kInv[c]);
++      }
++      __half2 d[4];
++      dequant_word(word, sc4, d);
++#pragma unroll
++      for (int jj = 0; jj < 4; ++jj) acc = __hadd2(acc, d[jj]);
++    }
++  }
++  long long t1 = clock64();
++  if (blockIdx.x == 0 && tid == 0) out[0] = __float2half2_rn(static_cast<float>(t1 - t0));
++  if (blockIdx.x == 0) out[1 + tid] = acc;
++}
++
 +
 +// Restore-to-shared-FP16 producer: dequantize in natural (column) order and
 +// store 16 logical-K halves per lane, so the consumer's fragment loader does
@@ -126,58 +744,122 @@ index 6323448..23573b2 100644
 +  if (blockIdx.x == 0) out[1 + tid] = __float2half2_rn(static_cast<float>(bad));
 +}
 +
- int main() {
-   std::mt19937 rng(5);
-   std::vector<uint32_t> h_qweight(static_cast<size_t>(kSizeK / 16) * kSizeN * 2);
-@@ -365,6 +474,12 @@ int main() {
-         bench("qpn2-sA", [&] { qpn2_loop_shared_a<<<grid, kThreads>>>(d_qpn2, 0.75f, d_out); });
-     const double b_cycles =
-         bench("qpn2-sB", [&] { qpn2_loop_shared_b<<<grid, kThreads>>>(d_qpn2, 0.75f, d_out); });
++int main() {
++  std::mt19937 rng(5);
++  std::vector<uint32_t> h_qweight(static_cast<size_t>(kSizeK / 16) * kSizeN * 2);
++  for (auto& w : h_qweight) w = rng();
++  std::vector<uint8_t> h_scales(static_cast<size_t>(kSizeK / 16) * kSizeN);
++  for (auto& s : h_scales) s = static_cast<uint8_t>(0x30 | (rng() & 7));
++  std::vector<uint8_t> h_weight(static_cast<size_t>(kSizeN) * (kSizeK / 2));
++  for (auto& w : h_weight) w = static_cast<uint8_t>(rng() & 0xff);
++  const qpn2_test::Packed packed = qpn2_test::repack(h_weight, h_scales, kSizeN, kSizeK);
++
++  uint32_t* d_qw = nullptr;
++  uint8_t* d_sc = nullptr;
++  uint8_t* d_qpn2 = nullptr;
++  __half2* d_out = nullptr;
++  CUDA_CHECK(cudaMalloc(&d_qw, h_qweight.size() * 4));
++  CUDA_CHECK(cudaMalloc(&d_sc, h_scales.size()));
++  CUDA_CHECK(cudaMalloc(&d_qpn2, packed.bytes.size()));
++  CUDA_CHECK(cudaMalloc(&d_out, (kThreads + 1) * sizeof(__half2)));
++  CUDA_CHECK(cudaMemcpy(d_qw, h_qweight.data(), h_qweight.size() * 4, cudaMemcpyHostToDevice));
++  CUDA_CHECK(cudaMemcpy(d_sc, h_scales.data(), h_scales.size(), cudaMemcpyHostToDevice));
++  CUDA_CHECK(cudaMemcpy(d_qpn2, packed.bytes.data(), packed.bytes.size(), cudaMemcpyHostToDevice));
++
++  const int reps = 200;
++  cudaEvent_t a, b;
++  CUDA_CHECK(cudaEventCreate(&a));
++  CUDA_CHECK(cudaEventCreate(&b));
++
++  auto bench = [&](const char* name, auto launch) -> double {
++    for (int i = 0; i < 20; ++i) launch();
++    CUDA_CHECK(cudaDeviceSynchronize());
++    float best = 1e30f;
++    for (int r = 0; r < 5; ++r) {
++      CUDA_CHECK(cudaEventRecord(a));
++      for (int i = 0; i < reps; ++i) launch();
++      CUDA_CHECK(cudaEventRecord(b));
++      CUDA_CHECK(cudaDeviceSynchronize());
++      float ms = 0;
++      CUDA_CHECK(cudaEventElapsedTime(&ms, a, b));
++      best = ms < best ? ms : best;
++    }
++    const double ms_per_iter = best / reps;
++    const double cycles = ms_per_iter * 1e-3 * 1530e6;
++    std::printf("%-8s %9.3f us/iter  %8.1f cycles/K-tile\n", name,
++                ms_per_iter * 1e3, cycles / kIters);
++    return cycles / kIters;
++  };
++
++  for (const int grid : {1, 160, 640}) {
++    const double marlin_cycles = bench("marlin", [&] {
++      marlin_loop<<<grid, kThreads>>>(d_qw, d_sc, d_out);
++    });
++    const double qpn2_cycles =
++        bench("qpn2", [&] { qpn2_loop<<<grid, kThreads>>>(d_qpn2, 0.75f, d_out); });
++    const double nt_cycles = bench("qpn2-nt", [&] {
++      qpn2_loop_notranspose<<<grid, kThreads>>>(d_qpn2, 0.75f, d_out);
++    });
++    const double a_cycles =
++        bench("qpn2-sA", [&] { qpn2_loop_shared_a<<<grid, kThreads>>>(d_qpn2, 0.75f, d_out); });
++    const double b_cycles =
++        bench("qpn2-sB", [&] { qpn2_loop_shared_b<<<grid, kThreads>>>(d_qpn2, 0.75f, d_out); });
 +    const double fw_cycles = bench("qpn2-f16w", [&] {
 +      qpn2_loop_fp16<false><<<grid, kThreads>>>(d_qpn2, 0.75f, d_out);
 +    });
 +    const double fb_cycles = bench("qpn2-f16b", [&] {
 +      qpn2_loop_fp16<true><<<grid, kThreads>>>(d_qpn2, 0.75f, d_out);
 +    });
-     std::printf(
-         "grid %3d  marlin/MMA %.2f  qpn2/MMA %.2f  qpn2/marlin %.2f  transpose %.0f%%\n",
-         grid, marlin_cycles / 284.0, qpn2_cycles / 284.0, qpn2_cycles / marlin_cycles,
-@@ -373,6 +488,11 @@ int main() {
-         "          sA %.1f (%.2fx marlin, %.2fx MMA)  sB %.1f (%.2fx marlin, %.2fx MMA)\n",
-         a_cycles, a_cycles / marlin_cycles, a_cycles / 284.0, b_cycles,
-         b_cycles / marlin_cycles, b_cycles / 284.0);
++    std::printf(
++        "grid %3d  marlin/MMA %.2f  qpn2/MMA %.2f  qpn2/marlin %.2f  transpose %.0f%%\n",
++        grid, marlin_cycles / 284.0, qpn2_cycles / 284.0, qpn2_cycles / marlin_cycles,
++        100.0 * (qpn2_cycles - nt_cycles) / qpn2_cycles);
++    std::printf(
++        "          sA %.1f (%.2fx marlin, %.2fx MMA)  sB %.1f (%.2fx marlin, %.2fx MMA)\n",
++        a_cycles, a_cycles / marlin_cycles, a_cycles / 284.0, b_cycles,
++        b_cycles / marlin_cycles, b_cycles / 284.0);
 +    std::printf(
 +        "          f16warp %.1f (%.2fx marlin, %.2fx MMA)  f16block %.1f (%.2fx marlin, "
 +        "%.2fx MMA)\n",
 +        fw_cycles, fw_cycles / marlin_cycles, fw_cycles / 284.0, fb_cycles,
 +        fb_cycles / marlin_cycles, fb_cycles / 284.0);
-     if (grid == 1 && qpn2_cycles > 284.0) std::printf("STOP: QPN2 producer exceeds the MMA phase\n");
-   }
-   const double mma_cycles = 284.0;
-@@ -393,20 +513,31 @@ int main() {
-       CUDA_CHECK(cudaEventElapsedTime(&ms, a, b));
-       return static_cast<double>(ms) / preps * 1e-3 * 1530e6 / kIters;
-     };
--    std::vector<double> ratios_a, ratios_b, m_cyc, a_cyc, b_cyc;
++    if (grid == 1 && qpn2_cycles > 284.0) std::printf("STOP: QPN2 producer exceeds the MMA phase\n");
++  }
++  const double mma_cycles = 284.0;
++  std::printf("MMA budget for the tile: %.0f cycles (131072 MACs at 462/cycle)\n", mma_cycles);
++
++  // Paired measurement at 2 CTAs/SM: alternate the arms within one process so
++  // clock drift cancels instead of biasing one arm.
++  {
++    const int pgrid = 160, preps = 50, rounds = 9;
++    auto time_once = [&](auto launch) -> double {
++      for (int i = 0; i < 5; ++i) launch();
++      CUDA_CHECK(cudaDeviceSynchronize());
++      CUDA_CHECK(cudaEventRecord(a));
++      for (int i = 0; i < preps; ++i) launch();
++      CUDA_CHECK(cudaEventRecord(b));
++      CUDA_CHECK(cudaDeviceSynchronize());
++      float ms = 0;
++      CUDA_CHECK(cudaEventElapsedTime(&ms, a, b));
++      return static_cast<double>(ms) / preps * 1e-3 * 1530e6 / kIters;
++    };
 +    std::vector<double> ratios_a, ratios_b, ratios_fw, ratios_fb, m_cyc, a_cyc, b_cyc,
 +        fw_cyc, fb_cyc;
-     for (int r = 0; r < rounds; ++r) {
-       const double m = time_once([&] { marlin_loop<<<pgrid, kThreads>>>(d_qw, d_sc, d_out); });
-       const double qa =
-           time_once([&] { qpn2_loop_shared_a<<<pgrid, kThreads>>>(d_qpn2, 0.75f, d_out); });
-       const double qb =
-           time_once([&] { qpn2_loop_shared_b<<<pgrid, kThreads>>>(d_qpn2, 0.75f, d_out); });
++    for (int r = 0; r < rounds; ++r) {
++      const double m = time_once([&] { marlin_loop<<<pgrid, kThreads>>>(d_qw, d_sc, d_out); });
++      const double qa =
++          time_once([&] { qpn2_loop_shared_a<<<pgrid, kThreads>>>(d_qpn2, 0.75f, d_out); });
++      const double qb =
++          time_once([&] { qpn2_loop_shared_b<<<pgrid, kThreads>>>(d_qpn2, 0.75f, d_out); });
 +      const double qfw =
 +          time_once([&] { qpn2_loop_fp16<false><<<pgrid, kThreads>>>(d_qpn2, 0.75f, d_out); });
 +      const double qfb =
 +          time_once([&] { qpn2_loop_fp16<true><<<pgrid, kThreads>>>(d_qpn2, 0.75f, d_out); });
-       m_cyc.push_back(m);
-       a_cyc.push_back(qa);
-       b_cyc.push_back(qb);
-       ratios_a.push_back(qa / m);
-       ratios_b.push_back(qb / m);
--      std::printf("round %d: marlin %7.1f  sA %7.1f (%.2fx)  sB %7.1f (%.2fx)\n", r, m, qa,
--                  qa / m, qb, qb / m);
++      m_cyc.push_back(m);
++      a_cyc.push_back(qa);
++      b_cyc.push_back(qb);
++      ratios_a.push_back(qa / m);
++      ratios_b.push_back(qb / m);
 +      fw_cyc.push_back(qfw);
 +      fb_cyc.push_back(qfb);
 +      ratios_fw.push_back(qfw / m);
@@ -186,18 +868,19 @@ index 6323448..23573b2 100644
 +          "round %d: marlin %7.1f  sA %7.1f (%.2fx)  sB %7.1f (%.2fx)  f16w %7.1f (%.2fx)  "
 +          "f16b %7.1f (%.2fx)\n",
 +          r, m, qa, qa / m, qb, qb / m, qfw, qfw / m, qfb, qfb / m);
-     }
-     auto median = [](std::vector<double> v) {  // insertion sort, no <algorithm>
-       for (size_t i = 1; i < v.size(); ++i) {
-@@ -420,11 +551,26 @@ int main() {
-       }
-       return v[v.size() / 2];
-     };
--    std::printf("paired medians at 2 CTAs/SM: marlin %.1f  sA %.1f (%.2fx)  sB %.1f (%.2fx)\n",
--                median(m_cyc), median(a_cyc), median(ratios_a), median(b_cyc),
--                median(ratios_b));
--    std::printf("%s\n", median(ratios_a) <= 1.0 ? "ACCEPT: sA beats or matches Marlin"
--                                                 : "REJECT: sA still above Marlin");
++    }
++    auto median = [](std::vector<double> v) {  // insertion sort, no <algorithm>
++      for (size_t i = 1; i < v.size(); ++i) {
++        const double x = v[i];
++        size_t j = i;
++        while (j > 0 && v[j - 1] > x) {
++          v[j] = v[j - 1];
++          --j;
++        }
++        v[j] = x;
++      }
++      return v[v.size() / 2];
++    };
 +    std::printf(
 +        "paired medians at 2 CTAs/SM: marlin %.1f  sA %.1f (%.2fx)  sB %.1f (%.2fx)  f16warp "
 +        "%.1f (%.2fx)  f16block %.1f (%.2fx)\n",
@@ -218,21 +901,37 @@ index 6323448..23573b2 100644
 +    for (int i = 1; i <= kThreads; ++i) bad += static_cast<int>(__low2float(h_chk[i]));
 +    std::printf("fp16 staging value check: %d of %d halves differ (16 per lane)\n", bad,
 +                kThreads * 16);
-   }
- 
-   // Cross-check: qpn2 (shuffle), sA and sB must produce identical accumulators.
++  }
++
++  // Cross-check: qpn2 (shuffle), sA and sB must produce identical accumulators.
++  std::vector<__half2> h_ref(kThreads + 1), h_a(kThreads + 1), h_b(kThreads + 1);
++  qpn2_loop<<<1, kThreads>>>(d_qpn2, 0.75f, d_out);
++  CUDA_CHECK(cudaMemcpy(h_ref.data(), d_out, (kThreads + 1) * sizeof(__half2),
++                        cudaMemcpyDeviceToHost));
++  qpn2_loop_shared_a<<<1, kThreads>>>(d_qpn2, 0.75f, d_out);
++  CUDA_CHECK(cudaMemcpy(h_a.data(), d_out, (kThreads + 1) * sizeof(__half2),
++                        cudaMemcpyDeviceToHost));
++  qpn2_loop_shared_b<<<1, kThreads>>>(d_qpn2, 0.75f, d_out);
++  CUDA_CHECK(cudaMemcpy(h_b.data(), d_out, (kThreads + 1) * sizeof(__half2),
++                        cudaMemcpyDeviceToHost));
++  int bad_a = 0, bad_b = 0;
++  for (int i = 1; i <= kThreads; ++i) {
++    const uint32_t ra = *reinterpret_cast<const uint32_t*>(&h_ref[i]);
++    const uint32_t aa = *reinterpret_cast<const uint32_t*>(&h_a[i]);
++    const uint32_t ba = *reinterpret_cast<const uint32_t*>(&h_b[i]);
++    bad_a += aa != ra;
++    bad_b += ba != ra;
++  }
++  std::printf("cross-check vs shuffle reader: sA %d mismatches, sB %d mismatches\n", bad_a,
++              bad_b);
++  return (bad_a == 0 && bad_b == 0) ? 0 : 1;
++}
 diff --git a/tests/qpn2_producer_bench.txt b/tests/qpn2_producer_bench.txt
-index bd182b7..23ceed8 100644
---- a/tests/qpn2_producer_bench.txt
+new file mode 100644
+index 0000000..23ceed8
+--- /dev/null
 +++ b/tests/qpn2_producer_bench.txt
-@@ -1,35 +1,45 @@
--marlin      27.873 us/iter     533.1 cycles/K-tile
--qpn2        41.984 us/iter     802.9 cycles/K-tile
--qpn2-nt     18.202 us/iter     348.1 cycles/K-tile
--qpn2-sA     33.219 us/iter     635.3 cycles/K-tile
--qpn2-sB     34.760 us/iter     664.8 cycles/K-tile
--grid   1  marlin/MMA 1.88  qpn2/MMA 2.83  qpn2/marlin 1.51  transpose 57%
--          sA 635.3 (1.19x marlin, 2.24x MMA)  sB 664.8 (1.25x marlin, 2.34x MMA)
+@@ -0,0 +1,45 @@
 +marlin      33.234 us/iter     635.6 cycles/K-tile
 +qpn2        49.582 us/iter     948.3 cycles/K-tile
 +qpn2-nt     21.453 us/iter     410.3 cycles/K-tile
@@ -243,21 +942,7 @@ index bd182b7..23ceed8 100644
 +grid   1  marlin/MMA 2.24  qpn2/MMA 3.34  qpn2/marlin 1.49  transpose 57%
 +          sA 751.3 (1.18x marlin, 2.65x MMA)  sB 786.3 (1.24x marlin, 2.77x MMA)
 +          f16warp 470.3 (0.74x marlin, 1.66x MMA)  f16block 523.7 (0.82x marlin, 1.84x MMA)
- STOP: QPN2 producer exceeds the MMA phase
--marlin      34.099 us/iter     652.1 cycles/K-tile
--qpn2        45.409 us/iter     868.5 cycles/K-tile
--qpn2-nt     21.540 us/iter     411.9 cycles/K-tile
--qpn2-sA     37.709 us/iter     721.2 cycles/K-tile
--qpn2-sB     41.021 us/iter     784.5 cycles/K-tile
--grid 160  marlin/MMA 2.30  qpn2/MMA 3.06  qpn2/marlin 1.33  transpose 53%
--          sA 721.2 (1.11x marlin, 2.54x MMA)  sB 784.5 (1.20x marlin, 2.76x MMA)
--marlin     116.767 us/iter    2233.2 cycles/K-tile
--qpn2       108.559 us/iter    2076.2 cycles/K-tile
--qpn2-nt     35.169 us/iter     672.6 cycles/K-tile
--qpn2-sA    108.344 us/iter    2072.1 cycles/K-tile
--qpn2-sB    129.679 us/iter    2480.1 cycles/K-tile
--grid 640  marlin/MMA 7.86  qpn2/MMA 7.31  qpn2/marlin 0.93  transpose 68%
--          sA 2072.1 (0.93x marlin, 7.30x MMA)  sB 2480.1 (1.11x marlin, 8.73x MMA)
++STOP: QPN2 producer exceeds the MMA phase
 +marlin      36.659 us/iter     701.1 cycles/K-tile
 +qpn2        48.707 us/iter     931.5 cycles/K-tile
 +qpn2-nt     23.188 us/iter     443.5 cycles/K-tile
@@ -278,18 +963,7 @@ index bd182b7..23ceed8 100644
 +grid 640  marlin/MMA 7.85  qpn2/MMA 7.31  qpn2/marlin 0.93  transpose 68%
 +          sA 2071.3 (0.93x marlin, 7.29x MMA)  sB 2478.4 (1.11x marlin, 8.73x MMA)
 +          f16warp 1122.8 (0.50x marlin, 3.95x MMA)  f16block 1254.0 (0.56x marlin, 4.42x MMA)
- MMA budget for the tile: 284 cycles (131072 MACs at 462/cycle)
--round 0: marlin   652.9  sA   721.5 (1.10x)  sB   784.9 (1.20x)
--round 1: marlin   652.5  sA   721.9 (1.11x)  sB   784.9 (1.20x)
--round 2: marlin   652.9  sA   721.5 (1.10x)  sB   785.3 (1.20x)
--round 3: marlin   652.9  sA   721.1 (1.10x)  sB   785.7 (1.20x)
--round 4: marlin   652.9  sA   721.5 (1.10x)  sB   784.9 (1.20x)
--round 5: marlin   653.3  sA   720.3 (1.10x)  sB   784.9 (1.20x)
--round 6: marlin   652.9  sA   721.5 (1.10x)  sB   785.3 (1.20x)
--round 7: marlin   653.7  sA   721.5 (1.10x)  sB   785.7 (1.20x)
--round 8: marlin   653.7  sA   721.5 (1.10x)  sB   786.1 (1.20x)
--paired medians at 2 CTAs/SM: marlin 652.9  sA 721.5 (1.10x)  sB 785.3 (1.20x)
--REJECT: sA still above Marlin
++MMA budget for the tile: 284 cycles (131072 MACs at 462/cycle)
 +round 0: marlin   653.7  sA   722.6 (1.11x)  sB   786.1 (1.20x)  f16w   518.2 (0.79x)  f16b   574.2 (0.88x)
 +round 1: marlin   654.1  sA   721.9 (1.10x)  sB   786.1 (1.20x)  f16w   515.8 (0.79x)  f16b   573.8 (0.88x)
 +round 2: marlin   654.1  sA   723.0 (1.11x)  sB   785.7 (1.20x)  f16w   518.6 (0.79x)  f16b   575.0 (0.88x)
@@ -302,4 +976,464 @@ index bd182b7..23ceed8 100644
 +paired medians at 2 CTAs/SM: marlin 654.1  sA 722.6 (1.10x)  sB 785.7 (1.20x)  f16warp 517.4 (0.79x)  f16block 574.6 (0.88x)
 +ACCEPT: FP16 staging beats or matches Marlin
 +fp16 staging value check: 0 of 2048 halves differ (16 per lane)
- cross-check vs shuffle reader: sA 0 mismatches, sB 0 mismatches
++cross-check vs shuffle reader: sA 0 mismatches, sB 0 mismatches
+diff --git a/tests/qpn2_repack_model.h b/tests/qpn2_repack_model.h
+new file mode 100644
+index 0000000..48b4384
+--- /dev/null
++++ b/tests/qpn2_repack_model.h
+@@ -0,0 +1,63 @@
++#pragma once
++
++// Host model of the QPN2 repack (spec section 4). Tests only; the real repack
++// is the loader-side kernel. The address is the section-1 address
++// (t*groups+g)*288 + lane*8 + byte, NOT the flat code-byte index i from the
++// section-4 pseudocode: the two differ from the second group onward because
++// each group carries 32 scale bytes.
++
++#include <cstdint>
++#include <vector>
++
++#include "quantization/marlin/qpn2_layout.cuh"
++
++namespace qpn2_test {
++
++struct Packed {
++  std::vector<uint8_t> bytes;
++  int tiles;
++  int groups;
++};
++
++inline Packed repack(const std::vector<uint8_t>& weight,
++                     const std::vector<uint8_t>& scales, int n, int k) {
++  namespace q = marlin::sm70::qpn2;
++  Packed packed;
++  packed.tiles = (n + q::kColsPerTile - 1) / q::kColsPerTile;
++  packed.groups = k / q::kKPerGroup;
++  packed.bytes.assign(static_cast<size_t>(packed.tiles * packed.groups) * q::kGroupBytes, 0);
++  const int k_bytes = k / 2;
++  const int64_t code_count =
++      static_cast<int64_t>(packed.tiles) * packed.groups * q::kLanes * 8;
++  for (int64_t i = 0; i < code_count; ++i) {
++    const int physical_byte = static_cast<int>(i & 7);
++    int64_t outer = i >> 3;
++    const int lane = static_cast<int>(outer & 31);
++    outer >>= 5;
++    const int g = static_cast<int>(outer % packed.groups);
++    const int t = static_cast<int>(outer / packed.groups);
++    const int column = t * q::kColsPerTile + q::col_from_lane(lane);
++    const int k0 = g * q::kKPerGroup + q::logical_k(2 * physical_byte);
++    const int k1 = g * q::kKPerGroup + q::logical_k(2 * physical_byte + 1);
++    uint8_t c0 = 0, c1 = 0;
++    if (column < n) {
++      c0 = (weight[static_cast<size_t>(column) * k_bytes + k0 / 2] >> ((k0 & 1) * 4)) & 0xF;
++      c1 = (weight[static_cast<size_t>(column) * k_bytes + k1 / 2] >> ((k1 & 1) * 4)) & 0xF;
++    }
++    const int64_t off = (static_cast<int64_t>(t) * packed.groups + g) * q::kGroupBytes +
++                        lane * 8 + physical_byte;
++    packed.bytes[off] = static_cast<uint8_t>(c0 | (c1 << 4));
++  }
++  for (int64_t i = 0; i < static_cast<int64_t>(packed.tiles) * packed.groups; ++i) {
++    const int g = static_cast<int>(i % packed.groups);
++    const int t = static_cast<int>(i / packed.groups);
++    for (int lane = 0; lane < q::kLanes; ++lane) {
++      const int column = t * q::kColsPerTile + q::col_from_lane(lane);
++      packed.bytes[static_cast<size_t>(i) * q::kGroupBytes + q::kScaleOffset + lane] =
++          column < n ? scales[static_cast<size_t>(column) * packed.groups + g] : 0;
++    }
++  }
++  return packed;
++}
++
++}  // namespace qpn2_test
+diff --git a/tests/qpn2_transpose_probe.cu b/tests/qpn2_transpose_probe.cu
+new file mode 100644
+index 0000000..33e2938
+--- /dev/null
++++ b/tests/qpn2_transpose_probe.cu
+@@ -0,0 +1,385 @@
++// QPN2 prefill reader probe: warp transpose, shared-layout store, and K pairing.
++//
++// Build on an SM70 host with CUTLASS on the include path:
++//   nvcc -std=c++17 -O2 -arch=sm_70 -Icsrc -Itests -I<cutlass>/include \
++//     tests/qpn2_transpose_probe.cu -o /tmp/qpn2_transpose_probe
++//
++// Usage: --smoke (all), --transpose, --store, --korder, --gemm
++
++#include <cuda_fp16.h>
++#include <cuda_runtime.h>
++
++#include <algorithm>
++#include <cmath>
++#include <cstdint>
++#include <cstdio>
++#include <cstring>
++#include <random>
++#include <vector>
++
++#include "cutlass/layout/tensor_op_multiplicand_sm70.h"
++#include "quantization/marlin/qpn2_layout.cuh"
++#include "qpn2_repack_model.h"
++
++namespace q = marlin::sm70::qpn2;
++
++constexpr int kCtaK = 32;
++constexpr int kCtaN = 64;
++constexpr int kThreads = 128;  // 4 warps
++constexpr int kM = 8;
++
++#define CUDA_CHECK(call)                                                     \
++  do {                                                                       \
++    cudaError_t s = (call);                                                  \
++    if (s != cudaSuccess) {                                                  \
++      std::printf("CUDA error %s at %s:%d\n", cudaGetErrorString(s),         \
++                  __FILE__, __LINE__);                                       \
++      return 1;                                                              \
++    }                                                                        \
++  } while (0)
++
++__device__ __forceinline__ void trick_half2(uint32_t w, __half2 out[4]) {
++  const uint32_t kSign = 0x80008000u, kExpMant = 0x0e000e00u;
++  uint32_t v[4];
++  v[0] = ((w << 12) & kSign) | ((w << 9) & kExpMant);
++  v[1] = ((w << 8) & kSign) | ((w << 5) & kExpMant);
++  v[2] = ((w << 4) & kSign) | ((w << 1) & kExpMant);
++  v[3] = (w & kSign) | ((w >> 3) & kExpMant);
++#pragma unroll
++  for (int i = 0; i < 4; ++i) {
++    out[i] = __halves2half2(__ushort_as_half(static_cast<uint16_t>(v[i] & 0xffff)),
++                            __ushort_as_half(static_cast<uint16_t>(v[i] >> 16)));
++  }
++}
++
++// One E4M3 scale byte and the per-expert global scale, one rounding (spec §3).
++__device__ __forceinline__ __half scale_half(uint8_t byte, float global_scale) {
++  const __half h = __ushort_as_half(q::e4m3_to_fp16_bits(byte));
++  const float raw = __half2float(h) * 256.0f;
++  return __float2half_rn(raw * global_scale);
++}
++
++// Reference value path: the same per-value half ops as the reader.
++__device__ __forceinline__ __half dequant_one(uint8_t code, __half scale) {
++  __half2 v[4];
++  trick_half2(static_cast<uint32_t>(code), v);  // code at nibble position 0
++  const __half c = __low2half(v[0]);
++  return __hmul(__hmul(c, __float2half(16384.0f)), scale);
++}
++
++__device__ __forceinline__ uint32_t code_nibble(uint32_t reg, int byte_in_reg,
++                                                int high) {
++  return (reg >> (byte_in_reg * 8 + (high ? 4 : 0))) & 0xf;
++}
++
++// One CTA tile [CtaK, CtaN]. Warp w owns QPN2 group w = (t_local, g_local).
++// Lane l reads storage lane l; after the transpose lane l owns
++// n-block b = l & 3 for k = g*16 + 2*(l>>2) + {0,1}.
++__global__ void transpose_kernel(const uint8_t* __restrict__ qpn2,
++                                 int groups, float global_scale,
++                                 __half* __restrict__ out /* [CtaK][CtaN] */) {
++  const int tid = threadIdx.x;
++  const int lane = tid & 31;
++  const int warp = tid >> 5;
++  const int t_local = warp >> 1;
++  const int g_local = warp & 1;
++  const int64_t group_off = (static_cast<int64_t>(t_local) * groups + g_local) * q::kGroupBytes;
++  const uint2 codes = *reinterpret_cast<const uint2*>(qpn2 + group_off + lane * 8);
++  const __half my_scale = scale_half(qpn2[group_off + q::kScaleOffset + lane], global_scale);
++
++  const int b = lane & 3;
++  const int q = lane >> 2;  // k pair index within the K16 group
++  static const int kInv[8] = {0, 4, 1, 5, 2, 6, 3, 7};
++
++  // Fetch both code words from every column of this block once. The register
++  // that holds the target nibble depends on the TARGET's k, so a single
++  // source-selected register is wrong: fetch both and select here.
++  uint32_t sx[8], sy[8];
++  __half sc[8];
++#pragma unroll
++  for (int c = 0; c < 8; ++c) {
++    const int src = q::lane_from_col(b * 8 + c);
++    sx[c] = __shfl_sync(0xffffffffu, codes.x, src);
++    sy[c] = __shfl_sync(0xffffffffu, codes.y, src);
++    sc[c] = __ushort_as_half(static_cast<uint16_t>(
++        __shfl_sync(0xffffffffu, __half_as_ushort(my_scale), src)));
++  }
++
++#pragma unroll
++  for (int j = 0; j < 2; ++j) {
++    const int k_local = 2 * q + j;
++    const int p = q::physical_k(k_local);
++    const int byte_in_reg = (p >> 1) & 3;
++    const int high = p & 1;
++    const bool low_word = (p >> 1) < 4;
++
++    uint32_t word = 0;
++    __half scales[8];
++#pragma unroll
++    for (int c = 0; c < 8; ++c) {
++      const uint32_t src_reg = low_word ? sx[c] : sy[c];
++      word |= code_nibble(src_reg, byte_in_reg, high) << (4 * kInv[c]);
++      scales[c] = sc[c];
++    }
++
++    __half2 v[4];
++    trick_half2(word, v);
++    __half2 pairs[4] = {
++        __halves2half2(scales[0], scales[1]),
++        __halves2half2(scales[2], scales[3]),
++        __halves2half2(scales[4], scales[5]),
++        __halves2half2(scales[6], scales[7]),
++    };
++    union {
++      __half h[8];
++      uint4 v;
++    } pack;
++#pragma unroll
++    for (int i = 0; i < 4; ++i) {
++      __half2 r = __hmul2(__hmul2(v[i], __float2half2_rn(16384.0f)), pairs[i]);
++      pack.h[2 * i] = __low2half(r);
++      pack.h[2 * i + 1] = __high2half(r);
++    }
++    const int k = g_local * 16 + k_local;
++    const int n0 = t_local * 32 + b * 8;
++    *reinterpret_cast<uint4*>(out + k * kCtaN + n0) = pack.v;
++  }
++}
++
++__global__ void reference_kernel(const uint8_t* __restrict__ qpn2, int groups,
++                                 float global_scale,
++                                 __half* __restrict__ out, int k_total, int n_total) {
++  const int idx = blockIdx.x * blockDim.x + threadIdx.x;
++  if (idx >= k_total * n_total) return;
++  const int k = idx / n_total;
++  const int n = idx % n_total;
++  const int tile = n / 32;
++  const int col = n % 32;
++  const int g = k / 16;
++  const int lane = q::lane_from_col(col);
++  const int p = q::physical_k(k % 16);
++  const int64_t off = (static_cast<int64_t>(tile) * groups + g) * q::kGroupBytes;
++  const uint8_t byte = qpn2[off + lane * 8 + (p >> 1)];
++  const uint8_t code = q::nibble_at(byte, p & 1);
++  out[idx] = dequant_one(code, scale_half(qpn2[off + q::kScaleOffset + lane], global_scale));
++}
++
++using LayoutB = cutlass::layout::RowMajorVoltaTensorOpMultiplicandBCongruous<16>;
++
++// Re-run the transpose and store each 8-half word through the shared layout.
++__global__ void store_kernel(const uint8_t* __restrict__ qpn2, int groups,
++                             float global_scale, __half* __restrict__ tile) {
++  const int tid = threadIdx.x;
++  const int lane = tid & 31;
++  const int warp = tid >> 5;
++  const int t_local = warp >> 1;
++  const int g_local = warp & 1;
++  const int64_t group_off = (static_cast<int64_t>(t_local) * groups + g_local) * q::kGroupBytes;
++  const uint2 codes = *reinterpret_cast<const uint2*>(qpn2 + group_off + lane * 8);
++  const __half my_scale = scale_half(qpn2[group_off + q::kScaleOffset + lane], global_scale);
++  const int b = lane & 3;
++  const int q = lane >> 2;
++  static const int kInv[8] = {0, 4, 1, 5, 2, 6, 3, 7};
++  LayoutB layout(kCtaN);
++  uint32_t sx[8], sy[8];
++  __half sc[8];
++#pragma unroll
++  for (int c = 0; c < 8; ++c) {
++    const int src = q::lane_from_col(b * 8 + c);
++    sx[c] = __shfl_sync(0xffffffffu, codes.x, src);
++    sy[c] = __shfl_sync(0xffffffffu, codes.y, src);
++    sc[c] = __ushort_as_half(static_cast<uint16_t>(
++        __shfl_sync(0xffffffffu, __half_as_ushort(my_scale), src)));
++  }
++#pragma unroll
++  for (int j = 0; j < 2; ++j) {
++    const int k_local = 2 * q + j;
++    const int p = q::physical_k(k_local);
++    const int byte_in_reg = (p >> 1) & 3;
++    const int high = p & 1;
++    const bool low_word = (p >> 1) < 4;
++    uint32_t word = 0;
++    __half scales[8];
++#pragma unroll
++    for (int c = 0; c < 8; ++c) {
++      const uint32_t src_reg = low_word ? sx[c] : sy[c];
++      word |= code_nibble(src_reg, byte_in_reg, high) << (4 * kInv[c]);
++      scales[c] = sc[c];
++    }
++    __half2 v[4];
++    trick_half2(word, v);
++    __half2 pairs[4] = {
++        __halves2half2(scales[0], scales[1]), __halves2half2(scales[2], scales[3]),
++        __halves2half2(scales[4], scales[5]), __halves2half2(scales[6], scales[7])};
++    union {
++      __half h[8];
++      uint4 v;
++    } pack;
++#pragma unroll
++    for (int i = 0; i < 4; ++i) {
++      __half2 r = __hmul2(__hmul2(v[i], __float2half2_rn(16384.0f)), pairs[i]);
++      pack.h[2 * i] = __low2half(r);
++      pack.h[2 * i + 1] = __high2half(r);
++    }
++    const int k = g_local * 16 + k_local;
++    const int n0 = t_local * 32 + b * 8;
++    const int64_t off = layout(cutlass::MatrixCoord(k, n0));
++    *reinterpret_cast<uint4*>(tile + off) = pack.v;
++  }
++}
++
++__global__ void gemm_kernel(const __half* __restrict__ a, const __half* __restrict__ b,
++                            float* __restrict__ c, int m, int n, int k) {
++  const int idx = blockIdx.x * blockDim.x + threadIdx.x;
++  if (idx >= m * n) return;
++  const int row = idx / n;
++  const int col = idx % n;
++  float acc = 0.0f;
++  for (int kk = 0; kk < k; ++kk) {
++    acc += __half2float(a[row * k + kk]) * __half2float(b[kk * n + col]);
++  }
++  c[idx] = acc;
++}
++
++static void fill_inputs(std::vector<uint8_t>& weight, std::vector<uint8_t>& scales,
++                        int n, int kk) {
++  std::mt19937 rng(20261106);
++  weight.resize(static_cast<size_t>(n) * (kk / 2));
++  scales.resize(static_cast<size_t>(n) * (kk / 16));
++  for (auto& x : weight) x = static_cast<uint8_t>(rng() & 0xff);
++  for (auto& x : scales) x = static_cast<uint8_t>(0x30 | (rng() & 0x07));
++}
++
++int main(int argc, char** argv) {
++  bool do_transpose = false, do_store = false, do_korder = false, do_gemm = false;
++  for (int i = 1; i < argc; ++i) {
++    if (!std::strcmp(argv[i], "--smoke")) {
++      do_transpose = do_store = do_korder = do_gemm = true;
++    } else if (!std::strcmp(argv[i], "--transpose")) do_transpose = true;
++    else if (!std::strcmp(argv[i], "--store")) do_store = true;
++    else if (!std::strcmp(argv[i], "--korder")) do_korder = true;
++    else if (!std::strcmp(argv[i], "--gemm")) do_gemm = true;
++  }
++  if (!(do_transpose || do_store || do_korder || do_gemm)) {
++    std::printf("usage: %s [--smoke|--transpose|--store|--korder|--gemm]\n", argv[0]);
++    return 2;
++  }
++
++  const int n = kCtaN, k = kCtaK, groups = k / 16;
++  std::vector<uint8_t> weight, scales;
++  fill_inputs(weight, scales, n, k);
++  const qpn2_test::Packed packed = qpn2_test::repack(weight, scales, n, k);
++  const float gscale = 0.75f;
++
++  uint8_t* d_qpn2 = nullptr;
++  __half* d_ref = nullptr;
++  __half* d_out = nullptr;
++  CUDA_CHECK(cudaMalloc(&d_qpn2, packed.bytes.size()));
++  CUDA_CHECK(cudaMalloc(&d_ref, sizeof(__half) * k * n));
++  CUDA_CHECK(cudaMalloc(&d_out, sizeof(__half) * k * n));
++  CUDA_CHECK(cudaMemcpy(d_qpn2, packed.bytes.data(), packed.bytes.size(), cudaMemcpyHostToDevice));
++
++  int failures = 0;
++  reference_kernel<<<(k * n + 255) / 256, 256>>>(d_qpn2, groups, gscale, d_ref, k, n);
++  transpose_kernel<<<1, kThreads>>>(d_qpn2, groups, gscale, d_out);
++  CUDA_CHECK(cudaDeviceSynchronize());
++
++  std::vector<__half> host_ref(static_cast<size_t>(k) * n);
++  std::vector<__half> host_out(static_cast<size_t>(k) * n);
++  CUDA_CHECK(cudaMemcpy(host_ref.data(), d_ref, sizeof(__half) * k * n, cudaMemcpyDeviceToHost));
++  CUDA_CHECK(cudaMemcpy(host_out.data(), d_out, sizeof(__half) * k * n, cudaMemcpyDeviceToHost));
++
++  if (do_transpose) {
++    const int bad = std::memcmp(host_ref.data(), host_out.data(), sizeof(__half) * k * n) != 0;
++    std::printf("transpose: %s (byte-for-byte vs reference, %d x %d)\n",
++                bad ? "MISMATCH" : "ok", k, n);
++    failures += bad;
++  }
++
++  if (do_store) {
++    __half* d_tile = nullptr;
++    CUDA_CHECK(cudaMalloc(&d_tile, sizeof(__half) * k * n));
++    CUDA_CHECK(cudaMemset(d_tile, 0, sizeof(__half) * k * n));
++    store_kernel<<<1, kThreads>>>(d_qpn2, groups, gscale, d_tile);
++    CUDA_CHECK(cudaDeviceSynchronize());
++    std::vector<__half> host_tile(static_cast<size_t>(k) * n);
++    CUDA_CHECK(cudaMemcpy(host_tile.data(), d_tile, sizeof(__half) * k * n,
++                          cudaMemcpyDeviceToHost));
++    LayoutB layout(n);
++    int bad = 0;
++    for (int kk = 0; kk < k; ++kk) {
++      for (int nn = 0; nn < n; ++nn) {
++        const int64_t off = layout(cutlass::MatrixCoord(kk, nn));
++        if (std::memcmp(&host_tile[off], &host_ref[kk * n + nn], sizeof(__half))) ++bad;
++      }
++    }
++    std::printf("store: %s (layout read-back vs reference, %d mismatches)\n",
++                bad ? "MISMATCH" : "ok", bad);
++    failures += bad != 0;
++    cudaFree(d_tile);
++  }
++
++  if (do_korder) {
++    // A is a delta matrix: C[m][n] must equal B[k0][n] for every k0.
++    std::vector<__half> host_a(static_cast<size_t>(kM) * k);
++    std::vector<float> host_c(static_cast<size_t>(kM) * n);
++    __half *d_a = nullptr;
++    float* d_c = nullptr;
++    CUDA_CHECK(cudaMalloc(&d_a, sizeof(__half) * kM * k));
++    CUDA_CHECK(cudaMalloc(&d_c, sizeof(float) * kM * n));
++    int bad = 0;
++    for (int k0 = 0; k0 < k; ++k0) {
++      for (int m = 0; m < kM; ++m)
++        for (int kk = 0; kk < k; ++kk) host_a[m * k + kk] = __float2half(kk == k0 ? 1.0f : 0.0f);
++      CUDA_CHECK(cudaMemcpy(d_a, host_a.data(), sizeof(__half) * kM * k, cudaMemcpyHostToDevice));
++      gemm_kernel<<<(kM * n + 255) / 256, 256>>>(d_a, d_out, d_c, kM, n, k);
++      CUDA_CHECK(cudaDeviceSynchronize());
++      CUDA_CHECK(cudaMemcpy(host_c.data(), d_c, sizeof(float) * kM * n, cudaMemcpyDeviceToHost));
++      for (int m = 0; m < kM; ++m)
++        for (int nn = 0; nn < n; ++nn)
++          if (host_c[m * n + nn] != __half2float(host_out[k0 * n + nn])) ++bad;
++    }
++    std::printf("korder: %s (delta-A M=%d, %d mismatches)\n", bad ? "MISMATCH" : "ok", kM, bad);
++    failures += bad != 0;
++    cudaFree(d_a);
++    cudaFree(d_c);
++  }
++
++  if (do_gemm) {
++    std::vector<__half> host_a(static_cast<size_t>(kM) * k);
++    std::mt19937 rng(7);
++    std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
++    for (auto& x : host_a) x = __float2half(dist(rng));
++    __half* d_a = nullptr;
++    float* d_c = nullptr;
++    CUDA_CHECK(cudaMalloc(&d_a, sizeof(__half) * kM * k));
++    CUDA_CHECK(cudaMalloc(&d_c, sizeof(float) * kM * n));
++    CUDA_CHECK(cudaMemcpy(d_a, host_a.data(), sizeof(__half) * kM * k, cudaMemcpyHostToDevice));
++    gemm_kernel<<<(kM * n + 255) / 256, 256>>>(d_a, d_out, d_c, kM, n, k);
++    CUDA_CHECK(cudaDeviceSynchronize());
++    std::vector<float> host_c(static_cast<size_t>(kM) * n);
++    CUDA_CHECK(cudaMemcpy(host_c.data(), d_c, sizeof(float) * kM * n, cudaMemcpyDeviceToHost));
++    double worst = 0.0;
++    for (int m = 0; m < kM; ++m) {
++      for (int nn = 0; nn < n; ++nn) {
++        double ref = 0.0;
++        for (int kk = 0; kk < k; ++kk) {
++          ref += __half2float(host_a[m * k + kk]) * q::value_at(packed.bytes.data(), kk, nn, groups, gscale);
++        }
++        const double denom = std::max(1e-6, std::fabs(ref));
++        worst = std::max(worst, std::fabs(host_c[m * n + nn] - ref) / denom);
++      }
++    }
++    const bool bad = worst > 1e-3;
++    std::printf("gemm: %s (M=%d, worst relative %.3e)\n", bad ? "MISMATCH" : "ok", kM, worst);
++    failures += bad;
++    cudaFree(d_a);
++    cudaFree(d_c);
++  }
++
++  cudaFree(d_qpn2);
++  cudaFree(d_ref);
++  cudaFree(d_out);
++  std::printf(failures ? "FAILED\n" : "OK\n");
++  return failures ? 1 : 0;
++}

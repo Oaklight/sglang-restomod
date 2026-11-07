@@ -163,7 +163,12 @@ as 0001). The upstream repository is pull-only, so the work lives here.
 What it contains:
 
 - the FP16-staging producer measurement harness (`qpn2_producer_bench.cu`) and
-  the layout/repack model it shares with the step-1 tests;
+  the layout/repack model it shares with the step-1 tests. `0002` also creates
+  `csrc/quantization/marlin/qpn2_layout.cuh` and the host-side model files
+  (`tests/qpn2_repack_model.h`, `tests/qpn2_layout_host_test.cpp`,
+  `tests/qpn2_transpose_probe.cu`): the commit that added them was not
+  exported, so the creation is folded into `0002` and the series applies in
+  order from `3f16d44`;
 - `qpn2_layout.cuh`, `sm70_qpn2_iterator.cuh` (prefill B iterator, stock
   `PitchLinearWarpRakedThreadMap<..., PitchLinearShape<1,32>, 8>`) and
   `sm70_qpn2_mma_core.cuh` (MmaCore alias that keeps the Volta B-congruous
