@@ -27,8 +27,9 @@
 |---|---|
 | `fp8_moe` | sm70 上的 block-FP8 expert GEMM。SGLang 随包提供的 SM70 TurboMind 库导出了 `fp8_moe_gemm_sm70_out`，但从未向 torch 注册；本组件用一个小的 `dlopen`/`dlsym` shim 解析该符号并暴露类型化接口。官方 block-FP8 MoE 权重能在 V100 上跑，靠的就是它。 |
 | `fp8_dense` | 固定 pin 引擎的 SM70 W8A16 稠密 FP8 线性层内核。 |
-| `attention_v100` | pin 上的 V100 全注意力。内置 `flash_attn_v100_backend.py`、SM70 QSA backend 与 `tilelang_fa_v100` 内核，注册 pin 未定义的 `tilelang_fa_v100` 后端名，并在该 backend 上实现 `init_forward_metadata_out_graph`（graph runner 会调用，基类留成 no-op）。缺最后这项则 decode CUDA graph 无法捕获；缺前两项则启动直接失败。 |
+| `attention_v100` | pin 上的 V100 全注意力。内置 `flash_attn_v100_backend.py`、SM70 QSA backend 与 `tilelang_fa_v100` 内核，注册 pin 未定义的 `tilelang_fa_v100` 后端名，并在该 backend 上实现 `init_forward_metadata_out_graph`（graph runner 会调用，基类留成 no-op）。缺最后这项则 decode CUDA graph 无法捕获；缺前两项则启动直接失败。MTP 的 draft decode 也走同一个 split-KV kernel：把每个 draft step 的 KV 索引表转成 page table。 |
 | `fp4_moe` | 经 `marlin_v100` 扩展实现的 NVFP4 expert GEMM：加载期 repack、SM70 scale 编码、GEMM 桥接。SGLang 随包的 Marlin 内核在 SM80 以下是空实现。 |
+| `fp4_dense` | 经 `marlin_v100` 扩展实现的 dense NVFP4（W4A16）线性 GEMM。带 `--fp4-gemm-backend marlin` 时，pin 的 `ModelOptFp4LinearMethod` 在量化激活之前就返回 `apply_fp4_marlin_linear`，所以标为 `NVFP4` 的层在 Volta 上按 W4A16 运行，缺的只是内核。本组件把 `marlin_utils_fp4` 导入到自身命名空间里的三个名字（GEMM、repack、scale 置换）接到 SM70 构建上，并按 A16 方法的方式折叠融合层的按分片 global scale。 |
 | `ple_sm70` | fp8 PLE host-embedding gather 的 SM70 版本。固定 pin 的内核会 cast 到 `tl.float8e4nv`，在 SM70 上无法编译。 |
 | `spec_sm70` | top-k/top-p renorm 替换，使非贪心 EAGLE verify 不再触到 FlashInfer 的 sm75 下限。 |
 | `gdn_tilelang_sm70` | SM70 上的 TileLang GDN 分块预填内核。pin 的 Triton 分块内核占 27B 单次预填分块的 63.9%；本组件用 TileLang 内核接管同一次调用：8,041 token 时 1,933.6 / 1,924.9 tok/s，31,158 token 时 1,658.3 / 1,655.1，Triton 下分别为 719.9 与 684.6（凭证 `evidence-55cb6e7-gdn-tilelang`）。 |

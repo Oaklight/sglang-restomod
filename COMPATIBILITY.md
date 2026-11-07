@@ -1,7 +1,8 @@
 # Compatibility matrix
 
-Eight components ship (`fp8_moe`, `fp8_dense`, `fp4_moe`, `attention_v100`,
-`ple_sm70`, `spec_sm70`, `gdn_tilelang_sm70`, `lsa_sm70`); all are opt-in. A row becomes "validated" only after
+Nine components ship (`fp8_moe`, `fp8_dense`, `fp4_moe`, `fp4_dense`,
+`attention_v100`, `ple_sm70`, `spec_sm70`, `gdn_tilelang_sm70`, `lsa_sm70`);
+all are opt-in. A row becomes "validated" only after
 a recorded run.
 
 Some rows carry decode figures from 64-output-token runs. On one unchanged
@@ -19,6 +20,7 @@ what the row claims.
 | Tesla V100-SXM2 (2x) | sm70 | same, fp16 KV | Validated 2026-11-02: the same model without the draft-extend fix measures 17.89-17.86 tok/s at 31.7K — issue #75 |
 | Tesla V100-SXM2 (2x) | sm70 | pin v0.5.22 + `attention_v100`, `fp8_dense`, `spec_sm70`, `gdn_tilelang_sm70`, TP2, MTP 3/4, 40 KV splits | Validated 2026-11-02: Qwen3.8-27B-FP8, prefill 1,933.5 / 1,925.7 tok/s at 8.0K and 1,658.7 / 1,651.5 at 31.1K; decode 73.12 / 63.40 and 45.98 / 46.07, indicative only — receipt `evidence-e9ef57f-spec-depth`, whose `server_info.json` records `tp_size` 2, `speculative_num_steps` 3, `speculative_num_draft_tokens` 4 and `triton_attention_num_kv_splits` 40, and whose `versions.txt` records the component list |
 | Tesla V100-SXM2 (2x) | sm70 | pin v0.5.22 + `attention_v100`, `fp8_dense`, `spec_sm70`, `gdn_tilelang_sm70`, TP2, MTP 3/4, 40 KV splits, `fp8_e5m2` KV, 262k context, mem fraction 0.82 | Validated 2026-11-03: Qwen3.8-27B-FP8, prefill 1,029.3 / 1,028.4 tok/s and decode 28.71 / 30.06 at 127,463 prompt tokens, prefill 688.6 / 688.7 and decode 17.60 / 18.84 at 254,914 — receipt `evidence-dccc907-long-context`, 10 files including `gpu_tests.txt` (6 passed) |
+| Tesla V100-SXM2 (2x) | sm70 | pin v0.5.22 + `attention_v100`, `fp8_dense`, `spec_sm70`, `gdn_tilelang_sm70`, TP2, MTP 3/4, 40 KV splits, `fp8_e5m2` KV, native draft decode | Validated 2026-11-06: Qwen3.8-27B-FP8, 125,938 prompt tokens, MTP on 63.58 tok/s against 32.01 with MTP off (5 reps each, sd 0.10 and 0.01), 1.99x — receipt `evidence-2086790` |
 | Tesla V100-SXM2 (2x) | sm70 | pin v0.5.22 + `attention_v100`, `fp8_dense`, `fp8_lm_head`, `spec_sm70`, `gdn_tilelang_sm70`, TP2, DFLASH2 draft, block 8 | Lab record 2026-11-04: Qwen3.8-27B-FP8 with the `Qwen3.8-27B-DFlash2-fp16` draft, accept rate 0.22-0.47, 62.2 / 62.4 / 49.9 tok/s at 1.7K / 6.7K / 27.4K prompts (256 outputs, CUDA graphs), 14-17% under the MTP head on the same bench; the bench numbers are not receipted — [lab record](https://github.com/Oaklight/lambda-v100-lab/blob/main/notes/dflash-sm70-blockers.md) |
 | Tesla V100-SXM2 (8x) | sm70 | pin v0.5.22 + `attention_v100`, `fp8_dense`, `fp8_moe`, TP8/EP8, `qsa_v100`, MTP 3/4 | Lab record 2026-11-04: Qwen3.8-Flash-Next-FP8 serves at 8,192 context; prefill 2,424.7 / 2,427.1 tok/s and decode 80.72 / 90.21 at 4,108 prompt tokens, prefill 2,420.5 / 2,436.7 and TTFT 3.310 / 3.288 s at 8,012, with every card at 1530 MHz SM (equal to `clocks.max.sm`) and 35-43 C; no receipt for the bench numbers yet -- issue #93 closed on this run; [lab record](https://github.com/Oaklight/lambda-v100-lab/blob/main/notes/flashnext-at-the-pin-2026-11-04.md) |
 | Tesla V100-SXM2 (4x) | sm70 | pin v0.5.22 + `fp4_moe`, `attention_v100`, `ple_sm70`, TP4, MTP 3/4 | Validated 2026-11-02: Qwen3.8-Flash-Next-NVFP4, decode 84.69-99.43 tok/s at 31.7K, prefill 1,599-1,600 tok/s with a cold prefix (`bench.py --fresh`; a warm prefix cache reports 12-14k as prefill, #95) — no receipt yet (#95); [lab record](https://github.com/Oaklight/lambda-v100-lab/blob/main/notes/flash-next-nvfp4-context-ladder.md) |
@@ -48,12 +50,25 @@ where the log excerpt lives.
 | cell | stage | error | where |
 |---|---|---|---|
 | Flash-Next FP8, 2x V100, pin | first forward: the dense FP8 compute path | recorded in the issue | #92 |
+| Flash-Next FP8, 4x V100 (TP4/EP1), pin | creating the expert weights, before any load | `ValueError: The output_size of gate's and up's weight = 160 is not divisible by weight quantization block_n = 128` | `fp8-tp4-server.log` in the #219 evidence set |
+| Flash-Next FP8, 4x V100 (TP4/EP4), pin | creating the FP8 MoE weights | `torch.cuda.OutOfMemoryError`: 31.51 GiB in use per card, 196 MiB free, a 200 MiB allocation fails | `fp8-tp4ep4-server.log` in the #219 evidence set |
 | 27B, `--kv-cache-dtype fp8_e4m3`, pin | grouped decode-attention kernel compile, before the model loads | `ValueError: type fp8e4nv not supported in this architecture. The supported fp8 dtypes are ('fp8e4b15', 'fp8e5')` | #112 |
+| 27B, dense NVFP4 (`fp4_dense`), SM70 | GEMM runs and matches the dequantized reference, but is not enabled: 1.55x slower than the FP8 path it would replace, at the shape the step actually uses | N=17408/K=5120, m=6: 199.7 us at the best of 18 launch configs (`SPLIT_K=2`) against TurboMind FP8's 118.7 us; 251-273 GB/s against 751, break-even is 422 | #37 |
 | DGX Spark | sm121 / aarch64 | upstream SGLang 0.5.22 | Planned |
 
 Notes:
 
 - Quantization dispatch and FP8 specifics: `docs/quantization-dispatch.md`.
+- **Four cards cannot run the Flash-Next FP8 checkpoint**, for two different
+  reasons, measured on 2026-11-06 (#219, main `0e8011bd`; the log names are
+  `fp8-tp4-server.log` and `fp8-tp4ep4-server.log` in the #219 evidence set).
+  `TP4/EP1` is refused when the expert weights are created: block-FP8
+  quantizes in 128-wide blocks and TP4 splits the 640-wide gate/up output into
+  160-wide shards, which the contract does not admit - a structural refusal,
+  not a memory setting.
+  `TP4/EP4` keeps the expert rows whole (640 = 5 x 128) and then fails on
+  memory while creating the same weights. The 120 GB checkpoint needs the
+  eight-card TP8/EP8 launch.
 - The speculative tree-sampling JIT needs `spec_sm70` on a CUDA 12.x toolkit:
   the pinned `flashinfer/sampling.cuh` uses `cuda::maximum` / `cuda::minimum`,
   which only CCCL 3.x (CUDA 13) provides, and the component puts a shim on the

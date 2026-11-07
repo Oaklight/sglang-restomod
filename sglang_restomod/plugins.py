@@ -81,6 +81,11 @@ COMPONENTS: dict[str, Component] = {
         module="sglang_restomod.quant.sm70_fp4_moe",
         description="SM70 NVFP4 expert GEMM through the marlin_v100 extension",
     ),
+    "fp4_dense": Component(
+        name="fp4_dense",
+        module="sglang_restomod.quant.sm70_fp4_dense",
+        description="Dense NVFP4 (W4A16) linear GEMM through the marlin_v100 extension",
+    ),
     "ple_sm70": Component(
         name="ple_sm70",
         module="sglang_restomod.models.ple_sm70",

@@ -23,14 +23,14 @@
 --chunked-prefill-size 1024 --max-prefill-tokens 8192
                                       # one chunk is one decode stall; see "Prefill chunks"
 --disable-prefill-cuda-graph          # decode graph stays on
-# MTP only up to ~48k: see "Pick the spec setting by context" below.
-# SGLANG_27B_SPEC=auto in the launcher does exactly this.
+# Keep MTP on through 131072 with the native draft decode: see "Pick the spec
+# setting by context" below. 262k is unmeasured.
 --speculative-algorithm NEXTN
 --speculative-num-steps 3 --speculative-eagle-topk 1 --speculative-num-draft-tokens 4
 --sampling-backend pytorch                    # see "Non-greedy requests"
 --speculative-use-rejection-sampling          # see "Non-greedy requests"
 --speculative-draft-attention-backend tilelang_fa_v100  # see "The draft backend"
---triton-attention-num-kv-splits 40    # draft decode: 2 KV heads x 40 = 80 CTAs
+--triton-attention-num-kv-splits 40    # Triton tails only; draft decode splits itself
 ```
 
 Add `SGLANG_V100_DRAFT_EXTEND_NATIVE=1` to the environment to put the draft
@@ -128,11 +128,21 @@ At 32k that kernel is 96.7 ms of a 168 ms step; the target verify costs 10.7 ms
 `SGLANG_V100_DRAFT_EXTEND_NATIVE=1` the draft extend moves off that kernel
 entirely.
 
-**Draft decode attention: the split count.** With the draft extend on the native
-kernel, the largest term left in a draft phase is the three draft steps'
-attention, on the Triton split-KV kernel at grid `(1, 2, 8)`: one row, 2 KV heads
-and 8 splits, 16 CTAs on an 80-SM card. `--triton-attention-num-kv-splits` sets
-it:
+With `--speculative-draft-attention-backend tilelang_fa_v100` the draft decode
+also moves off Triton: the component builds a multi-step container that hands
+the `attention_v100` split-KV kernel one page table per draft step (#205). The
+dispatch logs its choice at startup; `SGLANG_V100_DRAFT_DECODE_NATIVE=0` keeps
+the Triton container.
+
+**Draft decode attention: the split count.** With the draft extend and the
+draft decode both on native kernels (#205), the draft phase no longer runs on
+Triton and `--triton-attention-num-kv-splits` no longer governs it. The native
+kernel derives its split count on device: the TileLang partial targets 80 CTAs,
+the hand-written CUDA partial 160. The flag still applies to Triton tails (for
+example an fp8 prefill chunk) and is harmless to leave at 40.
+
+The table below is the Triton-era measurement, kept as the record of the old
+path. It is why the split count mattered while the draft decode was on Triton:
 
 | splits | grid | CTAs | draft attention | draft phase | decode at 31.1k |
 |---:|---|---:|---:|---:|---:|
@@ -294,14 +304,29 @@ Prefill, warm process: 1,680-1,708 tok/s at 2k, 1,331-1,364 at 8k.
 > above, and it changes the picture: with three draft steps and 40 KV splits the
 > 27B measures **53.37 tok/s at 31.1k against 35.44 with MTP off**, at an accept
 > length of 2.88-3.50. MTP therefore still wins at 32k on the pin, and this
-> crossover table should not be used to choose the setting there. Nothing above
-> 32k has been measured on the pin.
+> crossover table should not be used to choose the setting there. Above 32k the
+> pin now measures 62.40 against 31.86 tok/s at 125,938 prompt tokens with the
+> native draft decode; see the 126k table below.
 
-**MTP wins below ~48k and loses above it.** The draft-row fix
-(`draft-extend-native.patch`, `SGLANG_V100_DRAFT_NATIVE=1`) removed the old
-collapse, but it did not remove the per-row prefix read: every verify row and
-every draft row still streams the whole prefix, so the step cost keeps growing
-with context while the tokens per step stay at ~2.9.
+**With the native draft decode, MTP wins at 126k.** The ~48k cutoff below was
+measured while every draft step still ran on Triton. Since #205 the draft chain
+uses the `attention_v100` split-KV kernel, and the per-step draft cost no
+longer overwhelms the accept gain.
+
+Measured 2026-11-06 on lambda4, 2x V100-SXM2, the same launch for both arms
+(TP2, fp8_e5m2 KV, 40 splits, 3 steps / 4 draft tokens, greedy, 128 output
+tokens, warm prefix, 5 reps), 125,938 prompt tokens:
+
+| MTP | tok/s, 5 reps | mean | sd |
+|---|---|---:|---:|
+| on, native draft decode | 62.47 / 62.52 / 62.33 / 62.42 / 62.26 | 62.40 | 0.10 |
+| off | 31.82 / 31.87 / 31.88 / 31.89 / 31.85 | 31.86 | 0.03 |
+
+MTP is 1.96x no-MTP at 126k. Do not turn MTP off by context on this launch.
+262k is unmeasured with the native path.
+
+The table and the 48k rule below were measured 2026-10-27 with every draft step
+on Triton, before #205. They are kept as the record of that path.
 
 Measured 2026-10-27 on node-a and node-b, 2x V100, e5m2, graph on, greedy,
 64 output tokens, 2 reps. The 128k arm was run on both hosts and agrees to
@@ -319,12 +344,16 @@ MTP also costs 17-27% of the prefill from 48k up, because the draft model
 processes the same prompt tokens.
 
 ```
-# <= 49152: MTP on; above: off. The launcher knob does this for you.
+# Triton-era cutoff, kept for the record. The native draft decode measured
+# above does not need it: keep MTP on through 131072.
 SGLANG_27B_SPEC=auto
 ```
 
-If you set the flags by hand, keep `--speculative-*` off above 49152 and drop
-`SGLANG_V100_DRAFT_NATIVE` with them.
+The lab launcher's `SGLANG_27B_SPEC=auto` still cuts at 49152; do not use it
+for a native-draft-decode launch. If you set the flags by hand on the old
+Triton path, keep `--speculative-*` off above 49152 and drop
+`SGLANG_V100_DRAFT_NATIVE` with them. With the native draft decode (#205),
+keep them on through 131072.
 
 Measured on `d1a0f43882`, cold prefix, 128 output tokens, one server restart
 per arm: at 31,756 tokens MTP 5/4 nearly doubles decode (79.38 / 69.46 against

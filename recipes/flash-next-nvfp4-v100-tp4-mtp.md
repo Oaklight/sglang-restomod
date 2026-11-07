@@ -225,10 +225,22 @@ That is -1.71 ms per step, -5.2%. The bench cannot resolve it on this box
 (82.75 / 97.79 / 84.28 tok/s against an 82-84 baseline across three fresh
 reps), so the trace is the evidence.
 
-Only 49 linears per rank are converted: the rest of the dense weights have an N
-that is not a multiple of 128 (864, 1076, 320, 24, 1), which the TurboMind
-kernel's contract does not admit. `--quantization modelopt_fp4` keeps the
-experts out of this path; they stay on the marlin NVFP4 GEMM.
+Only 49 linears per rank were converted with the predicate as it stood then:
+the admission test required `output_size_per_partition`, which only
+`ColumnParallelLinear` sets, so every `RowParallelLinear` was refused. Testing
+`LinearBase` membership instead (2026-11-06, PR #230) converts 49 more per
+rank — the 36 `linear_attn.out_proj` and 12 `o_proj`, all `[2560, 1536]`, plus
+one vision merger — for 98 in total. On the same launch the dense term moves
+10.372 -> 10.106 ms/step and the unprofiled anchor 156.1 -> 157.76 tok/s.
+
+What is still refused, from `SGLANG_SM70_FP8_DENSE_QUANT_DETAILS`: the
+shared-expert down projections (K=160), the vision block GEMMs (outputs 864
+and 1076, inputs 288 and 1076, 27 of each), the 320-wide hyper-connection
+low-rank pair, and the `ReplicatedLinear` router layers, which are excluded by
+policy rather than by shape. The first group have an unaligned block
+dimension that the TurboMind kernel's contract does not admit; the router
+needs its own numeric A/B before it can move. `--quantization modelopt_fp4`
+keeps the experts out of this path; they stay on the marlin NVFP4 GEMM.
 
 
 ## Known gaps
@@ -237,6 +249,18 @@ experts out of this path; they stay on the marlin NVFP4 GEMM.
   log warns `device-loaded after serving started`.
 - The checkpoint's FP4 nibble order is validated only indirectly, by
   generation quality. No independent dequantization comparison exists yet.
-- Accept length is 3.12, below the FP8 greedy run's 3.48—3.70. Cause not
-  confirmed.
-- Contexts above 4k are untested.
+- Accept length is window-dependent, not a checkpoint constant: at a fixed
+  launch, input format alone moved it 3.88 -> 2.72 at ~1k tokens and prompt
+  length moved it 3.76 -> 2.65 at 64 output (issue #217, lab note
+  `flashnext-accept-attribution-2026-11-06.md`). The 3.12-3.20 recorded here is
+  a chat, 993/3,473 prompt, 128-output window; do not compare it with the FP8
+  8k/64 point.
+- Contexts above 4k are covered by a lab record, not by a receipt. The
+  32k-context run in `flash-next-nvfp4-context-ladder.md` (2026-11-02) served
+  31,756 prompt tokens on the same four-card TP4 shape with page size 64,
+  MTP 3/1/4 and `qsa_v100`, greedy, 128 output, chat no-think, and measured
+  84.69 / 99.43 tok/s decode and 1,599 / 1,600 tok/s prefill. It does not meet
+  this recipe's evidence bar: it is a lab record rather than a signed bundle,
+  its launcher selected four of the five components here (no
+  `moe_align_sm70`), and the note does not record the commit. The receipt on
+  PR #225 carries the current component list at 7,168 prompt tokens.

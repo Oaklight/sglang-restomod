@@ -113,6 +113,12 @@ with no patches. Launcher: `pin_launch_fn_mtp.sh` on an 8-GPU node.
 | MTP3/4 draft, same prompt | **73.9 tok/s** | 2.83-2.85 |
 | MTP3/4 draft, temperature 0, three runs | **98.3—106.2 tok/s** | 3.48—3.70 |
 
+The `3.48—3.70` range has one traceable run: 3.70 at 8k context, 64 greedy
+output (lab note `flash-next-fp8-sglang-lambda4-tp8.md`); the 3.48 lower bound
+has no recorded run. Accept length moves by more than 1.0 with prompt format
+and length at a fixed launch (issue #217), so this row is not comparable to the
+128-output chat run in the NVFP4 recipe.
+
 Per-step time on the greedy row is `accept / throughput`, i.e. 34.8—35.4 ms.
 That is the comparable quantity against the NVFP4 four-card profile in
 `recipes/flash-next-nvfp4-v100-tp4-mtp.md`; the 73.9 tok/s row above is the

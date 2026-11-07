@@ -16,7 +16,7 @@ not only the quant method name.
 | Checkpoint format | Dense kernel | MoE kernel | Status |
 |---|---|---|---|
 | `fp8`, `weight_block_size=[128,128]`, dynamic activations | `sm70_turbomind_fp8` (W8A16) | `SM70Fp8MoEMethod` (TurboMind block-FP8 expert GEMM) | Dense validated on 27B-FP8 (#17); experts bound and wired (#20) |
-| `modelopt_fp4` (NVFP4) | Marlin v100 (W4A16) | SM70 NVFP4 MoE decode | Flash-Next NVFP4 measured 85-100 tok/s |
+| `modelopt_fp4` (NVFP4) | Marlin v100 (W4A16), component `fp4_dense` | SM70 NVFP4 MoE decode | MoE measured 85-100 tok/s on Flash-Next. Dense is correct but not enabled: at N=17408/K=5120, m=6 the best of 18 launch geometries is 199.7 us against TurboMind FP8's 118.7 us, 251-273 GB/s against 751, and break-even needs 422. `SPLIT_K=2` recovers 20% of the gap, so no selector closes it -- the 4-bit dense kernel needs work in `marlin.cu` before this shape pays off (#37) |
 | `compressed-tensors` WNA16 (INT4 W4A16) | Marlin v100 after the capability patch | `moe_wna16` / Marlin MoE | 27B W4A16 measured 8.6 tok/s |
 | unquantized FP16 | cuBLAS | `SM70FP16MoEMethod` | Baseline fallback |
 
