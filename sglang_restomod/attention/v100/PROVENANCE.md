@@ -50,7 +50,7 @@ The backend itself is in the component, not read from the engine checkout:
 | file | source |
 |---|---|
 | `flash_attn_v100_backend.py` | fork `73abfe1` + lab patches |
-| `qwen_sparse_attn_backend.py` | same |
+| `qwen_sparse_attn_backend.py` | sglang `v0.5.23` file + the fork's SM70 additions (2026-11-06, see below) |
 | `tilelang/` (11 modules) | same, with the package path rewritten to `sglang_restomod.attention.v100.tilelang` |
 | `tilelang/_kernels_paged.py` | **not vendored by hand**: synced from `sm70-kernels` at the pin (`[[kernels.files]]`). The dim-256 tile holds Q in a fragment and runs `block_N=64`; the source of truth is `sm70_kernels/tilelang_fa/_kernels_paged.py` |
 | `kernels/sm70_longctx_decode.cu` | same, **re-synced** to include `sm70-decode-occ2.patch` |
@@ -68,11 +68,30 @@ warp-specialized pipeline and the `kCtas` template, selectable at runtime with
 `SGLANG_SM70_DECODE_VARIANT=serial|occ2|pipelined` (default `occ2`). That is
 worth -28% per layer at 256k on e5m2 and +3.7% end-to-end decode.
 
-Still read from the engine checkout:
+## The QSA backend now follows the pin (2026-11-06)
 
-- `sglang.kernels.ops.attention.sm70_qsa_combine` — the Flash-Next sparse path
-  needs it. Vendoring it is what makes the component independent of the fork.
-- `sglang.srt.environ.envs` for `SGLANG_SM70_QSA_COMBINE`.
+`qwen_sparse_attn_backend.py` is no longer fork-lineage code with pin ports
+bolted on. It is the pin's own `v0.5.23` file with the fork's SM70 additions
+re-applied on top:
+
+- the SM70 dense prefill route (`SGLANG_SM70_QSA_DENSE_PREFILL_MAX_TOKENS`) and
+  the TileLang D256 kernel it calls;
+- the SM70 sparse chunk-prefill route (E5M2 K/V read straight from the pool);
+- the SM70 dense and sparse decode routes into `tilelang/_decode_cuda.py`.
+
+Taking the pin file as the base also adopts upstream #45752 (prefill indexer
+gather) and #45791 (long cached prefixes), which the fork predates. Nothing is
+read from the engine for the combine: `tilelang/_decode_cuda.py` binds the
+TileLang combine, and neither `sglang.kernels.ops.attention.sm70_qsa_combine`
+nor `SGLANG_SM70_QSA_COMBINE` exists at the pin.
+
+The pin also imports the external `flash_mla` wheel at module scope on the
+decode-graph path: `eagle_worker_v2` imports `flashmla_backend`, which imports
+`kernels.ops.attention.flash_mla_interface`. That wheel has no SM70 build, and
+without it graph capture aborted before the QSA backend was asked to capture.
+`flash_mla_compat.py` installs a stub when that import fails, keyed on the
+import rather than on a device name, so a host with the wheel is left alone and
+a launch that really runs FlashMLA still fails with an install instruction.
 
 Validated through its own module path. Since 2026-11-02 every 27B measurement in
 this repository runs this component rather than the fork: the launchers set
