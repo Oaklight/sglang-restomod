@@ -56,7 +56,12 @@ def e4m3_table() -> list[float]:
         if exponent == 0:
             values.append(sign * mantissa * 2.0 ** -9)
         elif exponent == 15:
-            values.append(float("nan"))
+            # E4M3FN: NaN only at 0x7F / 0xFF. 0x78..0x7E are 256..448, which
+            # the served checkpoint's down-projection scales reach (max 0x7E).
+            values.append(
+                float("nan") if mantissa == 7
+                else sign * (1.0 + mantissa / 8.0) * 256.0
+            )
         else:
             values.append(sign * 2.0 ** (exponent - 7) * (1.0 + mantissa / 8.0))
     return values

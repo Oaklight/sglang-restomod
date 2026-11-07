@@ -63,6 +63,13 @@ def _bank(torch, seed):
             (EXPERTS, size_n, size_k // 16), device="cuda", generator=gen,
         )
         scales = (raw * 0.1999 + 1e-4).to(torch.float8_e4m3fn)
+        # The top band matters: 0x78..0x7E are the finite 256..448 values of
+        # E4M3FN, and the served checkpoint's down-projection scales reach
+        # 0x7E. A decoder that folds the whole exponent-15 range into NaN
+        # passes on small scales and poisons every one of these.
+        top = torch.tensor([0x78, 0x79, 0x7C, 0x7E, 0x7A, 0x7B, 0x7D, 0x7E] * 8,
+                           dtype=torch.uint8)
+        scales.view(torch.uint8).reshape(-1)[: top.numel()] = top
         bank[prefix] = (packed, scales)
     return bank
 

@@ -113,7 +113,15 @@ __device__ __forceinline__ float e4m3_to_float(uint8_t byte) {
   const int exponent = (byte >> 3) & 0xF;
   const int mantissa = byte & 0x7;
   if (exponent == 0) return sign * static_cast<float>(mantissa) / 512.0f;
-  if (exponent == 15) return __int_as_float(0x7fc00000);  // NaN, rejected upstream
+  if (exponent == 15) {
+    // E4M3FN encodes NaN only at 0x7F and 0xFF. The rest of the exponent-15
+    // band, 0x78..0x7E, is the finite 256..448 range, and the served
+    // checkpoint uses it: its down-projection scales top out at 0x7E. Folding
+    // the whole band into NaN turned those scales into NaN weights, which is
+    // what the sampled-decoding assert was seeing.
+    if (mantissa == 7) return __int_as_float(0x7fc00000);
+    return sign * (1.0f + static_cast<float>(mantissa) / 8.0f) * 256.0f;
+  }
   return sign * __powf(2.0f, static_cast<float>(exponent) - 7.0f) *
          (1.0f + static_cast<float>(mantissa) / 8.0f);
 }
