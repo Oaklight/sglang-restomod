@@ -39,7 +39,6 @@ logger = logging.getLogger(__name__)
 ENV_MODE = "SGLANG_SM70_FP4_MOE"
 ENV_STATS = "SGLANG_SM70_FP4_MOE_STATS"
 ENV_SPLIT_K = "SGLANG_SM70_FP4_MOE_SPLIT_K"
-ENV_FINITE = "SGLANG_SM70_QPN2_FINITE_CHECK"
 MARLIN_SPLIT_K = "SM70_MARLIN_MOE_SPLIT_K"
 _SPLIT_K_OFF = ("0", "off", "none", "false")
 _SPLIT_K_LOCK = threading.Lock()
@@ -234,52 +233,6 @@ def _ep_size() -> int | None:
         return int(get_parallel().moe_ep_size)
     except Exception:  # noqa: BLE001 - an unpublished context is not an error
         return None
-
-
-def _finite_check_enabled() -> bool:
-    """Whether the diagnostic finiteness probes are on.
-
-    Two spellings so either operator habit works. Off by default: a probe syncs
-    the stream, and this path runs twice per layer per step.
-    """
-    return any(
-        os.environ.get(name, "").strip().lower() in ("1", "true", "on", "yes")
-        for name in (ENV_FINITE, "SM70_MOE_FINITE_CHECK")
-    )
-
-
-def _finite_probe(tag: str, tensors, size_m, size_n, size_k, top_k, block) -> None:
-    """Log what a call is about to read, or has produced (#224 sampling crash).
-
-    Under CUDA graph capture the reduction would sync, which invalidates the
-    capture, so the probe is silent there. Integer tensors have no non-finite
-    value: their range is reported instead, which is what tells a garbage word
-    buffer from a correct one.
-    """
-    if torch.cuda.is_current_stream_capturing():
-        return
-    for name, t in tensors:
-        if t is None:
-            continue
-        if t.dtype == torch.float8_e4m3fn:
-            raw = t.view(torch.uint8)
-            flag = (raw == 0x7F) | (raw == 0xFF)  # the two NaN encodings
-        elif t.dtype.is_floating_point:
-            flag = ~torch.isfinite(t)
-        else:
-            logger.warning(
-                "SM70 finite [%s] %s %s min=%d max=%d m=%d n=%d k=%d topk=%d block=%d",
-                tag, name, tuple(t.shape), int(t.min()), int(t.max()),
-                size_m, size_n, size_k, top_k, block,
-            )
-            continue
-        bad = int(flag.sum())
-        first = int(flag.reshape(-1).nonzero()[0]) if bad else -1
-        logger.warning(
-            "SM70 finite [%s] %s %s nonfinite=%d first=%d m=%d n=%d k=%d topk=%d block=%d",
-            tag, name, tuple(t.shape), bad, first,
-            size_m, size_n, size_k, top_k, block,
-        )
 
 
 _DECODE_FALLBACK_WARNED = False
@@ -479,7 +432,6 @@ def moe_wna16_marlin_gemm(
             "SM70 NVFP4 Marlin does not support expert parallelism; "
             "launch with --ep-size 1"
         )
-    qpn2_shim = False
     if qpn2.is_qpn2_weight(b_q_weight):
         # The layout is read off the tensor: QPN2 weights are uint8, the Marlin
         # layout is int32. The Marlin kernel cannot read this buffer, so a
@@ -503,11 +455,6 @@ def moe_wna16_marlin_gemm(
             size_k,
         )
         if out is not None:
-            if _finite_check_enabled():
-                _finite_probe(
-                    "qpn2-gemv-out", [("out", out)],
-                    size_m, size_n, size_k, top_k, moe_block_size,
-                )
             return out
         # Prefill shape: repack this layer into the reused scratch and fall
         # through to the unchanged Marlin call below. The QPN2 buffer stays
@@ -526,7 +473,6 @@ def moe_wna16_marlin_gemm(
                 "shape on Marlin."
             )
         b_q_weight, b_scales, global_scale_or_none = shim
-        qpn2_shim = True
         if _is_decode_fallback(size_m, moe_block_size):
             _warn_decode_fallback(size_m, size_n, size_k, top_k, moe_block_size)
 
@@ -565,22 +511,12 @@ def moe_wna16_marlin_gemm(
             return out
 
     op = ensure_loaded().gemm
-    tag = "qpn2-shim" if qpn2_shim else "marlin"
-    if _finite_check_enabled():
-        # Before the read: is the buffer this call is about to use itself bad?
-        # The int32 words are reported as a range; the scales as NaN-byte
-        # counts; the global scale as a non-finite count.
-        _finite_probe(
-            tag + "-in",
-            [("words", b_q_weight), ("scales", b_scales), ("global", global_scale_or_none)],
-            size_m, size_n, size_k, top_k, moe_block_size,
-        )
     # The split-K value travels in a process-global variable that the extension
     # reads inside the call below, so the write and the call have to be atomic
     # against another thread capturing a graph or launching an MoE GEMM.
     with _SPLIT_K_LOCK:
         _select_split_k(size_m, size_k)
-        out = op(
+        return op(
             a,
             c_or_none,
             b_q_weight,
@@ -611,14 +547,6 @@ def moe_wna16_marlin_gemm(
             -1,
             -1,
         )
-    if _finite_check_enabled():
-        # After the read: did this call emit something the next layer cannot
-        # use? n/k/m/topk/block identify the call in the log.
-        _finite_probe(
-            tag + "-out", [("out", out)],
-            size_m, size_n, size_k, top_k, moe_block_size,
-        )
-    return out
 
 
 _INSTALLED = False

@@ -172,54 +172,6 @@ def _scratch(experts: int, size_n: int, size_k: int, device):
     return buf
 
 
-def _verify_buffer(shape, weight, size_n, size_k) -> None:
-    """Redraw a prefix and compare it with what the GEMM is about to read.
-
-    Answers the one question a finite-value check cannot: is the shared scratch
-    holding *this* layer's rewrite when the GEMM runs, or another layer's? One
-    extra repack per call, only under the diagnostic flag.
-    """
-    import torch
-
-    module = _load()
-    if module is None:
-        return
-    per_expert = (size_n // 32) * (size_k // 16) * 288
-    experts = int(weight.numel() // per_expert)
-    words = torch.empty_like(shape[0])
-    raw = torch.empty(
-        (experts, size_n, size_k // 16), dtype=torch.uint8, device=shape[0].device
-    )
-    encoded = torch.empty_like(shape[2])
-    module.repack_qpn2_marlin_into(weight.reshape(-1), words, raw, size_n, size_k)
-    module.repack_qpn2_scales_encoded_into(weight.reshape(-1), encoded, size_n, size_k)
-    for name, got, want in (("words", shape[0], words), ("scales", shape[2], encoded)):
-        bad = got.view(torch.uint8) != want.view(torch.uint8)
-        count = int(bad.sum())
-        if count:
-            first = int(bad.reshape(-1).nonzero()[0])
-            logger.error(
-                "SM70 QPN2 shim buffer check: %s differ in %d of %d elements, "
-                "first at %d (n=%d k=%d experts=%d)",
-                name, count, bad.numel(), first, size_n, size_k, experts,
-            )
-        else:
-            logger.warning(
-                "SM70 QPN2 shim buffer check: %s match the redraw (n=%d k=%d experts=%d)",
-                name, size_n, size_k, experts,
-            )
-    # The source bank's 32 E4M3 scale bytes sit at offset 256 of each 288-byte
-    # group. A NaN encoding there is a bad source, not a bad repack: the redraw
-    # would match the buffer in that case, so it needs its own count.
-    groups = weight.reshape(experts, (size_n // 32) * (size_k // 16), 288)[:, :, 256:]
-    nan_bytes = (groups == 0x7F) | (groups == 0xFF)
-    logger.warning(
-        "SM70 QPN2 shim buffer check: source bank NaN scale bytes=%d of %d "
-        "(n=%d k=%d experts=%d)",
-        int(nan_bytes.sum()), nan_bytes.numel(), size_n, size_k, experts,
-    )
-
-
 def prefill_shim(qpn2_weight, global_scale, size_n: int, size_k: int):
     """QPN2 prefix -> ``(marlin_weight, marlin_scales, marlin_global_scale)``.
 
@@ -275,10 +227,7 @@ def prefill_shim(qpn2_weight, global_scale, size_n: int, size_k: int):
             "SM70 QPN2 prefill shim: repacking N=%d K=%d into the Marlin scratch",
             size_n, size_k,
         )
-    from .method import _finite_check_enabled, encode_global_scale
-
-    if _finite_check_enabled():
-        _verify_buffer(shape, qpn2_weight, size_n, size_k)
+    from .method import encode_global_scale
 
     encoded_global = encode_global_scale(global_scale, torch.float16).contiguous()
 
