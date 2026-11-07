@@ -394,13 +394,23 @@ def moe_wna16_marlin_gemm(
         )
         if out is not None:
             return out
-        raise RuntimeError(
-            "SM70 NVFP4 MoE: QPN2 expert weights reached a shape the QPN2 "
-            f"decode kernel does not cover (m={size_m} n={size_n} k={size_k} "
-            f"topk={top_k} block={moe_block_size}). The QPN2 prefill reader is "
-            "not integrated yet; set "
-            f"{qpn2.ENV_LAYOUT}=marlin to serve this shape on Marlin."
+        # Prefill shape: repack this layer into the reused scratch and fall
+        # through to the unchanged Marlin call below. The QPN2 buffer stays
+        # resident; only one layer's Marlin copy exists at a time.
+        from . import qpn2_repack
+
+        shim = qpn2_repack.prefill_shim(
+            b_q_weight, global_scale_or_none, size_n, size_k
         )
+        if shim is None:
+            raise RuntimeError(
+                "SM70 NVFP4 MoE: QPN2 expert weights reached a shape the QPN2 "
+                f"decode kernel does not cover (m={size_m} n={size_n} k={size_k} "
+                f"topk={top_k} block={moe_block_size}) and the prefill repack "
+                f"is unavailable; set {qpn2.ENV_LAYOUT}=marlin to serve this "
+                "shape on Marlin."
+            )
+        b_q_weight, b_scales, global_scale_or_none = shim
 
     _record_moe_stats(expert_ids, num_tokens_post_padded, size_m, moe_block_size)
 

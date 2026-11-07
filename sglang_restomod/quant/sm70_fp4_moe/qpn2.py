@@ -110,6 +110,63 @@ def pack_expert(weight_packed, scales, size_n: int, size_k: int):
     return out.reshape(-1)
 
 
+def unpack_expert(qpn2_bank, size_n: int, size_k: int):
+    """QPN2 bytes -> ModelOpt ``[N, K/2]`` uint8 codes + ``[N, K/16]`` scales.
+
+    Exact inverse of :func:`pack_expert`. The prefill fallback needs it: the
+    Marlin reader takes the checkpoint layout, so a QPN2 weight is unpacked and
+    re-repacked into the per-layer scratch the prefill GEMM reads.
+
+    ``qpn2_bank`` is one expert's flat bytes or ``[E, ...]`` for a whole layer;
+    the layer form is the one that matters, because a per-expert loop is
+    launch-bound at 0.4 GB/s instead of bandwidth-bound.
+    """
+    import torch
+
+    groups, tiles = size_k // 16, size_n // 32
+    per_expert = tiles * groups * GROUP_BYTES
+    if qpn2_bank.dim() == 1:
+        experts = 1
+        flat = qpn2_bank
+    else:
+        experts = int(qpn2_bank.shape[0])
+        flat = qpn2_bank
+    if flat.numel() != experts * per_expert:
+        raise ValueError(
+            f"QPN2 bank has {flat.numel()} bytes, expected "
+            f"{experts * per_expert} for E={experts} N={size_n} K={size_k}"
+        )
+    device = qpn2_bank.device
+    q = flat.reshape(experts * tiles, groups, GROUP_BYTES)
+    codes_q = q[:, :, :256].reshape(experts * tiles, groups, 32, 8)
+    src_lo = torch.zeros(experts * tiles, groups, 32, 8, dtype=torch.int16, device=device)
+    src_hi = torch.zeros_like(src_lo)
+    for byte in range(8):
+        jb = 4 * ((byte >> 2) & 1) + 2 * (byte & 1)
+        low = (codes_q[:, :, :, byte] & 0xF).to(torch.int16)
+        high = (codes_q[:, :, :, byte] >> 4).to(torch.int16)
+        if (byte >> 1) & 1:
+            src_hi[:, :, :, jb] = low
+            src_hi[:, :, :, jb + 1] = high
+        else:
+            src_lo[:, :, :, jb] = low
+            src_lo[:, :, :, jb + 1] = high
+    src = src_lo | (src_hi << 4)
+
+    lanes = torch.arange(32, device=device)
+    cols = torch.tensor(
+        [qpn2_col_from_lane(int(lane)) for lane in lanes], device=device
+    )
+    packed = torch.zeros(experts * tiles, 32, groups, 8, dtype=torch.int16, device=device)
+    packed.index_copy_(1, cols, src.permute(0, 2, 1, 3))
+    scale_bytes = torch.zeros(experts * tiles, 32, groups, dtype=torch.uint8, device=device)
+    scale_bytes.index_copy_(1, cols, q[:, :, 256:].to(torch.uint8).permute(0, 2, 1))
+    return (
+        packed.reshape(experts, size_n, size_k // 2).to(torch.uint8),
+        scale_bytes.reshape(experts, size_n, groups),
+    )
+
+
 def is_qpn2_weight(tensor) -> bool:
     """True when the expert weight tensor is a QPN2 buffer."""
     import torch
@@ -169,3 +226,9 @@ def prepare_prefix(layer, prefix: str) -> None:
     swizzled = prefix + "_blockscale_swizzled"
     if hasattr(layer, swizzled):
         setattr(layer, swizzled, None)
+
+    # Record the converted prefix in call order so the prefill fallback can
+    # prefetch the next one while this prefix's GEMM runs.
+    from . import qpn2_repack
+
+    qpn2_repack.register(out, global_scales, size_n, size_k, prefix)
