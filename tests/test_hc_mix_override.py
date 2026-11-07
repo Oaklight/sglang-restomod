@@ -194,6 +194,29 @@ def test_instance_guard_fires_on_a_wrong_shape(fake_module):
         sm70_hc_mix._install_instance(instance)
 
 
+def test_layout_guard_survives_an_earlier_init_wrapper(fake_module):
+    """``overrides.py`` wraps ``__init__`` before components load.
+
+    ``_install_hyperconnection_fp16`` replaces ``GatedResidual.__init__`` with a
+    closure whose own source has none of the mixer's lines, so a guard that
+    reads ``cls.__init__`` rejects a correct pin. The guard reads the class
+    body instead, and the install must chain the earlier wrapper.
+    """
+    original = FakeGatedResidual.__init__
+
+    def earlier_override(self, *args, **kwargs):
+        original(self, *args, **kwargs)
+
+    FakeGatedResidual.__init__ = earlier_override
+    try:
+        sm70_hc_mix._check_class(FakeGatedResidual)  # must not raise
+        assert sm70_hc_mix.install(fake_module) == 1
+        instance = FakeGatedResidual()
+        assert instance.config.hidden_size == 8  # the earlier wrapper ran
+    finally:
+        FakeGatedResidual.__init__ = original
+
+
 def test_instance_guard_fires_on_a_non_linear(fake_module):
     instance = FakeGatedResidual(converted=False)
     instance.input_mix_weight_up = nn.Identity()

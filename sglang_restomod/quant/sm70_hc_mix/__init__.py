@@ -61,7 +61,10 @@ def _check_class(cls) -> None:
             "hc_mix_fp8: GatedResidual has no mix(); the pin changed, refusing to "
             "install a mixer override"
         )
-    source = inspect.getsource(cls.__init__)
+    # Read the class body, not ``cls.__init__``: ``overrides.py`` may already
+    # have wrapped the initialiser (``_install_hyperconnection_fp16``), which
+    # would hide the upstream source this module depends on.
+    source = inspect.getsource(cls)
     missing = [token for token in _REQUIRED_IN_INIT if token not in source]
     if missing:
         raise RuntimeError(
