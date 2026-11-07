@@ -58,11 +58,12 @@ Notes:
 
 - Quantization dispatch and FP8 specifics: `docs/quantization-dispatch.md`.
 - **Four cards cannot run the Flash-Next FP8 checkpoint**, for two different
-  reasons, measured on 2026-11-06 (#219, main `0e8011bd`, logs under
-  `/nfs/ml_lab/projects/ml_lab/pding/evidence/219/`). `TP4/EP1` is refused when
-  the expert weights are created: block-FP8 quantizes in 128-wide blocks and
-  TP4 splits the 640-wide gate/up output into 160-wide shards, which the
-  contract does not admit - a structural refusal, not a memory setting.
+  reasons, measured on 2026-11-06 (#219, main `0e8011bd`; the log names are
+  `fp8-tp4-server.log` and `fp8-tp4ep4-server.log` in the #219 evidence set).
+  `TP4/EP1` is refused when the expert weights are created: block-FP8
+  quantizes in 128-wide blocks and TP4 splits the 640-wide gate/up output into
+  160-wide shards, which the contract does not admit - a structural refusal,
+  not a memory setting.
   `TP4/EP4` keeps the expert rows whole (640 = 5 x 128) and then fails on
   memory while creating the same weights. The 120 GB checkpoint needs the
   eight-card TP8/EP8 launch.
