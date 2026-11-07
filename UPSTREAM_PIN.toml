@@ -1,18 +1,19 @@
 # The upstream baseline this layer targets.
 #
-# `upstream` is a reference branch in this repository containing the pristine
-# SGLang tree at this commit. `main` does not merge it; it only carries the
-# layer, the patches, and the pin.
+# `upstream` is a reference branch in this repository containing the
+# pristine SGLang tree at this commit. `main` does not merge it; it only
+# carries the layer, the patches, and the pin.
 #
 # `scripts/upstream_bump.py` updates this file and patches/manifest.json.
 
 [upstream]
 repo = "sgl-project/sglang"
 kind = "tag"
-ref = "v0.5.22"
-commit = "baa9befa381511cd4d56f83980951e5a45fffc6d"
-pypi_version = "0.5.22"
-pinned_at = "2026-10-23"
+ref = "v0.5.23"
+commit = "297e54fd105e974cdf401e5b4d20253a22c16f90"
+pypi_version = "0.5.23"
+pinned_at = "2026-11-06"
+
 
 # Kernel sources are not vendored by hand any more. They arrive through a git
 # submodule pinned to a commit (the repository has no tags) and are copied into
