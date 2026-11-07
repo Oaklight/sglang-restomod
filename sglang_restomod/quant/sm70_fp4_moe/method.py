@@ -430,14 +430,18 @@ def moe_wna16_marlin_gemm(
     v0.5.23 adds three routing hints. ``expert_ids_are_sorted`` and
     ``has_inactive_prefix_count`` only select the pin's sorted specialization;
     the SM70 kernel reads ``expert_ids`` directly and needs neither, so they are
-    accepted and ignored. ``zero_inactive_output`` asks the GEMM to zero
-    caller-owned inactive rows, which this path does not implement: fail loudly
-    rather than return stale rows.
+    accepted and ignored. ``zero_inactive_output`` asks the GEMM to leave
+    caller-owned inactive rows zeroed; the SM70 kernel does not write them, so
+    the provided buffer is zeroed here before the call. Zeroing every row is
+    the same result: the kernel overwrites each active row.
     """
     if zero_inactive_output:
-        raise NotImplementedError(
-            "SM70 NVFP4 Marlin does not implement zero_inactive_output"
-        )
+        if c_or_none is None:
+            c_or_none = torch.zeros(
+                (size_m * top_k, size_n), dtype=a.dtype, device=a.device
+            )
+        else:
+            c_or_none = c_or_none.zero_()
     if is_ep:
         # ``is_ep`` is ``expert_map is not None``. The SM70 kernel indexes this
         # rank's weights by global expert id, so an EP launch would read the
