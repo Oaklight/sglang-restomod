@@ -68,6 +68,21 @@ SGLANG_SM70_FP4_MOE_LAYOUT=qpn2 SGLANG_SM70_QPN2_TENSORS=both \
   python -m sglang.launch_server ...   # identical flags to run A
 ```
 
+Run B additionally needs an allocator setting, and run A must carry the same
+one so the comparison stays uniform:
+
+```sh
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True   # both runs
+```
+
+**QPN2 requires `expandable_segments:True`; Marlin does not.** The QPN2 bank
+stores the E4M3 group scales inline, so converting a layer replaces a 300 MiB
+packed source (plus its 37.5 MiB scale tensor) with one 337.5 MiB bank. The
+total is the same, but the block sizes differ: without expandable segments the
+caching allocator keeps the freed source blocks, which costs about 1.7 GiB per
+20 layers and is enough to fail a load that otherwise fits. Allocated memory is
+at parity either way; reserved memory needs the setting.
+
 **MTP is off in the primary arm** (no `--speculative-*` flags): rejection
 sampling is stochastic even at temperature 0 (#217), so token equality across
 runs cannot be attributed to the layout with it on. A secondary MTP-on run

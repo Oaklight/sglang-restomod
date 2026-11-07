@@ -325,7 +325,7 @@ def prepare_moe_nvfp4(layer, group_size: int | None = None) -> None:
         if hasattr(layer, swizzled):
             setattr(layer, swizzled, None)
 
-    if qpn2_prefixes:
+    if qpn2_prefixes and torch.cuda.is_available():
         # Each conversion replaces a packed source (plus, now, its redundant
         # scale tensor) with one bank of the same total size but a different
         # block size, so the freed blocks cannot always serve the next layer's
