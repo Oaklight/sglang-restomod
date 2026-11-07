@@ -15,7 +15,9 @@ concurrency:
 jobs:
   restomod-pin-sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # The pin's history is fetched in full (see the fetch step), so a bump pays
+    # for a large download; a run with nothing to do still finishes in seconds.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
@@ -38,12 +40,25 @@ jobs:
           ref=$(sed -n '2p' /tmp/pin)
           commit=$(sed -n '3p' /tmp/pin)
 
+          # A push to main runs this job, and almost every push leaves the pin
+          # alone. Stop before the download, not after it.
+          if [ "$(git rev-parse --verify --quiet refs/remotes/origin/upstream)" = "$commit" ]; then
+            echo "origin/upstream is already ${commit}; nothing to do"
+            exit 0
+          fi
+
+          # Fetch the pin's history in full. A shallow fetch cannot be pushed:
+          # the pack leaves out the boundary commit's parent, and the receiver
+          # rejects it (index-pack: "did not receive expected object <parent>",
+          # which is how the last four runs failed). Deepening does not help,
+          # because it only moves the missing parent one commit up; the receiver
+          # checks connectivity over everything the new tip reaches.
           if [ "$kind" = "tag" ]; then
-            git fetch --depth 1 --force \
+            git fetch --force \
               https://github.com/sgl-project/sglang.git \
               "refs/tags/${ref}:refs/tags/${ref}"
           else
-            git fetch --depth 1 --force \
+            git fetch --force \
               https://github.com/sgl-project/sglang.git \
               "$commit"
           fi
