@@ -254,6 +254,26 @@ else:
     for component, check_component in CHECKS.items():
         if component in selected:
             check_component()
+
+    # The SM70 launch cannot import the flash_mla wheel, so the component stubs
+    # it before any worker imports an attention backend. Report which of the two
+    # this host gives, and with it whether the stub the workers get is
+    # installable here: a bundle that says "absent" over a graph-capturing
+    # launch is the case the stub exists for.
+    if "attention_v100" in selected:
+        try:
+            from sglang_restomod.attention.v100 import flash_mla_compat as fm
+
+            installed = fm.ensure_flash_mla_stub()
+            status = fm.flash_mla_status()
+            report(
+                status in ("stub", "imported", "importable"),
+                "flash_mla",
+                "importable wheel or restomod stub",
+                f"{status} (stub_installed={installed})",
+            )
+        except Exception as exc:  # noqa: BLE001 - the row must not vanish
+            report(False, "flash_mla", "importable wheel or restomod stub", repr(exc))
 sys.exit(1 if failures else 0)
 PY
     if [[ "$check_rc" -ne 0 ]]; then
