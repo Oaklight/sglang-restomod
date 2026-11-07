@@ -292,6 +292,9 @@ class QwenSparseAttnBackend(AttentionBackend):
         req_pool = getattr(runner, "req_to_token_pool", None)
         self.req_to_token = getattr(req_pool, "req_to_token", None)
         self.req_to_token_pool = req_pool
+        # The SM70 decode guards read the pool's page size; the pin's class
+        # does not record it, the fork did.
+        self.page_size = int(getattr(runner, "page_size", 1))
         self.forward_metadata: Optional[QwenSparseAttnMetadata] = None
         self._cuda_graph_metadata: Dict[
             Tuple[ForwardMode, int], QwenSparseAttnMetadata
