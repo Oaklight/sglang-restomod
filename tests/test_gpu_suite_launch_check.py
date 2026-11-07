@@ -61,6 +61,11 @@ def run(
     proc = subprocess.run(
         [
             sys.executable,
+            # -I: the heredoc is supposed to find the package from the path it
+            # is handed, not from an inherited PYTHONPATH. Without it the
+            # "unimportable" case imports the checkout from the caller's
+            # environment and silently passes.
+            "-I",
             "-c",
             check_script(),
             str(info),
