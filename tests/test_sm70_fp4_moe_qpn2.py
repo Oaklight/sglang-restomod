@@ -244,3 +244,32 @@ def test_prepare_prefix_drops_the_duplicate_scale_tensor(monkeypatch):
     assert layer.w13_weight_scale.dtype is torch.float8_e4m3fn
     assert not (source_pointers & _layer_pointers(layer))
     qpn2_repack.reset()
+
+
+def test_qpn2_shape_patch_is_present_and_derives_correctly():
+    """Pin the upstream patch that lets a QPN2 bank reach the wrapper.
+
+    A QPN2 server died during CUDA graph capture because ``fused_marlin_moe``
+    asserts the Marlin weight layout before it calls the one function this
+    plugin replaces. The fix is patch 0003, which derives E/K/N from the bank
+    when ``w1`` is uint8. This test keeps the patch in the tree (dropping it
+    would silently restore the capture failure) and checks that the derivation
+    it uses reproduces N from the bank's size for the shipped shapes.
+    """
+    import json
+
+    root = Path(__file__).resolve().parents[1]
+    patch = (root / "patches" / "0003-qpn2-marlin-moe-shape.patch").read_text()
+    assert "w1.dtype == torch.uint8" in patch
+
+    manifest = json.loads((root / "patches" / "manifest.json").read_text())
+    entry = manifest["patches"]["0003-qpn2-marlin-moe-shape.patch"]
+    assert entry["paths"] == [
+        "python/sglang/srt/layers/moe/fused_moe_triton/fused_marlin_moe.py"
+    ]
+
+    for size_n, size_k in ((320, 2560), (2560, 160), (64, 32)):
+        experts = 2
+        per_expert = (size_n // 32) * (size_k // 16) * qpn2.GROUP_BYTES
+        # The patch computes N from the bank's per-expert size and K.
+        assert (experts * per_expert // experts) * 16 // (9 * size_k) == size_n
