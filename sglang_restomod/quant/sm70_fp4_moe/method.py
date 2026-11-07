@@ -337,6 +337,9 @@ def moe_wna16_marlin_gemm(
     use_atomic_add: bool = False,
     use_fp32_reduce: bool = False,
     is_zp_float: bool = False,
+    expert_ids_are_sorted: bool = False,
+    zero_inactive_output: bool = False,
+    has_inactive_prefix_count: bool = False,
 ) -> torch.Tensor:
     """Forward the pinned Marlin call to the SM70 extension.
 
@@ -345,7 +348,18 @@ def moe_wna16_marlin_gemm(
     * it takes an ``a_scales`` tensor after ``b_scales`` (unused here);
     * it takes the scalar-type id, not the ``ScalarType`` object and ``is_ep``;
     * it takes three launch hints, which the SM70 kernel ignores.
+
+    v0.5.23 adds three routing hints. ``expert_ids_are_sorted`` and
+    ``has_inactive_prefix_count`` only select the pin's sorted specialization;
+    the SM70 kernel reads ``expert_ids`` directly and needs neither, so they are
+    accepted and ignored. ``zero_inactive_output`` asks the GEMM to zero
+    caller-owned inactive rows, which this path does not implement: fail loudly
+    rather than return stale rows.
     """
+    if zero_inactive_output:
+        raise NotImplementedError(
+            "SM70 NVFP4 Marlin does not implement zero_inactive_output"
+        )
     if is_ep:
         # ``is_ep`` is ``expert_map is not None``. The SM70 kernel indexes this
         # rank's weights by global expert id, so an EP launch would read the
