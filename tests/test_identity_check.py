@@ -5,6 +5,8 @@ from __future__ import annotations
 import importlib.util
 import pathlib
 
+import pytest
+
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
@@ -60,5 +62,9 @@ def test_public_host_passes(tmp_path):
     assert check_identity.main(["--paths", str(path)]) == 0
 
 
+@pytest.mark.skipif(
+    not (ROOT / ".git").exists(),
+    reason="not a git checkout: the check lists tracked files with git ls-files",
+)
 def test_repository_is_clean():
     assert check_identity.main(["--root", str(ROOT)]) == 0
