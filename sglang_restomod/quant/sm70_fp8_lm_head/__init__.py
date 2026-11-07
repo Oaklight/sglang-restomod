@@ -50,16 +50,14 @@ def quantize_lm_head(model) -> bool:
     if getattr(head, "weight_block_size", None) == [BLOCK, BLOCK]:
         return False
 
-    from sglang.srt.layers.quantization.fp8 import Fp8LinearMethod
+    from sglang_restomod.quant.sm70_fp8_dense import make_block_fp8_method
 
     q, scale = _quantize(weight.to(torch.float16))
 
-    class _Config:
-        weight_block_size = [BLOCK, BLOCK]
-
-    method = Fp8LinearMethod.__new__(Fp8LinearMethod)
-    method.quant_config = _Config()
-    method.use_sm70_turbomind = True  # install() checked fp8_dense and the kernel
+    # The real constructor populates every attribute process_weights_after_loading
+    # reads; the factory then opts the method into the SM70 kernel. install()
+    # checked that fp8_dense and the kernel are available.
+    method = make_block_fp8_method([BLOCK, BLOCK])
 
     head.weight = torch.nn.Parameter(q, requires_grad=False)
     head.weight_scale_inv = torch.nn.Parameter(scale, requires_grad=False)

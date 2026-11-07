@@ -113,19 +113,13 @@ def _plain_linear_forward(self, x):
 
 def convert(module) -> bool:
     """Quantize one admitted layer in place and point it at the FP8 method."""
-    from sglang.srt.layers.quantization.fp8 import Fp8LinearMethod
-
+    from sglang_restomod.quant.sm70_fp8_dense import make_block_fp8_method
     from sglang_restomod.quant.sm70_fp8_lm_head import _quantize
 
     plain = not _is_linear_base(module)
     q, scale = _quantize(module.weight.data.to(torch.float16))
 
-    class _Config:
-        weight_block_size = [BLOCK, BLOCK]
-
-    method = Fp8LinearMethod.__new__(Fp8LinearMethod)
-    method.quant_config = _Config()
-    method.use_sm70_turbomind = True
+    method = make_block_fp8_method([BLOCK, BLOCK])
 
     module.weight = torch.nn.Parameter(q, requires_grad=False)
     module.weight_scale_inv = torch.nn.Parameter(scale, requires_grad=False)
