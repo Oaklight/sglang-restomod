@@ -235,6 +235,24 @@ def _ep_size() -> int | None:
         return None
 
 
+def _log_load_memory() -> None:
+    """Split the load-time memory figure the receipt gate reads.
+
+    ``Load weight end ... mem usage=`` in the engine log is a free-memory drop,
+    i.e. allocated plus reserved growth. Logging the two separately lets a
+    reserved-only regression (allocator behaviour) be told apart from real
+    retention. Fires once per MoE layer per rank; the reader takes the maximum,
+    so the last layer's line is the post-load figure. Runs on both layouts.
+    """
+    if not torch.cuda.is_available():
+        return
+    logger.info(
+        "restomod-load-memory: allocated=%.2f reserved=%.2f",
+        torch.cuda.memory_allocated() / 2**30,
+        torch.cuda.memory_reserved() / 2**30,
+    )
+
+
 def prepare_moe_nvfp4(layer, group_size: int | None = None) -> None:
     """Replace the checkpoint expert layout with the SM70 Marlin layout.
 
@@ -324,6 +342,8 @@ def prepare_moe_nvfp4(layer, group_size: int | None = None) -> None:
         swizzled = prefix + "_blockscale_swizzled"
         if hasattr(layer, swizzled):
             setattr(layer, swizzled, None)
+
+    _log_load_memory()
 
     if qpn2_prefixes and torch.cuda.is_available():
         # Each conversion replaces a packed source (plus, now, its redundant
