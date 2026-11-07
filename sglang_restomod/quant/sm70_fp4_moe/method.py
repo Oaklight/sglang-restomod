@@ -236,6 +236,16 @@ def _ep_size() -> int | None:
 
 
 _DECODE_FALLBACK_WARNED = False
+# One decode step routes at most one batch through the experts: at
+# max-running-requests=1 that is M * topk, tens of rows. A short prefill chunk
+# also gets block 8 from the align heuristic, but its size_m is the chunk's
+# route count, hundreds to thousands, so the bound is what separates them.
+_DECODE_ROUTE_LIMIT = 64
+
+
+def _is_decode_fallback(size_m: int, block: int) -> bool:
+    """Whether this shim entry is a decode step that fell back."""
+    return block == 8 and size_m <= _DECODE_ROUTE_LIMIT
 
 
 def _warn_decode_fallback(size_m, size_n, size_k, top_k, block) -> None:
@@ -463,7 +473,7 @@ def moe_wna16_marlin_gemm(
                 "shape on Marlin."
             )
         b_q_weight, b_scales, global_scale_or_none = shim
-        if moe_block_size == decode_qpn2.BLOCK_M:
+        if _is_decode_fallback(size_m, moe_block_size):
             _warn_decode_fallback(size_m, size_n, size_k, top_k, moe_block_size)
 
     _record_moe_stats(expert_ids, num_tokens_post_padded, size_m, moe_block_size)

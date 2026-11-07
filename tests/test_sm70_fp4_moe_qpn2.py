@@ -281,3 +281,19 @@ def test_qpn2_shape_patch_is_present_and_derives_correctly():
         per_expert = (size_n // 32) * (size_k // 16) * qpn2.GROUP_BYTES
         # The patch computes N from the bank's per-expert size and K.
         assert (experts * per_expert // experts) * 16 // (9 * size_k) == size_n
+
+
+def test_decode_fallback_warning_predicate():
+    """The warning must fire for a decode step, not for a short prefill chunk.
+
+    A prefill chunk small enough for the align heuristic to pick block 8 is
+    still a prefill; its size_m is the chunk's route count. Only a decode
+    step's size_m is one batch's routes (M * topk, tens of rows).
+    """
+    from sglang_restomod.quant.sm70_fp4_moe.method import _is_decode_fallback
+
+    assert _is_decode_fallback(10, 8), "1 token x topk 10 at decode"
+    assert _is_decode_fallback(64, 8), "at the bound"
+    assert not _is_decode_fallback(1280, 8), "a short prefill chunk, block 8"
+    assert not _is_decode_fallback(40960, 8), "a long prefill chunk"
+    assert not _is_decode_fallback(10, 64), "prefill route block"
