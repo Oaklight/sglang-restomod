@@ -49,12 +49,23 @@ where the log excerpt lives.
 | cell | stage | error | where |
 |---|---|---|---|
 | Flash-Next FP8, 2x V100, pin | first forward: the dense FP8 compute path | recorded in the issue | #92 |
+| Flash-Next FP8, 4x V100 (TP4/EP1), pin | creating the expert weights, before any load | `ValueError: The output_size of gate's and up's weight = 160 is not divisible by weight quantization block_n = 128` | `fp8-tp4-server.log` in the #219 evidence set |
+| Flash-Next FP8, 4x V100 (TP4/EP4), pin | creating the FP8 MoE weights | `torch.cuda.OutOfMemoryError`: 31.51 GiB in use per card, 196 MiB free, a 200 MiB allocation fails | `fp8-tp4ep4-server.log` in the #219 evidence set |
 | 27B, `--kv-cache-dtype fp8_e4m3`, pin | grouped decode-attention kernel compile, before the model loads | `ValueError: type fp8e4nv not supported in this architecture. The supported fp8 dtypes are ('fp8e4b15', 'fp8e5')` | #112 |
 | DGX Spark | sm121 / aarch64 | upstream SGLang 0.5.22 | Planned |
 
 Notes:
 
 - Quantization dispatch and FP8 specifics: `docs/quantization-dispatch.md`.
+- **Four cards cannot run the Flash-Next FP8 checkpoint**, for two different
+  reasons, measured on 2026-11-06 (#219, main `0e8011bd`, logs under
+  `/nfs/ml_lab/projects/ml_lab/pding/evidence/219/`). `TP4/EP1` is refused when
+  the expert weights are created: block-FP8 quantizes in 128-wide blocks and
+  TP4 splits the 640-wide gate/up output into 160-wide shards, which the
+  contract does not admit - a structural refusal, not a memory setting.
+  `TP4/EP4` keeps the expert rows whole (640 = 5 x 128) and then fails on
+  memory while creating the same weights. The 120 GB checkpoint needs the
+  eight-card TP8/EP8 launch.
 - The speculative tree-sampling JIT needs `spec_sm70` on a CUDA 12.x toolkit:
   the pinned `flashinfer/sampling.cuh` uses `cuda::maximum` / `cuda::minimum`,
   which only CCCL 3.x (CUDA 13) provides, and the component puts a shim on the
