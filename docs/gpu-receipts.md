@@ -93,6 +93,29 @@ once per value and appends to `bench.log`, so one bundle carries the
 single-stream rate and what batching buys on the same launch. Without it the
 bench runs at concurrency 1, as before.
 
+Two host conditions cost a run each on 2026-11-07; neither is a code defect and
+both are worth checking before a bench instead of during one.
+
+**The bench context must leave room for the output.** A bench client builds a
+prompt of exactly the requested token count, then the chat template and
+`max_tokens` are added on top. Against a server launched with
+`--context-length 4096`, `--contexts 4096` is rejected with HTTP 400 — the
+request is 4,096 prompt tokens plus 64 output tokens plus template overhead.
+Measured: `--contexts 4096` returned 400 on every rep, and `--contexts 3900`
+(3,912 actual tokens) served normally. Ask for the context minus a few hundred
+tokens, and record the prompt length the client reports rather than the
+`--contexts` label.
+
+**The decode JIT needs a build directory with space.** `attention_v100`'s
+decode extension builds through `torch.utils.cpp_extension`, and since #244 it
+refuses before nvcc when `TMPDIR` or `SGLANG_V100_DECODE_CUDA_BUILD_DIR` has
+less than 1 GiB free. On a host whose `/` is nearly full (28 MiB free on
+lambda6) a cold build fails with the preflight message; a cached build in the
+default `/tmp/sglang_sm70_longctx_decode` lets the loader skip the check, so the
+failure only appears after the cache is cleared. Set
+`SGLANG_V100_DECODE_CUDA_BUILD_DIR` to a directory on the data mount in the
+launch environment.
+
 The suite also runs the GPU-marked component tests (`pytest -m gpu tests/`) and
 records them as `gpu_tests.txt`. The bench measures speed and the launch check
 measures routing; these are the only step that measures whether a kernel still
