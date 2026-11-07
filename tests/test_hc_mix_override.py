@@ -66,15 +66,11 @@ class FakeGatedResidual:
             hc,
             hs,
         ):
-            input_mix_weight = F.silu(
-                F.linear(hyper_input_normed, input_mix_weight_down) / hc
-            )
+            input_mix_weight = F.silu(F.linear(hyper_input_normed, input_mix_weight_down) / hc)
             input_mix_weight = F.linear(input_mix_weight, input_mix_weight_up)
             input_mix_weight = torch.sigmoid(input_mix_weight)
             input_mix_weight = input_mix_weight.unflatten(-1, (hc, hs))
-            return (
-                input_mix_weight * hyper_input_normed.unflatten(-1, (hc, hs))
-            ).mean(dim=-2)
+            return (input_mix_weight * hyper_input_normed.unflatten(-1, (hc, hs))).mean(dim=-2)
 
         self._mix_compute = _mix_compute
         if converted:
@@ -146,10 +142,21 @@ def test_component_is_registered():
     assert component.module == "sglang_restomod.quant.sm70_hc_mix"
 
 
-def test_unconverted_mixer_is_left_alone(fake_module):
+def test_unconverted_mixer_keeps_the_upstream_path(fake_module):
     instance = FakeGatedResidual()
-    assert not getattr(instance, "_restomod_hc_mix", False)
+    assert instance._restomod_hc_mix is True  # hook installed, inert until conversion
     x = torch.randn(3, 16)
+    got, _residuals = instance.mix(x)
+    assert torch.allclose(got, _reference(instance, x))
+
+
+def test_conversion_after_construction_is_picked_up(fake_module):
+    """``fp8_dense_quant`` converts after load, i.e. after ``__init__`` ran."""
+    instance = FakeGatedResidual()
+    x = torch.randn(2, 16)
+    instance.mix(x)  # the pre-conversion call, through the upstream path
+    instance.input_mix_weight_down = _PaddedLinear(4, 16)
+    instance.input_mix_weight_up = _PaddedLinear(16, 128)
     got, _residuals = instance.mix(x)
     assert torch.allclose(got, _reference(instance, x))
 

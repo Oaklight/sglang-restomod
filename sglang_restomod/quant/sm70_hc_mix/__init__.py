@@ -10,10 +10,11 @@ whose forward pads the input and slices the output -- all of which the mixer
 skips. The failure is not a wrong number: decode CUDA-graph capture dies on
 the fp8 weight reaching an fp16 ``F.linear``.
 
-This component wraps ``GatedResidual.__init__`` and, on an instance whose two
-mixer linears are already converted, replaces the mixer's compute step with
-one that calls those modules. Unconverted instances keep the upstream path, so
-selecting the component on a launch that converts nothing changes nothing.
+This component wraps ``GatedResidual.__init__`` and replaces the mixer's
+compute step with a plain-Python one that calls those modules. The linears are
+still ``nn.Linear`` at that point -- ``fp8_dense_quant`` converts after the
+model loads -- so the choice is made on the first ``mix`` call, and an
+unconverted launch keeps the upstream (compiled) path unchanged.
 
 It is opt-in by component name (``hc_mix_fp8``), off by default. The install
 asserts the class layout it depends on and raises when a pin bump changes it,
@@ -68,14 +69,19 @@ def _check_class(cls) -> None:
     missing = [token for token in _REQUIRED_IN_INIT if token not in source]
     if missing:
         raise RuntimeError(
-            "hc_mix_fp8: GatedResidual.__init__ no longer matches the layout this "
+            "hc_mix_fp8: GatedResidual no longer matches the layout this "
             f"override patches (missing: {missing}); a pin bump changed the "
             "hyper-connection mixer"
         )
 
 
 def _install_instance(instance) -> bool:
-    """Patch one GatedResidual; return whether the mixer now uses its modules."""
+    """Patch one GatedResidual; return whether the hook was installed.
+
+    ``fp8_dense_quant`` converts after the model loads, so at this point the
+    two mixer linears are always plain ``nn.Linear``. Whether they were
+    converted is therefore decided on the first ``mix`` call, not here.
+    """
     global _installed, _logged
 
     import torch
@@ -88,13 +94,10 @@ def _install_instance(instance) -> bool:
     up = getattr(instance, "input_mix_weight_up", None)
     if not isinstance(down, nn.Linear) and not _converted(down):
         raise RuntimeError(
-            "hc_mix_fp8: input_mix_weight_down is "
-            f"{type(down).__name__}, not a linear"
+            f"hc_mix_fp8: input_mix_weight_down is {type(down).__name__}, not a linear"
         )
     if not isinstance(up, nn.Linear) and not _converted(up):
-        raise RuntimeError(
-            f"hc_mix_fp8: input_mix_weight_up is {type(up).__name__}, not a linear"
-        )
+        raise RuntimeError(f"hc_mix_fp8: input_mix_weight_up is {type(up).__name__}, not a linear")
     hidden = int(instance.config.hidden_size)
     hc = int(instance.hc_count)
     lowrank = int(instance.config.hc_lowrank)
@@ -103,9 +106,7 @@ def _install_instance(instance) -> bool:
         # A converted linear's ``weight`` is packed by the kernel; the module
         # records the logical output width and the padded input width.
         if _converted(module):
-            return int(module.sm70_fp8_out_features), int(
-                module.sm70_fp8_padded_in_features
-            )
+            return int(module.sm70_fp8_out_features), int(module.sm70_fp8_padded_in_features)
         return tuple(int(d) for d in module.weight.shape)
 
     def _fits(module, want_n: int, want_k: int) -> bool:
@@ -117,37 +118,48 @@ def _install_instance(instance) -> bool:
         # Zero padding leaves K at or above the logical width, on the block.
         return got_k == want_k or (got_k > want_k and got_k % BLOCK == 0)
 
-    if not _fits(down, lowrank, hc * hidden):
-        raise RuntimeError(
-            f"hc_mix_fp8: input_mix_weight_down is {_shape(down)}, expected "
-            f"{(lowrank, hc * hidden)}"
-        )
-    if not _fits(up, hc * hidden, lowrank):
-        raise RuntimeError(
-            f"hc_mix_fp8: input_mix_weight_up is {_shape(up)}, expected "
-            f"{(hc * hidden, lowrank)}"
-        )
+    def _require(module, want_n: int, want_k: int, name: str) -> None:
+        if not _fits(module, want_n, want_k):
+            raise RuntimeError(
+                f"hc_mix_fp8: {name} is {_shape(module)}, expected {(want_n, want_k)}"
+            )
 
-    if not (_converted(down) and _converted(up)):
-        # The launch converted nothing (or only one side): upstream behaviour.
-        return False
+    # Plain shapes at construction time; checked again on the first converted
+    # call, when the padded width is the one that has to fit.
+    _require(down, lowrank, hc * hidden, "input_mix_weight_down")
+    _require(up, hc * hidden, lowrank, "input_mix_weight_up")
 
-    def _mix_compute(hyper_input_normed, _down_weight, _up_weight, hc_arg, hs_arg):
-        weight = torch.sigmoid(up(F.silu(down(hyper_input_normed) / hc_arg)))
+    # The pin stores ``torch.compile(_mix_compute)``. That compiled closure is
+    # what dies during decode graph capture, so the converted path must run
+    # outside it: the replacement below stays plain Python and only falls back
+    # to the compiled function while the linears are unconverted.
+    upstream = instance._mix_compute
+
+    def _mix_compute(hyper_input_normed, down_weight, up_weight, hc_arg, hs_arg):
+        down_now = instance.input_mix_weight_down
+        up_now = instance.input_mix_weight_up
+        if not (_converted(down_now) or _converted(up_now)):
+            return upstream(hyper_input_normed, down_weight, up_weight, hc_arg, hs_arg)
+        _require(down_now, lowrank, hc * hidden, "input_mix_weight_down")
+        _require(up_now, hc * hidden, lowrank, "input_mix_weight_up")
+        _mark_active(hc * hidden, hidden, lowrank)
+        weight = torch.sigmoid(up_now(F.silu(down_now(hyper_input_normed) / hc_arg)))
         weight = weight.unflatten(-1, (hc_arg, hs_arg))
-        return (weight * hyper_input_normed.unflatten(-1, (hc_arg, hs_arg))).mean(
-            dim=-2
-        )
+        return (weight * hyper_input_normed.unflatten(-1, (hc_arg, hs_arg))).mean(dim=-2)
 
     instance._mix_compute = _mix_compute
     instance._restomod_hc_mix = True
     _installed += 1
-    if not _logged:
-        _logged = True
-        logger.info("%s (%d x %d, low-rank %d)", MARKER, hc * hidden, hidden, lowrank)
-    else:
-        logger.debug("hc_mix_fp8: mixer routed through converted linears")
     return True
+
+
+def _mark_active(rows: int, hidden: int, lowrank: int) -> None:
+    """Log the one marker line the launch check greps for."""
+    global _logged
+    if _logged:
+        return
+    _logged = True
+    logger.info("%s (%d x %d, low-rank %d)", MARKER, rows, hidden, lowrank)
 
 
 def install(module=None) -> int:

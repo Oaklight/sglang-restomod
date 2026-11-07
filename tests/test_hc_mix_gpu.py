@@ -93,12 +93,12 @@ def hyperconnection():
 def test_unconverted_layer_is_unchanged(hyperconnection):
     sm70_hc_mix.install(hyperconnection)
     layer = _make_layer()
-    assert not getattr(layer, "_restomod_hc_mix", False)
+    # The hook is installed at construction; unconverted linears keep the
+    # upstream computed path, which this asserts on the output.
+    assert layer._restomod_hc_mix is True
     x = torch.randn(2, HC * HIDDEN, device="cuda", dtype=torch.float16)
     got, _ = layer.mix(x)
-    want = _reference(
-        x, layer.input_mix_weight_down.weight, layer.input_mix_weight_up.weight
-    )
+    want = _reference(x, layer.input_mix_weight_down.weight, layer.input_mix_weight_up.weight)
     torch.testing.assert_close(got, want, rtol=5e-2, atol=2e-2)
 
 
@@ -121,9 +121,8 @@ def test_converted_layer_matches_the_logical_math(hyperconnection):
         down._dequant(x.dtype)[:LOWRANK, : HC * HIDDEN],
         up._dequant(x.dtype)[: HC * HIDDEN, :LOWRANK],
     )
-    assert sm70_hc_mix._install_instance(layer) is True
     assert layer._restomod_hc_mix is True
-
+    # The swap above happens after construction, as the loader does it.
     got, _ = layer.mix(x)
     torch.testing.assert_close(got, want, rtol=2e-2, atol=2e-2)
 
@@ -137,9 +136,7 @@ def test_the_raw_weight_path_is_silently_wrong(hyperconnection):
     """
     layer = _make_layer()
     down_w = layer.input_mix_weight_down.weight.detach().clone()
-    up_w = layer.input_mix_weight_up.weight.detach().clone()
     down = _PaddedLinear(down_w, LOWRANK)
-    up = _PaddedLinear(up_w, HC * HIDDEN)
     x = torch.randn(2, HC * HIDDEN, device="cuda", dtype=torch.float16)
     with pytest.raises(RuntimeError):
         F.linear(x, down.weight)  # fp8 weight under an fp16 F.linear
