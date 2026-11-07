@@ -32,18 +32,27 @@ like one.
    1 GiB. That refusal is correct: free space, do not chase it as a test
    failure.
 
+5. **Run against the sglang tree for the pin.** Point `PYTHONPATH` at the tree
+   that matches `UPSTREAM_PIN.toml`, not the previous pin's; for the current
+   pin the canonical tree is `pin-site-v0.5.23` under the shared `ml_lab`
+   volume. A mismatched tree fails at collection with `ImportError` on a
+   symbol the newer pin has (for example `sparse_gqa_paged_prefill_triton`):
+   a missing symbol at collection, not a test failure, and it reads as the
+   change under test breaking things. Confirm the bundle's `versions.txt`
+   records the pin's sglang version.
+
 ## Measurement
 
-5. **Leave room in `--contexts` for the output.** A prompt of exactly the
+6. **Leave room in `--contexts` for the output.** A prompt of exactly the
    context length, with generated tokens on top, returns HTTP 400. Use 3,900
    against an 8,192 context.
 
-6. **Take tree hashes from the script.** They exclude `__pycache__`, and the
+7. **Take tree hashes from the script.** They exclude `__pycache__`, and the
    composite digest is locale-pinned inside the script. Do not re-derive them
    with your own `find`/`sort`: a hash that depends on the caller's environment
    is not a gate.
 
-7. **Do not compare load time or page-cache state across sessions.** The same
+8. **Do not compare load time or page-cache state across sessions.** The same
    checkpoint took 132.7 s and 389.3 s to load; that is I/O, not the code under
    test. An arm whose load straddles external I/O is not the same arm. Run no
    bulk filesystem I/O while a measurement session is active.
