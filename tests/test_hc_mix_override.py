@@ -195,10 +195,12 @@ def test_install_raises_when_the_mixer_layout_changed():
 
 
 def test_instance_guard_fires_on_a_wrong_shape(fake_module):
-    instance = FakeGatedResidual(converted=False)
+    """The shape is re-checked on the converted call, where padding applies."""
+    instance = FakeGatedResidual(converted=True)
     instance.input_mix_weight_down = _PaddedLinear(6, 16)  # wrong output width
+    x = torch.randn(2, 16)
     with pytest.raises(RuntimeError, match="input_mix_weight_down"):
-        sm70_hc_mix._install_instance(instance)
+        instance.mix(x)
 
 
 def test_layout_guard_survives_an_earlier_init_wrapper(fake_module):
@@ -226,6 +228,7 @@ def test_layout_guard_survives_an_earlier_init_wrapper(fake_module):
 
 def test_instance_guard_fires_on_a_non_linear(fake_module):
     instance = FakeGatedResidual(converted=False)
+    del instance._restomod_hc_mix  # as at __init__ time, before the hook
     instance.input_mix_weight_up = nn.Identity()
     with pytest.raises(RuntimeError, match="not a linear"):
         sm70_hc_mix._install_instance(instance)
