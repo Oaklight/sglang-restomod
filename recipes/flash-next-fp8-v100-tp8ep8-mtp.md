@@ -143,11 +143,17 @@ The FP8 checkpoint is about 120 GB. On 32 GB cards:
 | Cards | Result |
 |---|---|
 | 2 (TP2/EP2) | load-time OOM, 30.95 GiB allocated per card |
-| 4 (TP4/EP4) | load-time OOM, 30.68 GiB allocated per card |
+| 4 (TP4/EP1) | refused when the expert weights are created: `output_size of gate's and up's weight = 160 is not divisible by weight quantization block_n = 128` |
+| 4 (TP4/EP4) | load-time OOM while creating the FP8 MoE weights: 31.51 GiB in use per card, 196 MiB free (2026-11-06). The earlier 30.68 GiB figure is the same path |
 | 8 (TP8/EP8) | runs |
 
+The EP1 refusal is structural, not a memory setting: block-FP8 quantizes an
+expert weight in 128-wide blocks, and TP4 splits the 640-wide gate/up output
+into 160-wide shards, which the quantization contract does not admit. EP4 keeps
+the expert rows whole (640 = 5 x 128) and then fails later, on memory.
+
 So Flash-Next needs all 8 cards on this hardware; the 2- and 4-card runs belong
-to the 27B model.
+to the 27B model. Four cards cannot run this checkpoint.
 
 ### Topology matters
 
