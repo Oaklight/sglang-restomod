@@ -235,6 +235,29 @@ def _ep_size() -> int | None:
         return None
 
 
+_DECODE_FALLBACK_WARNED = False
+
+
+def _warn_decode_fallback(size_m, size_n, size_k, top_k, block) -> None:
+    """Say once per process that a decode-shaped call fell back to a repack.
+
+    A decode call that reaches the prefill shim repacks its prefix on every
+    step; that cost is invisible in a trace unless you read the kernel table.
+    One line at the first occurrence makes the next one a five-second
+    diagnosis.
+    """
+    global _DECODE_FALLBACK_WARNED
+    if _DECODE_FALLBACK_WARNED:
+        return
+    _DECODE_FALLBACK_WARNED = True
+    logger.warning(
+        "SM70 QPN2: a decode-shaped call (m=%d n=%d k=%d topk=%d block=%d) "
+        "reached the prefill repack; this prefix will be repacked on every "
+        "step until the decode kernel covers the shape",
+        size_m, size_n, size_k, top_k, block,
+    )
+
+
 def _log_load_memory() -> None:
     """Split the load-time memory figure the receipt gate reads.
 
@@ -440,6 +463,8 @@ def moe_wna16_marlin_gemm(
                 "shape on Marlin."
             )
         b_q_weight, b_scales, global_scale_or_none = shim
+        if moe_block_size == decode_qpn2.BLOCK_M:
+            _warn_decode_fallback(size_m, size_n, size_k, top_k, moe_block_size)
 
     _record_moe_stats(expert_ids, num_tokens_post_padded, size_m, moe_block_size)
 
