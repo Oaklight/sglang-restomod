@@ -1,0 +1,178 @@
+From 978b1fb54faad341224d287fbb3ae023a6983e2c Mon Sep 17 00:00:00 2001
+From: Peng Ding <pding.dp@foxmail.com>
+Date: Fri, 6 Nov 2026 17:17:12 -0600
+Subject: [PATCH 7/9] qpn2: dense nvfp4 kernel Qpn2 branch + M>1 GEMM test (GPU
+ run pending)
+
+---
+ .../marlin/sm70_marlin_nvfp4_gemm.cu          | 31 +++++--
+ tests/qpn2_gemm_test.cu                       | 86 +++++++++++++++++++
+ 2 files changed, 108 insertions(+), 9 deletions(-)
+ create mode 100644 tests/qpn2_gemm_test.cu
+
+diff --git a/csrc/quantization/marlin/sm70_marlin_nvfp4_gemm.cu b/csrc/quantization/marlin/sm70_marlin_nvfp4_gemm.cu
+index 1bfb03d..0252bc2 100644
+--- a/csrc/quantization/marlin/sm70_marlin_nvfp4_gemm.cu
++++ b/csrc/quantization/marlin/sm70_marlin_nvfp4_gemm.cu
+@@ -342,13 +342,17 @@ struct Sm70Nvfp4GemmSpec {
+ };
+ 
+ template <int CtaM, int CtaN, int CtaK, int Warps, int WarpM,
+-          int WarpN, int WarpK, int GroupSize, int PackedMacroN>
++          int WarpN, int WarpK, int GroupSize, int PackedMacroN, bool Qpn2 = false>
+ using Sm70Nvfp4GemmTraits =
+     Sm70MarlinGemmTraits<Sm70Nvfp4GemmSpec, CtaM, CtaN, CtaK,
+-                         Warps, WarpM, WarpN, WarpK, GroupSize, PackedMacroN>;
++                         Warps, WarpM, WarpN, WarpK, GroupSize, PackedMacroN, Qpn2>;
+ 
++// Qpn2=true reads the QPN2 layout: the base pointer arrives in b_q_weight
++// (reinterpreted), b_scales is unused, and global_scale[0] is the layout's
++// global scale. The host entry point calls qpn2_selected() first, so a
++// mismatched pointer/flag pair never reaches this kernel.
+ template <bool HasBias, int CtaM, int CtaN, int CtaK, int Warps, int WarpM,
+-          int WarpN, int WarpK, int GroupSize, int PackedMacroN,
++          int WarpN, int WarpK, int GroupSize, int PackedMacroN, bool Qpn2 = false,
+           typename... BiasArgs>
+ __global__ __launch_bounds__(Warps * 32, 1)
+ void sm70_marlin_nvfp4_gemm_kernel(
+@@ -364,7 +368,7 @@ void sm70_marlin_nvfp4_gemm_kernel(
+                 "HasBias=false expects no bias pointer.");
+   using Traits =
+       Sm70Nvfp4GemmTraits<CtaM, CtaN, CtaK, Warps, WarpM,
+-                                  WarpN, WarpK, GroupSize, PackedMacroN>;
++                                  WarpN, WarpK, GroupSize, PackedMacroN, Qpn2>;
+   using Mma = typename Traits::Mma;
+   using Epilogue = typename Traits::Epilogue;
+ 
+@@ -388,10 +392,18 @@ void sm70_marlin_nvfp4_gemm_kernel(
+       typename Mma::IteratorA::Params(layout_a),
+       const_cast<cutlass::half_t*>(a), cutlass::MatrixCoord(m, k), thread_idx,
+       tb_offset_A);
+-  typename Mma::IteratorB iterator_B(
+-      typename Mma::IteratorB::Params(k, n),
+-      reinterpret_cast<uint32_t const*>(b_q_weight),
+-      reinterpret_cast<uint8_t const*>(b_scales), thread_idx, tb_offset_B);
++  typename Mma::IteratorB iterator_B = [&]() {
++    if constexpr (Qpn2) {
++      return typename Mma::IteratorB(
++          typename Mma::IteratorB::Params(k, n, global_scale[0]),
++          reinterpret_cast<uint8_t const*>(b_q_weight), thread_idx, tb_offset_B);
++    } else {
++      return typename Mma::IteratorB(
++          typename Mma::IteratorB::Params(k, n),
++          reinterpret_cast<uint32_t const*>(b_q_weight),
++          reinterpret_cast<uint8_t const*>(b_scales), thread_idx, tb_offset_B);
++    }
++  }();
+ 
+   Mma mma(shared_storage.main_loop, thread_idx, warp_idx, lane_idx);
+   typename Mma::FragmentC accumulators;
+@@ -463,6 +475,7 @@ void sm70_marlin_nvfp4_gemm_splitk_kernel(
+       typename Mma::IteratorA::Params(layout_a),
+       const_cast<cutlass::half_t*>(a), cutlass::MatrixCoord(m, k), thread_idx,
+       tb_offset_A);
++  // The split-K path stays on the Marlin reader; QPN2 needs a single K pass.
+   typename Mma::IteratorB iterator_B(
+       typename Mma::IteratorB::Params(k, n),
+       reinterpret_cast<uint32_t const*>(b_q_weight),
+@@ -508,7 +521,7 @@ torch::Tensor launch_sm70_marlin_nvfp4_gemm(
+     if constexpr (HasBias) {
+       auto kernel = sm70_marlin_nvfp4_gemm_kernel<
+           HasBias, CtaM, CtaN, CtaK, Warps, WarpM, WarpN, WarpK, GroupSize,
+-          PackedMacroN, cutlass::half_t const*>;
++          PackedMacroN, false, cutlass::half_t const*>;
+       size_t smem_bytes = configure_sm70_dynamic_smem<SharedStorage>(kernel);
+       kernel<<<grid, block, smem_bytes, stream>>>(
+           reinterpret_cast<cutlass::half_t const*>(a.data_ptr<at::Half>()),
+diff --git a/tests/qpn2_gemm_test.cu b/tests/qpn2_gemm_test.cu
+new file mode 100644
+index 0000000..b81fdd9
+--- /dev/null
++++ b/tests/qpn2_gemm_test.cu
+@@ -0,0 +1,86 @@
++// GEMM-level check for the QPN2 prefill reader: M > 1, full CtaN x CtaK tile,
++// compared against a double-precision reference built from the same QPN2 bytes.
++// Standalone (no torch): it includes the extension TU for the kernel template.
++#include <cmath>
++#include <cstdio>
++#include <cstdint>
++#include <cstdlib>
++#include <vector>
++
++#include "quantization/marlin/sm70_marlin_nvfp4_gemm.cu"
++
++constexpr int kM = 8, kN = 64, kK = 32;
++constexpr int kCtaM = 64, kCtaN = 64, kCtaK = 32;
++
++using Traits = marlin::sm70::Sm70Nvfp4GemmTraits<kCtaM, kCtaN, kCtaK, 4, 32, 32, 32, 16, 64, true>;
++using Kernel = decltype(&sm70_marlin_nvfp4_gemm_kernel<false, kCtaM, kCtaN, kCtaK, 4, 32, 32, 32, 16,
++                                                       64, true>);
++
++int main() {
++  srand(11);
++  const int groups = (kN / 32) * (kK / 16);
++  std::vector<uint8_t> q(groups * 288);
++  for (auto& b : q) b = static_cast<uint8_t>(rand() & 0xff);
++  // Scales: keep them small so the fp16 epilogue does not overflow.
++  for (int g = 0; g < groups; ++g)
++    for (int l = 0; l < 32; ++l)
++      q[g * 288 + 256 + l] = static_cast<uint8_t>(0x30 | (rand() & 7));
++
++  std::vector<cutlass::half_t> A(kM * kK), C(kM * kN);
++  for (auto& x : A) x = cutlass::half_t(0.25f * ((rand() % 200) - 100) / 100.0f);
++
++  const float gscale = 0.75f;
++  cutlass::half_t *dA = nullptr, *dC = nullptr;
++  uint8_t* dQ = nullptr;
++  float* dGs = nullptr;
++  cudaMalloc(&dA, kM * kK * sizeof(cutlass::half_t));
++  cudaMalloc(&dC, kM * kN * sizeof(cutlass::half_t));
++  cudaMalloc(&dQ, q.size());
++  cudaMalloc(&dGs, sizeof(float));
++  cudaMemcpy(dA, A.data(), kM * kK * sizeof(cutlass::half_t), cudaMemcpyHostToDevice);
++  cudaMemcpy(dQ, q.data(), q.size(), cudaMemcpyHostToDevice);
++  cudaMemcpy(dGs, &gscale, sizeof(float), cudaMemcpyHostToDevice);
++
++  Kernel kernel = sm70_marlin_nvfp4_gemm_kernel<false, kCtaM, kCtaN, kCtaK, 4, 32, 32, 32, 16, 64,
++                                                true>;
++  int const smem = static_cast<int>(sizeof(typename Traits::SharedStorage));
++  cudaFuncSetAttribute(reinterpret_cast<void const*>(kernel),
++                       cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
++  dim3 grid((kM + kCtaM - 1) / kCtaM, kN / kCtaN);
++  kernel<<<grid, 4 * 32, smem>>>(dA, reinterpret_cast<uint32_t const*>(dQ), nullptr, dGs, dC, kM,
++                                 kN, kK, kK);
++  auto err = cudaDeviceSynchronize();
++  if (err != cudaSuccess) {
++    std::printf("kernel failed: %s\n", cudaGetErrorString(err));
++    return 1;
++  }
++  cudaMemcpy(C.data(), dC, kM * kN * sizeof(cutlass::half_t), cudaMemcpyDeviceToHost);
++
++  int bad = 0;
++  double worst = 0.0;
++  for (int m = 0; m < kM; ++m) {
++    for (int n = 0; n < kN; ++n) {
++      double acc = 0.0;
++      for (int k = 0; k < kK; ++k) {
++        const int tile = n / 32, lane = marlin::sm70::qpn2::lane_from_col(n % 32);
++        const int group = k / 16;
++        const int64_t base = static_cast<int64_t>(tile * (kK / 16) + group) * 288;
++        const int p = marlin::sm70::qpn2::physical_k(k % 16);
++        const uint8_t byte = q[base + lane * 8 + (p >> 1)];
++        const uint8_t nib = (p & 1) ? (byte >> 4) : (byte & 0x0f);
++        cutlass::half_t scale_h;
++        scale_h.storage = marlin::sm70::qpn2::e4m3_to_fp16_bits(q[base + 256 + lane]);
++        const double scale = static_cast<double>(static_cast<float>(scale_h)) * 256.0 * gscale;
++        const double b = static_cast<double>(marlin::sm70::qpn2::e2m1_to_float(nib)) * scale;
++        acc += static_cast<double>(static_cast<float>(A[m * kK + k])) * b;
++      }
++      const double got = static_cast<double>(static_cast<float>(C[m * kN + n]));
++      const double rel = std::fabs(acc - got) / (1.0 + std::fabs(acc));
++      if (rel > worst) worst = rel;
++      if (rel > 5e-3) ++bad;
++    }
++  }
++  std::printf("qpn2 gemm M=%d N=%d K=%d: %d of %d outputs off, worst rel %.3e\n", kM, kN, kK, bad,
++              kM * kN, worst);
++  return bad == 0 ? 0 : 1;
++}

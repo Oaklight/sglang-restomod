@@ -1,0 +1,89 @@
+From 6ffef633cbf4b046ef6ae71959ae5180f45868f9 Mon Sep 17 00:00:00 2001
+From: Peng Ding <pding.dp@foxmail.com>
+Date: Fri, 6 Nov 2026 16:48:18 -0600
+Subject: [PATCH 6/9] qpn2: fail-closed QPN2/Marlin selection rule (default
+ Marlin)
+
+---
+ csrc/quantization/marlin/sm70_qpn2_select.h | 30 ++++++++++++++++++
+ tests/qpn2_select_test.cpp                  | 34 +++++++++++++++++++++
+ 2 files changed, 64 insertions(+)
+ create mode 100644 csrc/quantization/marlin/sm70_qpn2_select.h
+ create mode 100644 tests/qpn2_select_test.cpp
+
+diff --git a/csrc/quantization/marlin/sm70_qpn2_select.h b/csrc/quantization/marlin/sm70_qpn2_select.h
+new file mode 100644
+index 0000000..932cb6f
+--- /dev/null
++++ b/csrc/quantization/marlin/sm70_qpn2_select.h
+@@ -0,0 +1,30 @@
++// QPN2 prefill selection rule.
++//
++// QPN2 is opt-in: an unset flag keeps the Marlin path, so an existing launch
++// cannot change behaviour. A QPN2 base pointer without the flag, or the flag
++// without a base pointer, is a configuration error and fails closed rather
++// than silently running the other path.
++#pragma once
++
++#include <cstdint>
++#include <stdexcept>
++
++namespace marlin {
++namespace sm70 {
++namespace qpn2 {
++
++inline bool qpn2_selected(void const* qpn2_base, bool enable_qpn2) {
++  if (qpn2_base != nullptr && !enable_qpn2) {
++    throw std::runtime_error(
++        "QPN2 base pointer supplied but the QPN2 prefill path is not enabled");
++  }
++  if (qpn2_base == nullptr && enable_qpn2) {
++    throw std::runtime_error(
++        "QPN2 prefill path enabled but no QPN2 base pointer was supplied");
++  }
++  return enable_qpn2;
++}
++
++}  // namespace qpn2
++}  // namespace sm70
++}  // namespace marlin
+diff --git a/tests/qpn2_select_test.cpp b/tests/qpn2_select_test.cpp
+new file mode 100644
+index 0000000..6b521fd
+--- /dev/null
++++ b/tests/qpn2_select_test.cpp
+@@ -0,0 +1,34 @@
++#include <cstdio>
++#include <stdexcept>
++
++#include "quantization/marlin/sm70_qpn2_select.h"
++
++using marlin::sm70::qpn2::qpn2_selected;
++
++static int failures = 0;
++
++static void expect(bool got, bool want, const char* what) {
++  if (got != want) {
++    std::printf("FAIL %s: got %d want %d\n", what, got, want);
++    ++failures;
++  }
++}
++
++static void expect_throw(void const* base, bool flag, const char* what) {
++  try {
++    qpn2_selected(base, flag);
++    std::printf("FAIL %s: no throw\n", what);
++    ++failures;
++  } catch (std::runtime_error const&) {
++  }
++}
++
++int main() {
++  int dummy = 0;
++  expect(qpn2_selected(nullptr, false), false, "default is Marlin");
++  expect(qpn2_selected(&dummy, true), true, "flag plus base selects QPN2");
++  expect_throw(&dummy, false, "base without flag");
++  expect_throw(nullptr, true, "flag without base");
++  std::printf("%s\n", failures == 0 ? "qpn2 selection: ok" : "qpn2 selection: FAILED");
++  return failures == 0 ? 0 : 1;
++}

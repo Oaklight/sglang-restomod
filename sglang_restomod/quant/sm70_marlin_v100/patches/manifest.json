@@ -2,6 +2,14 @@
   "repo": "zhinianqin/marlin_v100",
   "commit": "3f16d442cdb4c24dd225bbec196c982a54d9a31c",
   "patches": [
-    "0001-splitk-from-occupancy.patch"
+    "0001-splitk-from-occupancy.patch",
+    "0002-qpn2-FP16-staging-producer-arm-0.79x-0.88x-Marlin-ve.patch",
+    "0003-qpn2-prefill-B-iterator-stock-raked-1-32-map-with-GP.patch",
+    "0004-qpn2-MmaCore-alias-for-the-QPN2-B-thread-map.patch",
+    "0005-traits-Qpn2-selection-parameter-on-Sm70MarlinGemmTra.patch",
+    "0006-qpn2-fail-closed-QPN2-Marlin-selection-rule-default-.patch",
+    "0007-qpn2-dense-nvfp4-kernel-Qpn2-branch-M-1-GEMM-test-GP.patch",
+    "0008-qpn2-honor-the-pipeline-B-prefetch-mask-in-the-itera.patch",
+    "0009-qpn2-test-spec-stub-and-gate-3-timing-source.patch"
   ]
 }

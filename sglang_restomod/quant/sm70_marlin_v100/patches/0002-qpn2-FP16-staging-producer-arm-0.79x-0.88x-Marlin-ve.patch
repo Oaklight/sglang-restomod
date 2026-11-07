@@ -1,0 +1,305 @@
+From ef791baa8bf83ac2c19967cef139068b680f3338 Mon Sep 17 00:00:00 2001
+From: Peng Ding <pding.dp@foxmail.com>
+Date: Fri, 6 Nov 2026 16:33:05 -0600
+Subject: [PATCH 2/9] qpn2: FP16 staging producer arm (0.79x/0.88x Marlin),
+ verified logical K order
+
+---
+ tests/qpn2_producer_bench.cu  | 162 ++++++++++++++++++++++++++++++++--
+ tests/qpn2_producer_bench.txt |  74 +++++++++-------
+ 2 files changed, 196 insertions(+), 40 deletions(-)
+
+diff --git a/tests/qpn2_producer_bench.cu b/tests/qpn2_producer_bench.cu
+index 6323448..23573b2 100644
+--- a/tests/qpn2_producer_bench.cu
++++ b/tests/qpn2_producer_bench.cu
+@@ -305,6 +305,115 @@ __global__ void qpn2_loop_shared_b(const uint8_t* __restrict__ qpn2, float gscal
+   if (blockIdx.x == 0) out[1 + tid] = acc;
+ }
+ 
++
++// Restore-to-shared-FP16 producer: dequantize in natural (column) order and
++// store 16 logical-K halves per lane, so the consumer's fragment loader does
++// all the addressing. The section-3 trick already yields logical K pairs, so
++// the dequant output registers are the logical order: no permutation.
++// kBlockBuffer=false: per-warp 1 KiB buffer with its own __syncwarp.
++// kBlockBuffer=true: block-wide buffer, the barrier is the stage boundary the
++// pipeline already has (__syncthreads is not extra there).
++template <bool kBlockBuffer>
++__global__ void qpn2_loop_fp16(const uint8_t* __restrict__ qpn2, float gscale,
++                               __half2* out) {
++  constexpr int kGroupOut = 1024;  // 32 columns x 16 K x 2 B
++  __shared__ __align__(16) uint8_t sbuf[kBlockBuffer ? 4 * kGroupOut : kGroupOut];
++  union Pack { __half2 h[4]; uint4 u; };
++  const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
++  __half2 acc = __float2half2_rn(0.0f);
++  const int col = q::col_from_lane(lane);
++  uint8_t* s = sbuf + (kBlockBuffer ? warp * kGroupOut : 0);
++  long long t0 = clock64();
++#pragma unroll 1
++  for (int tile = 0; tile < kIters; ++tile) {
++    const int n_tile = warp >> 1;
++    const int g = tile * 2 + (warp & 1);
++    const int64_t off = static_cast<int64_t>(n_tile * (kSizeK / 16) + g) * q::kGroupBytes;
++    const uint2 codes = *reinterpret_cast<const uint2*>(qpn2 + off + lane * 8);
++    const uint8_t sbyte = qpn2[off + q::kScaleOffset + lane];
++    const __half my_scale = __float2half_rn(
++        __half2float(__ushort_as_half(q::e4m3_to_fp16_bits(sbyte))) * 256.0f * gscale);
++    const __half2 s2 = __half2half2(my_scale);
++    __half2 sc4[4] = {s2, s2, s2, s2};
++    __half2 d[4], e[4];
++    dequant_word(codes.x, sc4, d);  // physical K 0..7
++    dequant_word(codes.y, sc4, e);  // physical K 8..15
++    // The section-3 trick already emits logical K pairs: d[i] = (K i, K i+4),
++    // so the register order is the logical order and no permutation is needed.
++    Pack lo, hi;
++    lo.h[0] = d[0];
++    lo.h[1] = d[1];
++    lo.h[2] = d[2];
++    lo.h[3] = d[3];
++    hi.h[0] = e[0];
++    hi.h[1] = e[1];
++    hi.h[2] = e[2];
++    hi.h[3] = e[3];
++    *reinterpret_cast<uint4*>(s + col * 32) = lo.u;
++    *reinterpret_cast<uint4*>(s + col * 32 + 16) = hi.u;
++    if (kBlockBuffer) {
++      __syncthreads();  // models the stage boundary the pipeline already has
++    } else {
++      __syncwarp();
++    }
++    acc = __hadd2(acc, __hadd2(lo.h[0], hi.h[0]));
++  }
++  long long t1 = clock64();
++  if (blockIdx.x == 0 && tid == 0) out[0] = __float2half2_rn(static_cast<float>(t1 - t0));
++  if (blockIdx.x == 0) out[1 + tid] = acc;
++}
++
++
++// Value check for the FP16 arm: the staged half at logical K k must equal the
++// value decoded from the raw byte at physical_k(k). Not timed.
++__global__ void qpn2_check_fp16(const uint8_t* __restrict__ qpn2, float gscale,
++                                __half2* out) {
++  __shared__ __align__(16) uint8_t sbuf[4 * 1024];
++  union Pack { __half2 h[4]; uint4 u; };
++  const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
++  const int col = q::col_from_lane(lane);
++  uint8_t* s = sbuf + warp * 1024;
++  const int64_t off = static_cast<int64_t>(warp) * q::kGroupBytes;
++  const uint2 codes = *reinterpret_cast<const uint2*>(qpn2 + off + lane * 8);
++  const uint8_t sbyte = qpn2[off + q::kScaleOffset + lane];
++  const __half my_scale = __float2half_rn(
++      __half2float(__ushort_as_half(q::e4m3_to_fp16_bits(sbyte))) * 256.0f * gscale);
++  const __half2 s2 = __half2half2(my_scale);
++  __half2 sc4[4] = {s2, s2, s2, s2};
++  __half2 d[4], e[4];
++  dequant_word(codes.x, sc4, d);
++  dequant_word(codes.y, sc4, e);
++  Pack lo, hi;
++  lo.h[0] = d[0];
++  lo.h[1] = d[1];
++  lo.h[2] = d[2];
++  lo.h[3] = d[3];
++  hi.h[0] = e[0];
++  hi.h[1] = e[1];
++  hi.h[2] = e[2];
++  hi.h[3] = e[3];
++  *reinterpret_cast<uint4*>(s + col * 32) = lo.u;
++  *reinterpret_cast<uint4*>(s + col * 32 + 16) = hi.u;
++  __syncwarp();
++  int bad = 0;
++#pragma unroll
++  for (int k = 0; k < 16; ++k) {
++    const int p = q::physical_k(k);
++    const int pb = p >> 1;
++    const uint32_t w = pb < 4 ? codes.x : codes.y;
++    const uint8_t byte = static_cast<uint8_t>((w >> ((pb & 3) * 8)) & 0xff);
++    const uint8_t nib = (p & 1) ? static_cast<uint8_t>(byte >> 4)
++                                : static_cast<uint8_t>(byte & 0x0f);
++    // e2m1_to_float already returns the true magnitude; the x16384 in
++    // dequant_word only undoes the trick's subnormal encoding.
++    const __half expect = __hmul(__float2half_rn(q::e2m1_to_float(nib)), my_scale);
++    const __half got = *reinterpret_cast<const __half*>(s + col * 32 + k * 2);
++    bad += __half_as_ushort(expect) != __half_as_ushort(got);
++  }
++  if (threadIdx.x == 0 && blockIdx.x == 0) out[0] = __float2half2_rn(static_cast<float>(bad));
++  if (blockIdx.x == 0) out[1 + tid] = __float2half2_rn(static_cast<float>(bad));
++}
++
+ int main() {
+   std::mt19937 rng(5);
+   std::vector<uint32_t> h_qweight(static_cast<size_t>(kSizeK / 16) * kSizeN * 2);
+@@ -365,6 +474,12 @@ int main() {
+         bench("qpn2-sA", [&] { qpn2_loop_shared_a<<<grid, kThreads>>>(d_qpn2, 0.75f, d_out); });
+     const double b_cycles =
+         bench("qpn2-sB", [&] { qpn2_loop_shared_b<<<grid, kThreads>>>(d_qpn2, 0.75f, d_out); });
++    const double fw_cycles = bench("qpn2-f16w", [&] {
++      qpn2_loop_fp16<false><<<grid, kThreads>>>(d_qpn2, 0.75f, d_out);
++    });
++    const double fb_cycles = bench("qpn2-f16b", [&] {
++      qpn2_loop_fp16<true><<<grid, kThreads>>>(d_qpn2, 0.75f, d_out);
++    });
+     std::printf(
+         "grid %3d  marlin/MMA %.2f  qpn2/MMA %.2f  qpn2/marlin %.2f  transpose %.0f%%\n",
+         grid, marlin_cycles / 284.0, qpn2_cycles / 284.0, qpn2_cycles / marlin_cycles,
+@@ -373,6 +488,11 @@ int main() {
+         "          sA %.1f (%.2fx marlin, %.2fx MMA)  sB %.1f (%.2fx marlin, %.2fx MMA)\n",
+         a_cycles, a_cycles / marlin_cycles, a_cycles / 284.0, b_cycles,
+         b_cycles / marlin_cycles, b_cycles / 284.0);
++    std::printf(
++        "          f16warp %.1f (%.2fx marlin, %.2fx MMA)  f16block %.1f (%.2fx marlin, "
++        "%.2fx MMA)\n",
++        fw_cycles, fw_cycles / marlin_cycles, fw_cycles / 284.0, fb_cycles,
++        fb_cycles / marlin_cycles, fb_cycles / 284.0);
+     if (grid == 1 && qpn2_cycles > 284.0) std::printf("STOP: QPN2 producer exceeds the MMA phase\n");
+   }
+   const double mma_cycles = 284.0;
+@@ -393,20 +513,31 @@ int main() {
+       CUDA_CHECK(cudaEventElapsedTime(&ms, a, b));
+       return static_cast<double>(ms) / preps * 1e-3 * 1530e6 / kIters;
+     };
+-    std::vector<double> ratios_a, ratios_b, m_cyc, a_cyc, b_cyc;
++    std::vector<double> ratios_a, ratios_b, ratios_fw, ratios_fb, m_cyc, a_cyc, b_cyc,
++        fw_cyc, fb_cyc;
+     for (int r = 0; r < rounds; ++r) {
+       const double m = time_once([&] { marlin_loop<<<pgrid, kThreads>>>(d_qw, d_sc, d_out); });
+       const double qa =
+           time_once([&] { qpn2_loop_shared_a<<<pgrid, kThreads>>>(d_qpn2, 0.75f, d_out); });
+       const double qb =
+           time_once([&] { qpn2_loop_shared_b<<<pgrid, kThreads>>>(d_qpn2, 0.75f, d_out); });
++      const double qfw =
++          time_once([&] { qpn2_loop_fp16<false><<<pgrid, kThreads>>>(d_qpn2, 0.75f, d_out); });
++      const double qfb =
++          time_once([&] { qpn2_loop_fp16<true><<<pgrid, kThreads>>>(d_qpn2, 0.75f, d_out); });
+       m_cyc.push_back(m);
+       a_cyc.push_back(qa);
+       b_cyc.push_back(qb);
+       ratios_a.push_back(qa / m);
+       ratios_b.push_back(qb / m);
+-      std::printf("round %d: marlin %7.1f  sA %7.1f (%.2fx)  sB %7.1f (%.2fx)\n", r, m, qa,
+-                  qa / m, qb, qb / m);
++      fw_cyc.push_back(qfw);
++      fb_cyc.push_back(qfb);
++      ratios_fw.push_back(qfw / m);
++      ratios_fb.push_back(qfb / m);
++      std::printf(
++          "round %d: marlin %7.1f  sA %7.1f (%.2fx)  sB %7.1f (%.2fx)  f16w %7.1f (%.2fx)  "
++          "f16b %7.1f (%.2fx)\n",
++          r, m, qa, qa / m, qb, qb / m, qfw, qfw / m, qfb, qfb / m);
+     }
+     auto median = [](std::vector<double> v) {  // insertion sort, no <algorithm>
+       for (size_t i = 1; i < v.size(); ++i) {
+@@ -420,11 +551,26 @@ int main() {
+       }
+       return v[v.size() / 2];
+     };
+-    std::printf("paired medians at 2 CTAs/SM: marlin %.1f  sA %.1f (%.2fx)  sB %.1f (%.2fx)\n",
+-                median(m_cyc), median(a_cyc), median(ratios_a), median(b_cyc),
+-                median(ratios_b));
+-    std::printf("%s\n", median(ratios_a) <= 1.0 ? "ACCEPT: sA beats or matches Marlin"
+-                                                 : "REJECT: sA still above Marlin");
++    std::printf(
++        "paired medians at 2 CTAs/SM: marlin %.1f  sA %.1f (%.2fx)  sB %.1f (%.2fx)  f16warp "
++        "%.1f (%.2fx)  f16block %.1f (%.2fx)\n",
++        median(m_cyc), median(a_cyc), median(ratios_a), median(b_cyc), median(ratios_b),
++        median(fw_cyc), median(ratios_fw), median(fb_cyc), median(ratios_fb));
++    std::printf("%s\n", median(ratios_fb) <= 1.0
++                              ? "ACCEPT: FP16 staging beats or matches Marlin"
++                              : "REJECT: FP16 staging still above Marlin");
++  }
++
++  // Value check of the FP16 staging permutation (logical K order + store).
++  {
++    std::vector<__half2> h_chk(kThreads + 1);
++    qpn2_check_fp16<<<1, kThreads>>>(d_qpn2, 0.75f, d_out);
++    CUDA_CHECK(cudaMemcpy(h_chk.data(), d_out, (kThreads + 1) * sizeof(__half2),
++                          cudaMemcpyDeviceToHost));
++    int bad = 0;
++    for (int i = 1; i <= kThreads; ++i) bad += static_cast<int>(__low2float(h_chk[i]));
++    std::printf("fp16 staging value check: %d of %d halves differ (16 per lane)\n", bad,
++                kThreads * 16);
+   }
+ 
+   // Cross-check: qpn2 (shuffle), sA and sB must produce identical accumulators.
+diff --git a/tests/qpn2_producer_bench.txt b/tests/qpn2_producer_bench.txt
+index bd182b7..23ceed8 100644
+--- a/tests/qpn2_producer_bench.txt
++++ b/tests/qpn2_producer_bench.txt
+@@ -1,35 +1,45 @@
+-marlin      27.873 us/iter     533.1 cycles/K-tile
+-qpn2        41.984 us/iter     802.9 cycles/K-tile
+-qpn2-nt     18.202 us/iter     348.1 cycles/K-tile
+-qpn2-sA     33.219 us/iter     635.3 cycles/K-tile
+-qpn2-sB     34.760 us/iter     664.8 cycles/K-tile
+-grid   1  marlin/MMA 1.88  qpn2/MMA 2.83  qpn2/marlin 1.51  transpose 57%
+-          sA 635.3 (1.19x marlin, 2.24x MMA)  sB 664.8 (1.25x marlin, 2.34x MMA)
++marlin      33.234 us/iter     635.6 cycles/K-tile
++qpn2        49.582 us/iter     948.3 cycles/K-tile
++qpn2-nt     21.453 us/iter     410.3 cycles/K-tile
++qpn2-sA     39.286 us/iter     751.3 cycles/K-tile
++qpn2-sB     41.114 us/iter     786.3 cycles/K-tile
++qpn2-f16w    24.591 us/iter     470.3 cycles/K-tile
++qpn2-f16b    27.382 us/iter     523.7 cycles/K-tile
++grid   1  marlin/MMA 2.24  qpn2/MMA 3.34  qpn2/marlin 1.49  transpose 57%
++          sA 751.3 (1.18x marlin, 2.65x MMA)  sB 786.3 (1.24x marlin, 2.77x MMA)
++          f16warp 470.3 (0.74x marlin, 1.66x MMA)  f16block 523.7 (0.82x marlin, 1.84x MMA)
+ STOP: QPN2 producer exceeds the MMA phase
+-marlin      34.099 us/iter     652.1 cycles/K-tile
+-qpn2        45.409 us/iter     868.5 cycles/K-tile
+-qpn2-nt     21.540 us/iter     411.9 cycles/K-tile
+-qpn2-sA     37.709 us/iter     721.2 cycles/K-tile
+-qpn2-sB     41.021 us/iter     784.5 cycles/K-tile
+-grid 160  marlin/MMA 2.30  qpn2/MMA 3.06  qpn2/marlin 1.33  transpose 53%
+-          sA 721.2 (1.11x marlin, 2.54x MMA)  sB 784.5 (1.20x marlin, 2.76x MMA)
+-marlin     116.767 us/iter    2233.2 cycles/K-tile
+-qpn2       108.559 us/iter    2076.2 cycles/K-tile
+-qpn2-nt     35.169 us/iter     672.6 cycles/K-tile
+-qpn2-sA    108.344 us/iter    2072.1 cycles/K-tile
+-qpn2-sB    129.679 us/iter    2480.1 cycles/K-tile
+-grid 640  marlin/MMA 7.86  qpn2/MMA 7.31  qpn2/marlin 0.93  transpose 68%
+-          sA 2072.1 (0.93x marlin, 7.30x MMA)  sB 2480.1 (1.11x marlin, 8.73x MMA)
++marlin      36.659 us/iter     701.1 cycles/K-tile
++qpn2        48.707 us/iter     931.5 cycles/K-tile
++qpn2-nt     23.188 us/iter     443.5 cycles/K-tile
++qpn2-sA     37.652 us/iter     720.1 cycles/K-tile
++qpn2-sB     40.986 us/iter     783.8 cycles/K-tile
++qpn2-f16w    26.962 us/iter     515.6 cycles/K-tile
++qpn2-f16b    29.957 us/iter     572.9 cycles/K-tile
++grid 160  marlin/MMA 2.47  qpn2/MMA 3.28  qpn2/marlin 1.33  transpose 52%
++          sA 720.1 (1.03x marlin, 2.54x MMA)  sB 783.8 (1.12x marlin, 2.76x MMA)
++          f16warp 515.6 (0.74x marlin, 1.82x MMA)  f16block 572.9 (0.82x marlin, 2.02x MMA)
++marlin     116.500 us/iter    2228.1 cycles/K-tile
++qpn2       108.600 us/iter    2077.0 cycles/K-tile
++qpn2-nt     35.108 us/iter     671.4 cycles/K-tile
++qpn2-sA    108.303 us/iter    2071.3 cycles/K-tile
++qpn2-sB    129.587 us/iter    2478.4 cycles/K-tile
++qpn2-f16w    58.711 us/iter    1122.8 cycles/K-tile
++qpn2-f16b    65.567 us/iter    1254.0 cycles/K-tile
++grid 640  marlin/MMA 7.85  qpn2/MMA 7.31  qpn2/marlin 0.93  transpose 68%
++          sA 2071.3 (0.93x marlin, 7.29x MMA)  sB 2478.4 (1.11x marlin, 8.73x MMA)
++          f16warp 1122.8 (0.50x marlin, 3.95x MMA)  f16block 1254.0 (0.56x marlin, 4.42x MMA)
+ MMA budget for the tile: 284 cycles (131072 MACs at 462/cycle)
+-round 0: marlin   652.9  sA   721.5 (1.10x)  sB   784.9 (1.20x)
+-round 1: marlin   652.5  sA   721.9 (1.11x)  sB   784.9 (1.20x)
+-round 2: marlin   652.9  sA   721.5 (1.10x)  sB   785.3 (1.20x)
+-round 3: marlin   652.9  sA   721.1 (1.10x)  sB   785.7 (1.20x)
+-round 4: marlin   652.9  sA   721.5 (1.10x)  sB   784.9 (1.20x)
+-round 5: marlin   653.3  sA   720.3 (1.10x)  sB   784.9 (1.20x)
+-round 6: marlin   652.9  sA   721.5 (1.10x)  sB   785.3 (1.20x)
+-round 7: marlin   653.7  sA   721.5 (1.10x)  sB   785.7 (1.20x)
+-round 8: marlin   653.7  sA   721.5 (1.10x)  sB   786.1 (1.20x)
+-paired medians at 2 CTAs/SM: marlin 652.9  sA 721.5 (1.10x)  sB 785.3 (1.20x)
+-REJECT: sA still above Marlin
++round 0: marlin   653.7  sA   722.6 (1.11x)  sB   786.1 (1.20x)  f16w   518.2 (0.79x)  f16b   574.2 (0.88x)
++round 1: marlin   654.1  sA   721.9 (1.10x)  sB   786.1 (1.20x)  f16w   515.8 (0.79x)  f16b   573.8 (0.88x)
++round 2: marlin   654.1  sA   723.0 (1.11x)  sB   785.7 (1.20x)  f16w   518.6 (0.79x)  f16b   575.0 (0.88x)
++round 3: marlin   653.7  sA   721.9 (1.10x)  sB   785.3 (1.20x)  f16w   518.6 (0.79x)  f16b   575.0 (0.88x)
++round 4: marlin   653.7  sA   722.6 (1.11x)  sB   785.7 (1.20x)  f16w   517.4 (0.79x)  f16b   575.0 (0.88x)
++round 5: marlin   654.5  sA   722.6 (1.10x)  sB   785.7 (1.20x)  f16w   517.4 (0.79x)  f16b   574.6 (0.88x)
++round 6: marlin   654.1  sA   723.0 (1.11x)  sB   786.1 (1.20x)  f16w   517.4 (0.79x)  f16b   575.0 (0.88x)
++round 7: marlin   654.1  sA   722.6 (1.10x)  sB   786.1 (1.20x)  f16w   517.4 (0.79x)  f16b   574.2 (0.88x)
++round 8: marlin   653.7  sA   721.5 (1.10x)  sB   785.7 (1.20x)  f16w   517.4 (0.79x)  f16b   574.6 (0.88x)
++paired medians at 2 CTAs/SM: marlin 654.1  sA 722.6 (1.10x)  sB 785.7 (1.20x)  f16warp 517.4 (0.79x)  f16block 574.6 (0.88x)
++ACCEPT: FP16 staging beats or matches Marlin
++fp16 staging value check: 0 of 2048 halves differ (16 per lane)
+ cross-check vs shuffle reader: sA 0 mismatches, sB 0 mismatches

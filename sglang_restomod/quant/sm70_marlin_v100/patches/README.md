@@ -153,3 +153,33 @@ passes at `3f16d44`, the commit `quant/sm70_fp4_moe/PROVENANCE.md` pins. It also
 passes in reverse against the tree the extension under test was built from.
 
 Trace: restomod issue #180, lab note `notes/marlin-dense-fp8-sm70.md`.
+
+## 0002-0009: QPN2 prefill reader (issue #224)
+
+Series exported from the local `feat/qpn2-prefill-reader` branch of
+`marlin_v100-qpn2` (commits `ef791ba`..`714f002`, base `3f16d44`, the same base
+as 0001). The upstream repository is pull-only, so the work lives here.
+
+What it contains:
+
+- the FP16-staging producer measurement harness (`qpn2_producer_bench.cu`) and
+  the layout/repack model it shares with the step-1 tests;
+- `qpn2_layout.cuh`, `sm70_qpn2_iterator.cuh` (prefill B iterator, stock
+  `PitchLinearWarpRakedThreadMap<..., PitchLinearShape<1,32>, 8>`) and
+  `sm70_qpn2_mma_core.cuh` (MmaCore alias that keeps the Volta B-congruous
+  layout);
+- `bool Qpn2 = false` on `Sm70MarlinGemmTraits` and the dense nvfp4 kernel, so
+  an unset launch keeps Marlin, plus `sm70_qpn2_select.h`, which fails closed
+  when the flag and the layout pointer disagree;
+- the M>1 GEMM test and the gate-3 timing source.
+
+State when exported: the producer gate passes (0.79x / 0.88x Marlin at
+2 CTAs/SM, value-checked), the iterator fragment matches the layout decode, the
+SASS store is two `STS.128`, and the dense TU compiles. The M>1 GEMM test is
+**failing** at runtime: the pipeline's B prefetch was fixed with the mask
+(`0008`), and a 16-byte shared write past the B stage remains, attributed to the
+thread map's warp ordering. Gate 3 has not run. Do not treat the QPN2 path as
+usable until that test passes.
+
+Accepted plan and status: issue #224 comments (design accepted after the
+producer-cost gates; the patch-series plan is recorded there).

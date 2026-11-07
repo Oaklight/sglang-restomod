@@ -1,0 +1,61 @@
+From ef768b3c78579a3327757c49a3d619d2898691af Mon Sep 17 00:00:00 2001
+From: Peng Ding <pding.dp@foxmail.com>
+Date: Fri, 6 Nov 2026 18:15:40 -0600
+Subject: [PATCH 8/9] qpn2: honor the pipeline B prefetch mask in the iterator
+
+---
+ .../marlin/sm70_qpn2_iterator.cuh             | 19 ++++++++++++++++---
+ 1 file changed, 16 insertions(+), 3 deletions(-)
+
+diff --git a/csrc/quantization/marlin/sm70_qpn2_iterator.cuh b/csrc/quantization/marlin/sm70_qpn2_iterator.cuh
+index 77f3fa4..163ff53 100644
+--- a/csrc/quantization/marlin/sm70_qpn2_iterator.cuh
++++ b/csrc/quantization/marlin/sm70_qpn2_iterator.cuh
+@@ -82,6 +82,7 @@ class Sm70Qpn2IteratorB {
+   cutlass::layout::PitchLinearCoord thread_offset_;
+   int k_offset_;
+   int n_offset_;
++  bool mask_enabled_;
+ 
+  public:
+   CUTLASS_DEVICE
+@@ -91,7 +92,8 @@ class Sm70Qpn2IteratorB {
+         params_(params),
+         thread_offset_(ThreadMap::initial_offset(thread_id)),
+         k_offset_(threadblock_offset.row()),
+-        n_offset_(threadblock_offset.column()) {}
++        n_offset_(threadblock_offset.column()),
++        mask_enabled_(true) {}
+ 
+   CUTLASS_DEVICE
+   Sm70Qpn2IteratorB& operator++() {
+@@ -99,16 +101,27 @@ class Sm70Qpn2IteratorB {
+     return *this;
+   }
+ 
++  // The pipeline prefetches one fragment past the K tile and relies on this
++  // mask to suppress the read; without it the prefetch runs off the tensor.
+   CUTLASS_DEVICE
+-  void clear_mask(bool = true) {}
++  void clear_mask(bool enable = true) {
++    if (enable) {
++      mask_enabled_ = false;
++    }
++  }
++
+   CUTLASS_DEVICE
+-  void enable_mask() {}
++  void enable_mask() { mask_enabled_ = true; }
+ 
+   CUTLASS_DEVICE
+   void load(Fragment& frag) const {
+     // The K16 group and column this thread owns for this K-tile.
+     const int n = n_offset_ + thread_offset_.strided();
+     const int k = k_offset_ + thread_offset_.contiguous();
++    if (!mask_enabled_ || k >= params_.size_k) {
++      frag.clear();
++      return;
++    }
+     const int tile = n / kColsPerTile;
+     const int lane = lane_from_col(n % kColsPerTile);
+     const int group = k / kKPerGroup;

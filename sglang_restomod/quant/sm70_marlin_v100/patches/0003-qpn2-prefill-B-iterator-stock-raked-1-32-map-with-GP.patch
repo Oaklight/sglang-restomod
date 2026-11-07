@@ -1,0 +1,234 @@
+From 90f83abf97ba2009bad8a9f690fb9dd2a57439a9 Mon Sep 17 00:00:00 2001
+From: Peng Ding <pding.dp@foxmail.com>
+Date: Fri, 6 Nov 2026 16:44:01 -0600
+Subject: [PATCH 3/9] qpn2: prefill B iterator (stock raked<1,32> map) with GPU
+ value check
+
+---
+ .../marlin/sm70_qpn2_iterator.cuh             | 138 ++++++++++++++++++
+ tests/qpn2_iter_test.cu                       |  71 +++++++++
+ 2 files changed, 209 insertions(+)
+ create mode 100644 csrc/quantization/marlin/sm70_qpn2_iterator.cuh
+ create mode 100644 tests/qpn2_iter_test.cu
+
+diff --git a/csrc/quantization/marlin/sm70_qpn2_iterator.cuh b/csrc/quantization/marlin/sm70_qpn2_iterator.cuh
+new file mode 100644
+index 0000000..77f3fa4
+--- /dev/null
++++ b/csrc/quantization/marlin/sm70_qpn2_iterator.cuh
+@@ -0,0 +1,138 @@
++// QPN2 prefill B iterator for the SM70 Marlin pipeline.
++//
++// The Marlin path stages B as fp16 in shared (RegularTileIterator over
++// RowMajorVoltaTensorOpMultiplicandBCongruous), and this iterator produces the
++// same fp16 fragment the pipeline already stores. The difference is the thread
++// map: a QPN2 storage lane holds one column's 16 codes, so the map puts one
++// column's K16 group in one thread (PitchLinearShape<1,32> raked), and the two
++// 8-half accesses are that group's two code words. No transpose is needed: the
++// section-3 dequant trick already emits logical K order.
++#pragma once
++
++#include "quantization/marlin/qpn2_layout.cuh"
++
++#include <cuda_fp16.h>
++#include <cstdint>
++
++#include "cutlass/array.h"
++#include "cutlass/half.h"
++#include "cutlass/matrix_coord.h"
++#include "cutlass/layout/pitch_linear.h"
++#include "cutlass/pitch_linear_coord.h"
++#include "cutlass/transform/pitch_linear_thread_map.h"
++
++namespace marlin {
++namespace sm70 {
++namespace qpn2 {
++
++// One column's K16 group per thread: 2 contiguous iterations of 8 halves.
++using Qpn2ThreadMapB = cutlass::transform::PitchLinearWarpRakedThreadMap<
++    cutlass::PitchLinearShape<32, 64>, 128, cutlass::PitchLinearShape<1, 32>, 8>;
++
++__device__ __forceinline__ void dequant_qpn2_word(uint32_t word, __half2 const& scale,
++                                                  __half2 out[4]) {
++  // Same bit trick the Marlin NVFP4 path uses; the output is already in
++  // logical K order (out[i] = K i and K i+4).
++  constexpr uint32_t kSign = 0x80008000u, kExpMant = 0x0e000e00u;
++  uint32_t v[4];
++  v[0] = ((word << 12) & kSign) | ((word << 9) & kExpMant);
++  v[1] = ((word << 8) & kSign) | ((word << 5) & kExpMant);
++  v[2] = ((word << 4) & kSign) | ((word << 1) & kExpMant);
++  v[3] = (word & kSign) | ((word >> 3) & kExpMant);
++#pragma unroll
++  for (int i = 0; i < 4; ++i) {
++    const __half2 raw = __halves2half2(__ushort_as_half(static_cast<uint16_t>(v[i] & 0xffff)),
++                                       __ushort_as_half(static_cast<uint16_t>(v[i] >> 16)));
++    out[i] = __hmul2(__hmul2(raw, __float2half2_rn(16384.0f)), scale);
++  }
++}
++
++template <typename Shape_, typename ThreadMap_>
++class Sm70Qpn2IteratorB {
++ public:
++  using Shape = Shape_;
++  using ThreadMap = ThreadMap_;
++  using Element = cutlass::half_t;
++  using Fragment =
++      cutlass::Array<Element, ThreadMap::Iterations::kCount * ThreadMap::kElementsPerAccess>;
++
++  static_assert(Shape::kK % kKPerGroup == 0, "CTA_K must be a multiple of 16.");
++  static_assert(Shape::kN % kColsPerTile == 0, "CTA_N must be a multiple of 32.");
++  static_assert(ThreadMap::Iterations::kContiguous == 2,
++                "QPN2 expects two 8-half accesses per K16 group.");
++  static_assert(ThreadMap::kElementsPerAccess == 8,
++                "QPN2 expects one 8-half access per code word.");
++
++  struct Params {
++    int size_k;
++    int size_n;
++    float global_scale;
++
++    CUTLASS_HOST_DEVICE
++    Params() : size_k(0), size_n(0), global_scale(1.0f) {}
++
++    CUTLASS_HOST_DEVICE
++    Params(int size_k_, int size_n_, float global_scale_)
++        : size_k(size_k_), size_n(size_n_), global_scale(global_scale_) {}
++  };
++
++ private:
++  uint8_t const* qpn2_;
++  Params params_;
++  cutlass::layout::PitchLinearCoord thread_offset_;
++  int k_offset_;
++  int n_offset_;
++
++ public:
++  CUTLASS_DEVICE
++  Sm70Qpn2IteratorB(Params const& params, uint8_t const* qpn2, int thread_id,
++                    cutlass::MatrixCoord const& threadblock_offset)
++      : qpn2_(qpn2),
++        params_(params),
++        thread_offset_(ThreadMap::initial_offset(thread_id)),
++        k_offset_(threadblock_offset.row()),
++        n_offset_(threadblock_offset.column()) {}
++
++  CUTLASS_DEVICE
++  Sm70Qpn2IteratorB& operator++() {
++    k_offset_ += Shape::kK;
++    return *this;
++  }
++
++  CUTLASS_DEVICE
++  void clear_mask(bool = true) {}
++  CUTLASS_DEVICE
++  void enable_mask() {}
++
++  CUTLASS_DEVICE
++  void load(Fragment& frag) const {
++    // The K16 group and column this thread owns for this K-tile.
++    const int n = n_offset_ + thread_offset_.strided();
++    const int k = k_offset_ + thread_offset_.contiguous();
++    const int tile = n / kColsPerTile;
++    const int lane = lane_from_col(n % kColsPerTile);
++    const int group = k / kKPerGroup;
++    const int64_t off =
++        static_cast<int64_t>(tile * (params_.size_k / kKPerGroup) + group) * kGroupBytes;
++
++    const uint2 codes = *reinterpret_cast<const uint2*>(qpn2_ + off + lane * 8);
++    const uint8_t sbyte = qpn2_[off + kScaleOffset + lane];
++    const __half2 scale = __half2half2(__float2half_rn(
++        __half2float(__ushort_as_half(e4m3_to_fp16_bits(sbyte))) * 256.0f *
++        params_.global_scale));
++
++    __half2 lo[4], hi[4];
++    dequant_qpn2_word(codes.x, scale, lo);
++    dequant_qpn2_word(codes.y, scale, hi);
++    __half2* frag_vec = reinterpret_cast<__half2*>(frag.data());
++#pragma unroll
++    for (int i = 0; i < 4; ++i) {
++      frag_vec[i] = lo[i];
++      frag_vec[4 + i] = hi[i];
++    }
++  }
++};
++
++}  // namespace qpn2
++}  // namespace sm70
++}  // namespace marlin
+diff --git a/tests/qpn2_iter_test.cu b/tests/qpn2_iter_test.cu
+new file mode 100644
+index 0000000..09597cb
+--- /dev/null
++++ b/tests/qpn2_iter_test.cu
+@@ -0,0 +1,71 @@
++// GPU check: Sm70Qpn2IteratorB fragment against a direct decode of the layout.
++#include <cstdio>
++#include <cstdint>
++#include <cstdlib>
++#include <cstring>
++#include <vector>
++
++#include "quantization/marlin/sm70_qpn2_iterator.cuh"
++
++using namespace marlin::sm70::qpn2;
++
++struct Shape { static constexpr int kM = 64, kN = 64, kK = 32; };
++constexpr int kN = 64, kK = 32, kThreads = 128, kGroups = (kN / kColsPerTile) * (kK / kKPerGroup);
++
++__global__ void iter_probe(uint8_t const* q, float gscale, __half* out) {
++    Sm70Qpn2IteratorB<Shape, Qpn2ThreadMapB> it(
++      typename Sm70Qpn2IteratorB<Shape, Qpn2ThreadMapB>::Params(kK, kN, gscale), q,
++      threadIdx.x, cutlass::MatrixCoord(0, 0));
++  typename Sm70Qpn2IteratorB<Shape, Qpn2ThreadMapB>::Fragment frag;
++  frag.clear();
++  it.load(frag);
++  for (int i = 0; i < 16; ++i) out[threadIdx.x * 16 + i] = __float2half_rn(float(frag[i]));
++}
++
++int main() {
++  srand(7);
++  std::vector<uint8_t> h(kGroups * kGroupBytes);
++  for (auto& b : h) b = static_cast<uint8_t>(rand() & 0xff);
++
++  uint8_t* d = nullptr;
++  __half* o = nullptr;
++  cudaMalloc(&d, h.size());
++  cudaMalloc(&o, kThreads * 16 * sizeof(__half));
++  cudaMemcpy(d, h.data(), h.size(), cudaMemcpyHostToDevice);
++  const float gscale = 0.75f;
++  iter_probe<<<1, kThreads>>>(d, gscale, o);
++  std::vector<__half> got(kThreads * 16);
++  cudaMemcpy(got.data(), o, kThreads * 16 * sizeof(__half), cudaMemcpyDeviceToHost);
++
++  int bad = 0, total = 0;
++  for (int tid = 0; tid < kThreads; ++tid) {
++    auto off = Qpn2ThreadMapB::initial_offset(tid);
++    const int n = off.strided();
++    const int k = off.contiguous();
++    const int tile = n / kColsPerTile, lane = lane_from_col(n % kColsPerTile);
++    const int group = k / kKPerGroup;
++    const int64_t base = static_cast<int64_t>(tile * (kK / kKPerGroup) + group) * kGroupBytes;
++    cutlass::half_t scale_h;
++    scale_h.storage = e4m3_to_fp16_bits(h[base + kScaleOffset + lane]);
++    const float scale = static_cast<float>(scale_h) * 256.0f * gscale;
++    for (int kk = 0; kk < 16; ++kk) {
++      const int p = physical_k(kk);
++      const uint8_t byte = h[base + lane * 8 + (p >> 1)];
++      const uint8_t nib = (p & 1) ? (byte >> 4) : (byte & 0x0f);
++      const float expect = e2m1_to_float(nib) * scale;
++      uint16_t got_bits = 0;
++      memcpy(&got_bits, &got[tid * 16 + kk], sizeof(got_bits));
++      cutlass::half_t got_h;
++      got_h.storage = got_bits;
++      const float gotv = static_cast<float>(got_h);
++      ++total;
++      if (fabsf(expect - gotv) > 1e-3f * (1.0f + fabsf(expect))) {
++        if (bad < 5)
++          printf("tid %d n=%d k=%d kk=%d expect %.6f got %.6f\n", tid, n, k, kk, expect, gotv);
++        ++bad;
++      }
++    }
++  }
++  printf("qpn2 iterator fragment check: %d of %d values differ\n", bad, total);
++  return bad == 0 ? 0 : 1;
++}

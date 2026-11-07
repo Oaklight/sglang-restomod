@@ -1,0 +1,63 @@
+From 254e59b52dbd5598cef3f9b92c41748f31edcc2f Mon Sep 17 00:00:00 2001
+From: Peng Ding <pding.dp@foxmail.com>
+Date: Fri, 6 Nov 2026 16:47:31 -0600
+Subject: [PATCH 5/9] traits: Qpn2 selection parameter on Sm70MarlinGemmTraits
+ (default Marlin)
+
+---
+ csrc/quantization/marlin/sm70_marlin_gemm.cuh | 21 ++++++++++++++-----
+ 1 file changed, 16 insertions(+), 5 deletions(-)
+
+diff --git a/csrc/quantization/marlin/sm70_marlin_gemm.cuh b/csrc/quantization/marlin/sm70_marlin_gemm.cuh
+index f1c6614..baceb28 100644
+--- a/csrc/quantization/marlin/sm70_marlin_gemm.cuh
++++ b/csrc/quantization/marlin/sm70_marlin_gemm.cuh
+@@ -1,4 +1,6 @@
+ #pragma once
++#include "quantization/marlin/sm70_qpn2_iterator.cuh"
++#include "quantization/marlin/sm70_qpn2_mma_core.cuh"
+ 
+ #include <ATen/ATen.h>
+ #include <ATen/cuda/CUDAContext.h>
+@@ -22,7 +24,7 @@
+ namespace marlin::sm70 {
+ 
+ template <typename Spec, int CtaM, int CtaN, int CtaK, int Warps, int WarpM,
+-          int WarpN, int WarpK, int GroupSize, int PackedMacroN>
++          int WarpN, int WarpK, int GroupSize, int PackedMacroN, bool Qpn2 = false>
+ struct Sm70MarlinGemmTraits {
+   static_assert(CtaM == 32 || CtaM == 64 || CtaM == 128 || CtaM == 256,
+                 "SM70 Marlin supports CTA_M in {32, 64, 128, 256}.");
+@@ -50,19 +52,28 @@ struct Sm70MarlinGemmTraits {
+   static_assert(WarpShape::kM <= 64 && WarpShape::kN <= 64,
+                 "SM70 Marlin keeps per-warp M/N no larger than 64.");
+   using InstructionShape = cutlass::gemm::GemmShape<8, 8, 4>;
+-  using MmaCore = cutlass::gemm::threadblock::DefaultMmaCore<
++  using DefaultMmaCore = cutlass::gemm::threadblock::DefaultMmaCore<
+       ThreadblockShape, WarpShape, InstructionShape, ElementA, LayoutA,
+       ElementB, LayoutB, ElementAccumulator, LayoutC,
+       cutlass::arch::OpClassTensorOp, 2, cutlass::arch::OpMultiplyAdd>;
++  // Qpn2 defaults to false: an unset instantiation keeps the Marlin path.
++  using MmaCore = std::conditional_t<
++      Qpn2,
++      qpn2::Qpn2MmaCore<ThreadblockShape, WarpShape, InstructionShape, ElementA, LayoutA,
++                        ElementB, LayoutB, ElementAccumulator, LayoutC,
++                        cutlass::arch::OpClassTensorOp, 2, cutlass::arch::OpMultiplyAdd>,
++      DefaultMmaCore>;
+   static_assert(MmaCore::kThreads == Warps * 32,
+                 "SM70 Marlin launch threads must match CUTLASS warp count.");
+   using IteratorA = cutlass::transform::threadblock::PredicatedTileIterator<
+       cutlass::MatrixShape<ThreadblockShape::kM, ThreadblockShape::kK>,
+       ElementA, LayoutA, 1, typename MmaCore::IteratorThreadMapA,
+       128 / cutlass::sizeof_bits<ElementA>::value>;
+-  using IteratorB = typename Spec::template IteratorB<
+-      ThreadblockShape, typename MmaCore::IteratorThreadMapB, GroupSize,
+-      PackedMacroN>;
++  using MarlinIteratorB = typename Spec::template IteratorB<
++      ThreadblockShape, typename DefaultMmaCore::IteratorThreadMapB, GroupSize, PackedMacroN>;
++  using IteratorB = std::conditional_t<
++      Qpn2, qpn2::Sm70Qpn2IteratorB<ThreadblockShape, typename MmaCore::IteratorThreadMapB>,
++      MarlinIteratorB>;
+   using Mma = Sm70MarlinMmaPipelined<
+       ThreadblockShape, IteratorA, typename MmaCore::SmemIteratorA, IteratorB,
+       typename MmaCore::SmemIteratorB, ElementAccumulator, LayoutC,

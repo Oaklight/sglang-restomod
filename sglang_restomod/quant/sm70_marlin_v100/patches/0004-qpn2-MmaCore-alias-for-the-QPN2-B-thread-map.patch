@@ -1,0 +1,59 @@
+From 98c4a499685ff624e96f684ae5393674c7cf7eaa Mon Sep 17 00:00:00 2001
+From: Peng Ding <pding.dp@foxmail.com>
+Date: Fri, 6 Nov 2026 16:45:00 -0600
+Subject: [PATCH 4/9] qpn2: MmaCore alias for the QPN2 B thread map
+
+---
+ .../marlin/sm70_qpn2_mma_core.cuh             | 43 +++++++++++++++++++
+ 1 file changed, 43 insertions(+)
+ create mode 100644 csrc/quantization/marlin/sm70_qpn2_mma_core.cuh
+
+diff --git a/csrc/quantization/marlin/sm70_qpn2_mma_core.cuh b/csrc/quantization/marlin/sm70_qpn2_mma_core.cuh
+new file mode 100644
+index 0000000..ff228f6
+--- /dev/null
++++ b/csrc/quantization/marlin/sm70_qpn2_mma_core.cuh
+@@ -0,0 +1,43 @@
++// MmaCore for the QPN2 prefill B path: the same SM70 Marlin MmaCore except the
++// B thread map and the shared-memory store iterator that consumes the QPN2
++// fragment. The shared layout, the warp iterator, the epilogue and the Mma
++// policy are inherited unchanged.
++#pragma once
++
++#include "cutlass/gemm/threadblock/default_mma_core_sm70.h"
++#include "cutlass/transform/threadblock/regular_tile_iterator.h"
++
++namespace marlin {
++namespace sm70 {
++namespace qpn2 {
++
++template <typename Shape, typename WarpShape, typename InstructionShape, typename ElementA,
++          typename LayoutA, typename ElementB, typename LayoutB, typename ElementC,
++          typename LayoutC, typename OperatorClass, int Stages, typename Operator>
++struct Qpn2MmaCore
++    : public cutlass::gemm::threadblock::DefaultMmaCore<
++          Shape, WarpShape, InstructionShape, ElementA, LayoutA, ElementB, LayoutB,
++          ElementC, LayoutC, OperatorClass, Stages, Operator> {
++  using Base = cutlass::gemm::threadblock::DefaultMmaCore<
++      Shape, WarpShape, InstructionShape, ElementA, LayoutA, ElementB, LayoutB, ElementC,
++      LayoutC, OperatorClass, Stages, Operator>;
++
++  // One column's K16 group per thread: 32 lanes along N, warps stacked along K.
++  using IteratorThreadMapB = cutlass::transform::PitchLinearWarpRakedThreadMap<
++      cutlass::PitchLinearShape<Shape::kK, Shape::kN>, Base::kThreads,
++      cutlass::PitchLinearShape<1, 32>,
++      128 / cutlass::sizeof_bits<ElementB>::value>;
++
++  static_assert(IteratorThreadMapB::Iterations::kContiguous == 2,
++                "QPN2 expects one K16 group per thread (two 8-half accesses).");
++  static_assert(IteratorThreadMapB::kElementsPerAccess == 8,
++                "QPN2 expects 8-half accesses.");
++
++  using SmemIteratorB = cutlass::transform::threadblock::RegularTileIterator<
++      cutlass::MatrixShape<Shape::kK, Shape::kN>, ElementB, typename Base::SmemLayoutB, 0,
++      IteratorThreadMapB>;
++};
++
++}  // namespace qpn2
++}  // namespace sm70
++}  // namespace marlin

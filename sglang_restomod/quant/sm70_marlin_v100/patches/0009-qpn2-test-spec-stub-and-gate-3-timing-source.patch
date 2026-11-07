@@ -1,0 +1,140 @@
+From 714f0023574957a544ccb1a12dac6b678c2364e3 Mon Sep 17 00:00:00 2001
+From: Peng Ding <pding.dp@foxmail.com>
+Date: Fri, 6 Nov 2026 20:54:41 -0600
+Subject: [PATCH 9/9] qpn2: test spec stub and gate-3 timing source
+
+---
+ tests/qpn2_gemm_test.cu   |  10 +++-
+ tests/qpn2_iter_timing.cu | 102 ++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 111 insertions(+), 1 deletion(-)
+ create mode 100644 tests/qpn2_iter_timing.cu
+
+diff --git a/tests/qpn2_gemm_test.cu b/tests/qpn2_gemm_test.cu
+index b81fdd9..cd8c3be 100644
+--- a/tests/qpn2_gemm_test.cu
++++ b/tests/qpn2_gemm_test.cu
+@@ -12,7 +12,15 @@
+ constexpr int kM = 8, kN = 64, kK = 32;
+ constexpr int kCtaM = 64, kCtaN = 64, kCtaK = 32;
+ 
+-using Traits = marlin::sm70::Sm70Nvfp4GemmTraits<kCtaM, kCtaN, kCtaK, 4, 32, 32, 32, 16, 64, true>;
++// The extension's Spec lives in an anonymous namespace, so the test supplies its
++// own; with Qpn2=true the Marlin iterator is never selected.
++struct Qpn2TestSpec {
++  template <typename Shape, typename ThreadMap, int G, int P>
++  using IteratorB = void;
++};
++using Traits =
++    marlin::sm70::Sm70MarlinGemmTraits<Qpn2TestSpec, kCtaM, kCtaN, kCtaK, 4, 32, 32, 32, 16, 64,
++                                       true>;
+ using Kernel = decltype(&sm70_marlin_nvfp4_gemm_kernel<false, kCtaM, kCtaN, kCtaK, 4, 32, 32, 32, 16,
+                                                        64, true>);
+ 
+diff --git a/tests/qpn2_iter_timing.cu b/tests/qpn2_iter_timing.cu
+new file mode 100644
+index 0000000..00f3c30
+--- /dev/null
++++ b/tests/qpn2_iter_timing.cu
+@@ -0,0 +1,102 @@
++// Gate 3: the iterator inside the real dense nvfp4 kernel, QPN2 vs Marlin,
++// same shape and geometry. Synthetic data; this measures time, not values.
++#include <cstdio>
++#include <cstdint>
++#include <cstdlib>
++#include <vector>
++
++#include "quantization/marlin/sm70_marlin_nvfp4_gemm.cu"
++
++constexpr int kCtaM = 64, kCtaN = 64, kCtaK = 32;
++constexpr int kArms = 2;
++// The extension's Spec lives in an anonymous namespace; with Qpn2=true the
++// Marlin iterator is never selected, so a stub alias is enough.
++struct Qpn2TestSpec {
++  template <typename Shape, typename ThreadMap, int G, int P>
++  using IteratorB = void;
++};
++constexpr int kReps = 50;
++
++template <bool Qpn2>
++void run_case(int m, int n, int k, uint32_t const* bq, uint8_t const* bsc, float const* gs,
++              cutlass::half_t const* a, cutlass::half_t* c, cudaStream_t stream) {
++  using Traits = marlin::sm70::Sm70MarlinGemmTraits<Qpn2TestSpec, kCtaM, kCtaN, kCtaK, 4, 32, 32,
++                                                   32, 16, 64, Qpn2>;
++  auto kernel = sm70_marlin_nvfp4_gemm_kernel<false, kCtaM, kCtaN, kCtaK, 4, 32, 32, 32, 16, 64,
++                                              Qpn2>;
++  int const smem = static_cast<int>(sizeof(typename Traits::SharedStorage));
++  cudaFuncSetAttribute(reinterpret_cast<void const*>(kernel),
++                       cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
++  dim3 grid((m + kCtaM - 1) / kCtaM, n / kCtaN);
++  kernel<<<grid, 4 * 32, smem, stream>>>(a, bq, bsc, gs, c, m, n, k, k);
++}
++
++int main() {
++  srand(3);
++  const int m = 2048, n = 320, k = 2560;
++  const int groups = k / 16;
++  const int tiles = n / 32;
++
++  std::vector<uint32_t> marlin_q(static_cast<size_t>(groups) * n * 2);
++  for (auto& w : marlin_q) w = rand();
++  std::vector<uint8_t> marlin_s(static_cast<size_t>(groups) * n, 0x30);
++  std::vector<uint8_t> qpn2(static_cast<size_t>(tiles) * groups * 288);
++  for (auto& b : qpn2) b = static_cast<uint8_t>(rand() & 0xff);
++  for (int t = 0; t < tiles; ++t)
++    for (int g = 0; g < groups; ++g)
++      for (int l = 0; l < 32; ++l)
++        qpn2[(static_cast<size_t>(t) * groups + g) * 288 + 256 + l] = 0x30;
++  std::vector<cutlass::half_t> a(static_cast<size_t>(m) * k);
++  for (auto& x : a) x = cutlass::half_t(0.01f * ((rand() % 100) - 50));
++
++  uint32_t *d_mq = nullptr;
++  uint8_t *d_ms = nullptr, *d_q = nullptr;
++  cutlass::half_t *d_a = nullptr, *d_c = nullptr;
++  float* d_gs = nullptr;
++  cudaMalloc(&d_mq, marlin_q.size() * 4);
++  cudaMalloc(&d_ms, marlin_s.size());
++  cudaMalloc(&d_q, qpn2.size());
++  cudaMalloc(&d_a, a.size() * sizeof(cutlass::half_t));
++  cudaMalloc(&d_c, static_cast<size_t>(m) * n * sizeof(cutlass::half_t));
++  cudaMalloc(&d_gs, sizeof(float));
++  cudaMemcpy(d_mq, marlin_q.data(), marlin_q.size() * 4, cudaMemcpyHostToDevice);
++  cudaMemcpy(d_ms, marlin_s.data(), marlin_s.size(), cudaMemcpyHostToDevice);
++  cudaMemcpy(d_q, qpn2.data(), qpn2.size(), cudaMemcpyHostToDevice);
++  cudaMemcpy(d_a, a.data(), a.size() * sizeof(cutlass::half_t), cudaMemcpyHostToDevice);
++  const float gs = 0.5f;
++  cudaMemcpy(d_gs, &gs, sizeof(float), cudaMemcpyHostToDevice);
++
++  cudaEvent_t t0, t1;
++  cudaEventCreate(&t0);
++  cudaEventCreate(&t1);
++
++  auto time_arm = [&](int arm) {
++    for (int i = 0; i < 10; ++i) {
++      if (arm == 0) run_case<false>(m, n, k, d_mq, d_ms, d_gs, d_a, d_c, nullptr);
++      else run_case<true>(m, n, k, d_mq, d_ms, d_gs, d_a, d_c, nullptr);
++    }
++    cudaDeviceSynchronize();
++    float best = 1e30f;
++    for (int r = 0; r < 5; ++r) {
++      cudaEventRecord(t0);
++      for (int i = 0; i < kReps; ++i) {
++        if (arm == 0) run_case<false>(m, n, k, d_mq, d_ms, d_gs, d_a, d_c, nullptr);
++        else run_case<true>(m, n, k, d_mq, d_ms, d_gs, d_a, d_c, nullptr);
++      }
++      cudaEventRecord(t1);
++      cudaDeviceSynchronize();
++      float ms = 0;
++      cudaEventElapsedTime(&ms, t0, t1);
++      best = ms < best ? ms : best;
++    }
++    return best / kReps;  // ms per call
++  };
++
++  const double marlin_ms = time_arm(0);
++  const double qpn2_ms = time_arm(1);
++  const double flops = 2.0 * m * n * k;
++  std::printf("M=%d N=%d K=%d  marlin %.3f ms (%.1f TFLOP/s)  qpn2 %.3f ms (%.1f TFLOP/s)  ratio %.3f\n",
++              m, n, k, marlin_ms, flops / (marlin_ms * 1e9), qpn2_ms, flops / (qpn2_ms * 1e9),
++              qpn2_ms / marlin_ms);
++  return 0;
++}
