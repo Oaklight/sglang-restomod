@@ -59,7 +59,18 @@ def reset() -> None:
 
 
 def _repack(weight, global_scale, size_n, size_k, stream=None):
-    """Launch both repack kernels; returns the three buffers for this shape."""
+    """Launch both repack kernels; returns the three buffers for this shape.
+
+    Two orderings matter, and both were missing before this guard:
+
+    * On the prefetch (side-stream) path, the buffers being overwritten belong
+      to the shape used two calls back, whose GEMM may still be reading them on
+      the default stream. Without an edge from that stream the repack can
+      overwrite a weight buffer under a live GEMM, which is why the side stream
+      waits on the current one before it writes.
+    * The reverse edge is the event recorded here: the consumer waits on it in
+      ``prefill_shim`` before the GEMM reads the new content.
+    """
     import torch
 
     module = _load()
@@ -68,26 +79,37 @@ def _repack(weight, global_scale, size_n, size_k, stream=None):
     per_expert = (size_n // 32) * (size_k // 16) * 288
     experts = int(weight.numel() // per_expert)
     weight_buf, raw, encoded = _scratch(experts, size_n, size_k, weight.device)
-    ctx = torch.cuda.stream(stream) if stream is not None else _nullctx()
-    with ctx:
-        module.repack_qpn2_marlin_into(
-            weight.reshape(-1), weight_buf, raw, size_n, size_k
-        )
-        module.repack_qpn2_scales_encoded_into(
-            weight.reshape(-1), encoded, size_n, size_k
-        )
-        if stream is not None:
-            _EVENT[(size_n, size_k)] = torch.cuda.Event()
-            _EVENT[(size_n, size_k)].record(stream)
+    key = (size_n, size_k)
+    flat = weight.reshape(-1)
+
+    if stream is None:
+        # Synchronous path on the default stream. A prefetch of this same shape
+        # may still be writing these buffers on the side stream, so wait for it
+        # rather than racing two writers.
+        _wait_for_prefetch(key)
+        module.repack_qpn2_marlin_into(flat, weight_buf, raw, size_n, size_k)
+        module.repack_qpn2_scales_encoded_into(flat, encoded, size_n, size_k)
+        return weight_buf, encoded
+
+    # Prefetch: order after every read already enqueued on the default stream,
+    # then record the event the consumer will wait on.
+    stream.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(stream):
+        module.repack_qpn2_marlin_into(flat, weight_buf, raw, size_n, size_k)
+        module.repack_qpn2_scales_encoded_into(flat, encoded, size_n, size_k)
+        event = torch.cuda.Event()
+        event.record(stream)
+    _EVENT[key] = event
     return weight_buf, encoded
 
 
-class _nullctx:
-    def __enter__(self):
-        return None
+def _wait_for_prefetch(key) -> None:
+    """Make the current stream wait for an outstanding prefetch of ``key``."""
+    import torch
 
-    def __exit__(self, *exc):
-        return False
+    event = _EVENT.pop(key, None)
+    if event is not None:
+        torch.cuda.current_stream().wait_event(event)
 
 
 def _load():
@@ -172,7 +194,7 @@ def prefill_shim(qpn2_weight, global_scale, size_n: int, size_k: int):
         _OWNER[key] = ptr
     elif key in _EVENT:
         # Prefetch issued on the side stream: make the default stream wait.
-        torch.cuda.current_stream().wait_event(_EVENT.pop(key))
+        _wait_for_prefetch(key)
 
     weight, _raw, encoded = shape
     if key not in _LOGGED:
@@ -185,12 +207,15 @@ def prefill_shim(qpn2_weight, global_scale, size_n: int, size_k: int):
 
     encoded_global = encode_global_scale(global_scale, torch.float16).contiguous()
 
-    # Prefetch the next conversion in call order, if it has the other shape or
-    # an empty buffer. It runs on the side stream under this prefix's GEMM.
+    # Prefetch the next conversion in call order, if it has the other shape.
+    # It runs on the side stream under this prefix's GEMM. The shape test is
+    # not cosmetic: with only one projection converted every entry shares one
+    # shape, and prefetching it would overwrite the buffer this call's GEMM is
+    # about to read.
     if idx is not None and idx + 1 < len(_ORDER):
         nxt = _ORDER[idx + 1]
         nkey = (nxt[3], nxt[4])
-        if _OWNER.get(nkey) != nxt[0]:
-            _repack(nxt[1], nxt[2], nxt[3], nxt[4], stream=_side_stream())
-            _OWNER[nkey] = nxt[0]
+        if nkey != key and _OWNER.get(nkey) != nxt[0]:
+            if _repack(nxt[1], nxt[2], nxt[3], nxt[4], stream=_side_stream()) is not None:
+                _OWNER[nkey] = nxt[0]
     return weight, encoded, encoded_global
