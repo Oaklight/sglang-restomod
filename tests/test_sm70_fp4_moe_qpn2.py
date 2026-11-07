@@ -297,3 +297,89 @@ def test_decode_fallback_warning_predicate():
     assert not _is_decode_fallback(1280, 8), "a short prefill chunk, block 8"
     assert not _is_decode_fallback(40960, 8), "a long prefill chunk"
     assert not _is_decode_fallback(10, 64), "prefill route block"
+
+def _stub_repack_cuda(monkeypatch, events):
+    """CPU stand-ins for the streams, events and repack module of the shim.
+
+    Records the ordering calls only: the real buffers are CPU tensors and the
+    kernels are no-ops. That is enough to pin the edges between the side
+    stream, the default stream and the repack, which is what went wrong.
+    """
+    from sglang_restomod.quant.sm70_fp4_moe import qpn2_repack
+
+    class Default:
+        def wait_event(self, event):
+            events.append("wait_event")
+
+    class Side:
+        def wait_stream(self, other):
+            events.append("side_waits_for_default")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    class Event:
+        def record(self, stream):
+            events.append("event_recorded")
+
+    class Module:
+        def repack_qpn2_marlin_into(self, *args):
+            events.append("words")
+
+        def repack_qpn2_scales_encoded_into(self, *args):
+            events.append("scales")
+
+    monkeypatch.setattr(torch.cuda, "current_stream", lambda *a, **k: Default())
+    monkeypatch.setattr(torch.cuda, "stream", lambda stream: stream)
+    monkeypatch.setattr(torch.cuda, "Event", Event)
+    monkeypatch.setattr(qpn2_repack, "_load", lambda: Module())
+    monkeypatch.setattr(qpn2_repack, "_SCRATCH", {})
+    monkeypatch.setattr(qpn2_repack, "_EVENT", {})
+    return qpn2_repack, Side()
+
+
+def test_the_prefetch_waits_for_the_consumer_before_it_overwrites(monkeypatch):
+    """The side stream must start after every read already on the default one.
+
+    Without this edge the prefetch repack rewrites the buffer of the shape used
+    two calls back while that call's GEMM may still be reading it.
+    """
+    events = []
+    repack, side = _stub_repack_cuda(monkeypatch, events)
+    weight = torch.zeros(36864, dtype=torch.uint8)  # one expert, N=320 K=2560
+
+    assert repack._repack(weight, None, 320, 2560, stream=side) is not None
+    assert events == [
+        "side_waits_for_default",
+        "words",
+        "scales",
+        "event_recorded",
+    ], events
+
+
+def test_a_synchronous_repack_waits_for_an_outstanding_prefetch(monkeypatch):
+    """Two writers of one scratch buffer must not overlap either."""
+    events = []
+    repack, _side = _stub_repack_cuda(monkeypatch, events)
+    repack._EVENT[(320, 2560)] = object()
+    weight = torch.zeros(36864, dtype=torch.uint8)
+
+    assert repack._repack(weight, None, 320, 2560) is not None
+    assert events == ["wait_event", "words", "scales"], events
+    assert (320, 2560) not in repack._EVENT
+
+def test_the_capture_probe_never_raises(monkeypatch):
+    """The shim asks this before it prefetches, so it must answer anywhere."""
+    from sglang_restomod.quant.sm70_fp4_moe import qpn2_repack
+
+    def _unavailable():
+        raise RuntimeError("Torch not compiled with CUDA enabled")
+
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", _unavailable)
+    assert qpn2_repack._capturing() is False
+
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: True)
+    assert qpn2_repack._capturing() is True

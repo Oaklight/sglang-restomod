@@ -112,6 +112,23 @@ def _wait_for_prefetch(key) -> None:
         torch.cuda.current_stream().wait_event(event)
 
 
+def _capturing() -> bool:
+    """Whether the current stream is under CUDA graph capture.
+
+    A capture may not depend on work recorded on another, uncaptured stream:
+    CUDA rejects it with "dependency created on uncaptured work in another
+    stream". So the prefetch is not issued while capturing, and a consumer that
+    finds an outstanding one redraws the buffer synchronously instead of
+    waiting.
+    """
+    import torch
+
+    try:
+        return bool(torch.cuda.is_current_stream_capturing())
+    except Exception:  # noqa: BLE001 - a build without the query cannot capture either
+        return False
+
+
 def _load():
     global _MODULE, _FAILED
     with _LOCK:
@@ -193,8 +210,15 @@ def prefill_shim(qpn2_weight, global_scale, size_n: int, size_k: int):
         _repack(qpn2_weight, global_scale, size_n, size_k)
         _OWNER[key] = ptr
     elif key in _EVENT:
-        # Prefetch issued on the side stream: make the default stream wait.
-        _wait_for_prefetch(key)
+        if _capturing():
+            # Waiting here would make the capture depend on the side stream,
+            # which CUDA refuses. Redraw on this stream instead: the prefetch
+            # is not issued under capture in the first place.
+            _EVENT.pop(key, None)
+            _repack(qpn2_weight, global_scale, size_n, size_k)
+        else:
+            # Prefetch issued on the side stream: make the default stream wait.
+            _wait_for_prefetch(key)
 
     weight, _raw, encoded = shape
     if key not in _LOGGED:
@@ -211,8 +235,9 @@ def prefill_shim(qpn2_weight, global_scale, size_n: int, size_k: int):
     # It runs on the side stream under this prefix's GEMM. The shape test is
     # not cosmetic: with only one projection converted every entry shares one
     # shape, and prefetching it would overwrite the buffer this call's GEMM is
-    # about to read.
-    if idx is not None and idx + 1 < len(_ORDER):
+    # about to read. Nothing is prefetched under capture, where a second stream
+    # is not permitted.
+    if idx is not None and idx + 1 < len(_ORDER) and not _capturing():
         nxt = _ORDER[idx + 1]
         nkey = (nxt[3], nxt[4])
         if nkey != key and _OWNER.get(nkey) != nxt[0]:
