@@ -383,3 +383,34 @@ def test_the_capture_probe_never_raises(monkeypatch):
 
     monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: True)
     assert qpn2_repack._capturing() is True
+
+def test_the_finite_probe_is_off_by_default(monkeypatch):
+    from sglang_restomod.quant.sm70_fp4_moe import method
+
+    monkeypatch.delenv("SGLANG_SM70_QPN2_FINITE_CHECK", raising=False)
+    monkeypatch.delenv("SM70_MOE_FINITE_CHECK", raising=False)
+    assert not method._finite_check_enabled()
+
+    monkeypatch.setenv("SM70_MOE_FINITE_CHECK", "1")
+    assert method._finite_check_enabled()
+
+
+def test_the_finite_probe_counts_and_localises_a_bad_buffer(monkeypatch, caplog):
+    """The instrument must name what is wrong, not just that something is."""
+    from sglang_restomod.quant.sm70_fp4_moe import method
+
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: False)
+    good = torch.zeros(4, dtype=torch.float32)
+    bad = torch.tensor([0.0, float("nan"), float("inf"), 1.0])
+    words = torch.tensor([-7, 93], dtype=torch.int32)
+
+    with caplog.at_level("WARNING", logger="sglang_restomod.quant.sm70_fp4_moe.method"):
+        method._finite_probe(
+            "t", [("good", good), ("bad", bad), ("words", words)], 1, 2, 3, 1, 64
+        )
+
+    text = caplog.text
+    assert "good" in text and "nonfinite=0 first=-1" in text
+    assert "bad" in text and "nonfinite=2 first=1" in text
+    assert "words" in text and "min=-7 max=93" in text
+    assert "m=1 n=2 k=3 topk=1 block=64" in text
