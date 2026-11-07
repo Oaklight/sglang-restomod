@@ -18,8 +18,8 @@ like one.
    so the receipt is green and about the wrong machine. Check the device name,
    not free memory.
 
-2. **Point `SM70_MARLIN_DIR` at the dense build.** It must hold
-   `_sm70_marlin_v100_dense.abi3.so` (~276 MB). The 1.2 MB `_C.abi3.so`
+2. **Point `SM70_MARLIN_DIR` at the dense build.** It must hold the dense
+   extension file (~276 MB); item 6 says how to identify it. The 1.2 MB `_C.abi3.so`
    exports `marlin_gemm` with no CUDA implementation; loading it fails with a
    `NotImplementedError` that reads like a broken test. Check the file size
    before the run.
@@ -40,6 +40,24 @@ like one.
    a missing symbol at collection, not a test failure, and it reads as the
    change under test breaking things. Confirm the bundle's `versions.txt`
    records the pin's sglang version.
+
+6. **Identify the dense extension by the file, not by its name.** A site can
+   carry the right name and the wrong file. Check the size on disk in the
+   directory `SM70_MARLIN_DIR` points at, whatever the files are called there
+   (a receipt passed with `_C.so` at 276,745,992 B and `_moe_C.so` at
+   258,397,688 B). The failure this prevents: a site whose names look right but
+   whose file is the 1.2 MB stub, which exports `marlin_gemm` with no CUDA
+   implementation and fails with a `NotImplementedError` that reads like a
+   broken kernel.
+
+7. **Write the evidence directory outside the checkout.** `gpu_suite.sh`
+   measures the worktree before it creates `--out`, so an in-repo default marks
+   the run `dirty_files=1` even though `evidence/` is generated, and the next
+   receipt then needs `--allow-dirty`. Point `--out` at a directory on the data
+   volume (for example `.../builds/evidence-<head>`), and remove any stale
+   `evidence/` or `evidence.tgz` left in the checkout by an earlier attempt
+   before starting. The failure this prevents: a green run you cannot sign, or
+   a second run paid to clear a leftover file rather than a source change.
 
 ## Measurement
 
