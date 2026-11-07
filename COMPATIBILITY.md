@@ -1,7 +1,8 @@
 # Compatibility matrix
 
-Eight components ship (`fp8_moe`, `fp8_dense`, `fp4_moe`, `attention_v100`,
-`ple_sm70`, `spec_sm70`, `gdn_tilelang_sm70`, `lsa_sm70`); all are opt-in. A row becomes "validated" only after
+Nine components ship (`fp8_moe`, `fp8_dense`, `fp4_moe`, `fp4_dense`,
+`attention_v100`, `ple_sm70`, `spec_sm70`, `gdn_tilelang_sm70`, `lsa_sm70`);
+all are opt-in. A row becomes "validated" only after
 a recorded run.
 
 Some rows carry decode figures from 64-output-token runs. On one unchanged
@@ -50,6 +51,7 @@ where the log excerpt lives.
 |---|---|---|---|
 | Flash-Next FP8, 2x V100, pin | first forward: the dense FP8 compute path | recorded in the issue | #92 |
 | 27B, `--kv-cache-dtype fp8_e4m3`, pin | grouped decode-attention kernel compile, before the model loads | `ValueError: type fp8e4nv not supported in this architecture. The supported fp8 dtypes are ('fp8e4b15', 'fp8e5')` | #112 |
+| 27B, dense NVFP4 (`fp4_dense`), SM70 | GEMM runs and matches the dequantized reference, but is not enabled: 1.55x slower than the FP8 path it would replace, at the shape the step actually uses | N=17408/K=5120, m=6: 199.7 us at the best of 18 launch configs (`SPLIT_K=2`) against TurboMind FP8's 118.7 us; 251-273 GB/s against 751, break-even is 422 | #37 |
 | DGX Spark | sm121 / aarch64 | upstream SGLang 0.5.22 | Planned |
 
 Notes:
