@@ -220,6 +220,21 @@ def prepare_prefix(layer, prefix: str) -> None:
         out[expert] = pack_expert(weight[expert], scales[expert], size_n, size_k)
 
     copy_or_rebind_param(layer, prefix + "_weight", out)
+    # The bank carries the 32 E4M3 group scales inline, so the checkpoint's
+    # [E, N, K/16] scale tensor is a duplicate of bytes already in ``out``.
+    # Release it: the bank is 288 bytes per 512 codes, exactly 12.5% larger
+    # than the packed source, and the scale tensor is that same 12.5%. Dropping
+    # it keeps a QPN2 expert set at the Marlin footprint instead of 12.5%
+    # above it. The kernel reads the scales from the bank; nothing on the QPN2
+    # path reads this attribute after conversion.
+    copy_or_rebind_param(
+        layer,
+        prefix + "_weight_scale",
+        torch.empty(0, dtype=scales.dtype, device=scales.device),
+    )
+    # Drop the last references to the two source tensors here, not at function
+    # return, so the free happens before the next projection allocates its bank.
+    del weight, scales
     # The raw per-expert global scale: the kernel rounds e4m3 * gs once.
     copy_or_rebind_param(layer, prefix + "_weight_scale_2", global_scales)
 

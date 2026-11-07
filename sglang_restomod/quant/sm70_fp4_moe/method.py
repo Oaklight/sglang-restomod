@@ -325,6 +325,15 @@ def prepare_moe_nvfp4(layer, group_size: int | None = None) -> None:
         if hasattr(layer, swizzled):
             setattr(layer, swizzled, None)
 
+    if qpn2_prefixes:
+        # Each conversion replaces a packed source (plus, now, its redundant
+        # scale tensor) with one bank of the same total size but a different
+        # block size, so the freed blocks cannot always serve the next layer's
+        # bank and the caching allocator keeps them. Returning them to the
+        # driver here keeps the model at the Marlin footprint. Load time only,
+        # a few milliseconds per layer; with expandable_segments it is exact.
+        torch.cuda.empty_cache()
+
 
 def moe_wna16_marlin_gemm(
     a: torch.Tensor,
