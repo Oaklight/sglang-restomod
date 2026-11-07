@@ -19,10 +19,8 @@ like one.
    not free memory.
 
 2. **Point `SM70_MARLIN_DIR` at the dense build.** It must hold the dense
-   extension file (~276 MB); item 6 says how to identify it. The 1.2 MB `_C.abi3.so`
-   exports `marlin_gemm` with no CUDA implementation; loading it fails with a
-   `NotImplementedError` that reads like a broken test. Check the file size
-   before the run.
+   extension file (~276 MB); item 6 says how to identify it, and names the
+   failure a wrong file produces.
 
 3. **Export `SM70_TURBOMIND_SO`** (and `SGLANG_SM70_TURBOMIND_SO`). Without it,
    three fp8_moe tests die at import.
@@ -61,16 +59,16 @@ like one.
 
 ## Measurement
 
-6. **Leave room in `--contexts` for the output.** A prompt of exactly the
+8. **Leave room in `--contexts` for the output.** A prompt of exactly the
    context length, with generated tokens on top, returns HTTP 400. Use 3,900
    against an 8,192 context.
 
-7. **Take tree hashes from the script.** They exclude `__pycache__`, and the
+9. **Take tree hashes from the script.** They exclude `__pycache__`, and the
    composite digest is locale-pinned inside the script. Do not re-derive them
    with your own `find`/`sort`: a hash that depends on the caller's environment
    is not a gate.
 
-8. **Do not compare load time or page-cache state across sessions.** The same
+10. **Do not compare load time or page-cache state across sessions.** The same
    checkpoint took 132.7 s and 389.3 s to load; that is I/O, not the code under
    test. An arm whose load straddles external I/O is not the same arm. Run no
    bulk filesystem I/O while a measurement session is active.
