@@ -30,14 +30,26 @@ like one.
    1 GiB. That refusal is correct: free space, do not chase it as a test
    failure.
 
-5. **Run against the sglang tree for the pin.** Point `PYTHONPATH` at the tree
-   that matches `UPSTREAM_PIN.toml`, not the previous pin's; for the current
-   pin the canonical tree is `pin-site-v0.5.23` under the shared `ml_lab`
-   volume. A mismatched tree fails at collection with `ImportError` on a
-   symbol the newer pin has (for example `sparse_gqa_paged_prefill_triton`):
-   a missing symbol at collection, not a test failure, and it reads as the
-   change under test breaking things. Confirm the bundle's `versions.txt`
-   records the pin's sglang version.
+5. **Run against the sglang tree for the pin, with the patch queue applied.**
+   Point `PYTHONPATH` at the tree that matches `UPSTREAM_PIN.toml`, not the
+   previous pin's; for the current pin the shared `ml_lab` volume carries a
+   `pin-site-v0.5.23` tree. A mismatched tree fails at collection with
+   `ImportError` on a symbol the newer pin has (for example
+   `sparse_gqa_paged_prefill_triton`): a missing symbol at collection, not a
+   test failure, and it reads as the change under test breaking things. Confirm
+   the bundle's `versions.txt` records the pin's sglang version.
+
+   Build a tree with `scripts/fetch_upstream.sh` then `scripts/apply_patches.sh`
+   rather than taking a shared site on trust, and check any site before you
+   measure on it. A v0.5.23 tree without `patches/0002-ipc-tuple-get.patch`
+   cannot compile `sgl_kernel_jit_cuda_ipc`, and the server **silently** falls
+   back to NCCL ring allreduce: the allreduce cell goes from about 0.9 ms to
+   about 4.6 ms and the step from 26.25 to 31.20 ms in one measured pair. The
+   only sign is one line in the server log:
+
+   ```sh
+   grep -c 'Setup Custom allreduce failed' <server log>   # must be 0
+   ```
 
 6. **Identify the dense extension by the file, not by its name.** A site can
    carry the right name and the wrong file. Check the size on disk in the
