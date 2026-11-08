@@ -37,9 +37,10 @@ prefill is excluded.
 | B | 8,192 / 0.80 | 7,654 | 3.879 / 3.765 / 3.879 | 33 / 34 / 33 | 26.79 / 27.30 / 27.39 | 27.30 | 144.8 / 137.9 / 141.6 |
 | C | 32,768 / 0.82 | 30,807 | 4.000 | 32 | 27.05 / 27.38 / 27.63 | 27.38 | 147.9 / 146.1 / 144.8 |
 
-The 32k cell is a real cell, not a memory-limited one: the launch reports
+The 32k cell was served, not declined: the launch reports
 `max_total_num_tokens=116,928` with the pool sized at 0.82, and the 30,807-token
-request decoded normally.
+request decoded normally. That number is what makes the flat result cover
+32k rather than stopping at 8k.
 
 The memory fraction differs between cells because each cell is its own launch;
 it changes the pool, not the kernel.
@@ -68,10 +69,20 @@ of this run. Neither condition is met.
 
 The same three cells were run a day earlier on an overlapped island with the
 unpatched v0.5.22 site: step 31.96 / 32.20 / 32.40 ms, accept 3.879-4.000.
-Those numbers are ~5 ms higher and are **not** a context effect; they differ in
-site (unpatched, possible NCCL-ring fallback) and in host load (a GPU suite on
-the same checkpoint through the same filer). They are kept only as the
-historical record and must not be compared with the table above.
+Today is 27.1 ms and that run was 32.0 ms; the difference is **not** a context
+effect. It is a different site (patched v0.5.23 against unpatched v0.5.22, with
+a possible NCCL-ring fallback in the older arm) and an idle island against an
+overlapped one, so the two are not comparable. The 2026-11-07 table is kept
+only as a labelled historical record.
+
+## Where the per-cell server configuration comes from
+
+Cell A's `/get_server_info` was captured live (`server_info_A.json`). B and C
+were stopped before that fetch, so their entry is the same `server_args` dict
+extracted from the launch log (`server_args_B.json`, `server_args_C.json`),
+without the endpoint's resolved values. The cells differ only in
+`--context-length` and `--mem-fraction-static`; the launch command is
+`launch.sh <ctx> <mf> <port>`, sha256 `7d1842d7…`.
 
 ## Caveats
 
