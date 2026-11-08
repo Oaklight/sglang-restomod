@@ -72,14 +72,17 @@ def test_the_three_patch_states_and_a_missing_file(tmp_path):
         "site_hashes"
     ]["python/sglang/module.py"]
 
-    assert check_site.patch_state(site, "python/sglang/module.py", hashes)[0] == "ABSENT"
+    package = check_site.package_root(site)
+    target = "python/sglang/module.py"
+
+    assert check_site.patch_state(site, package, target, hashes)[0] == "ABSENT"
     (site / "python" / "sglang" / "module.py").write_text("PATCHED = 1\n")
-    assert check_site.patch_state(site, "python/sglang/module.py", hashes)[0] == "PRESENT"
+    assert check_site.patch_state(site, package, target, hashes)[0] == "PRESENT"
     (site / "python" / "sglang" / "module.py").write_text("EDITED = 1\n")
-    state, actual = check_site.patch_state(site, "python/sglang/module.py", hashes)
+    state, actual = check_site.patch_state(site, package, target, hashes)
     assert state == "MISMATCH"
     assert actual == _sha(site / "python" / "sglang" / "module.py")
-    assert check_site.patch_state(site, "python/sglang/absent.py", hashes)[0] == "MISSING"
+    assert check_site.patch_state(site, package, "python/sglang/absent.py", hashes)[0] == "MISSING"
 
 
 def test_the_command_fails_on_an_unpatched_site_and_passes_on_a_patched_one(tmp_path):
@@ -140,3 +143,23 @@ def test_the_manifest_records_a_hash_pair_for_every_patch_target():
         for hashes in entry["site_hashes"].values():
             assert set(hashes) == {"unpatched", "patched"}
             assert all(len(value) == 64 for value in hashes.values())
+
+
+def test_an_installed_layout_resolves_the_manifest_paths(tmp_path):
+    """An installed site is `<site>/sglang/...`; the manifest says `python/sglang/...`.
+
+    Resolving the manifest path literally reports MISSING for every target on a
+    correctly patched install, which reads as a missing file rather than a
+    layout mismatch. That is exactly the false alarm this test prevents.
+    """
+    installed = tmp_path / "installed"
+    target = installed / "sglang" / "module.py"
+    target.parent.mkdir(parents=True)
+    target.write_text("PATCHED = 1\n")
+    (installed / "sglang" / "__init__.py").write_text("")
+
+    hashes = {"unpatched": "0" * 64, "patched": _sha(target)}
+    package = check_site.package_root(installed)
+    assert package is not None and package.name == "sglang"
+    state = check_site.patch_state(installed, package, "python/sglang/module.py", hashes)
+    assert state[0] == "PRESENT"

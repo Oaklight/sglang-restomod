@@ -77,9 +77,29 @@ def site_version(site: pathlib.Path) -> tuple[str, str]:
     return "unknown", "no dist-info and no literal in version.py"
 
 
-def patch_state(site: pathlib.Path, relative: str, hashes: dict[str, str]) -> tuple[str, str]:
+def target_of(site: pathlib.Path, package: pathlib.Path | None, relative: str) -> pathlib.Path:
+    """Map a repository-relative patch target onto the site's layout.
+
+    The manifest names `python/sglang/...` because that is where the path sits
+    in the SGLang repository. An installed site is `<site>/sglang/...` with no
+    `python/` level, so the prefix has to come off before the lookup: resolving
+    it literally reports MISSING for every target on a correctly patched
+    install, which reads like a missing file rather than a layout mismatch.
+    """
+    for prefix in ("python/sglang/", "sglang/"):
+        if relative.startswith(prefix) and package is not None:
+            return package / relative[len(prefix):]
+    return site / relative
+
+
+def patch_state(
+    site: pathlib.Path,
+    package: pathlib.Path | None,
+    relative: str,
+    hashes: dict[str, str],
+) -> tuple[str, str]:
     """Classify one patch target: patched, untouched, or edited by something else."""
-    target = site / relative
+    target = target_of(site, package, relative)
     if not target.is_file():
         return MISSING, ""
     actual = sha256(target)
@@ -119,13 +139,16 @@ def audit(site: pathlib.Path, manifest: pathlib.Path) -> tuple[int, list[str]]:
         raise ValueError(f"{manifest} has no 'upstream' commit")
     lines = [f"site        {site}", f"manifest    {manifest} (pin {data['upstream']})"]
 
+    package = package_root(site)
     version, source = site_version(site)
     lines.append(f"sglang      {version} ({source})")
+    layout = "source" if (site / "python" / "sglang").is_dir() else "installed"
+    lines.append(f"layout      {layout}")
 
     failures = 0
     for name, entry in data["patches"].items():
         for relative, hashes in (entry.get("site_hashes") or {}).items():
-            state, actual = patch_state(site, relative, hashes)
+            state, actual = patch_state(site, package, relative, hashes)
             failures += state != PRESENT
             lines.append(f"patch       {state:<9} {name} -> {relative}")
             if state == MISMATCH:
