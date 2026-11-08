@@ -115,6 +115,6 @@ without the endpoint's resolved values. The cells differ only in
 
 - The prompt is repeated seed text. Acceptance is content-dependent; the
   absence of a downward trend is the finding, not the exact value.
-- Absolute decode is 143-146 tok/s on this host at 4k. 2d measured a +2.0%
+- Absolute decode is 142.6-145.9 tok/s on this host at 4k (cell A's three reps). 2d measured a +2.0%
   host component for the same configuration on a different island, so an
   absolute number belongs with its host.
