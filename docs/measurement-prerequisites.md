@@ -18,11 +18,9 @@ like one.
    so the receipt is green and about the wrong machine. Check the device name,
    not free memory.
 
-2. **Point `SM70_MARLIN_DIR` at the dense build.** It must hold
-   `_sm70_marlin_v100_dense.abi3.so` (~276 MB). The 1.2 MB `_C.abi3.so`
-   exports `marlin_gemm` with no CUDA implementation; loading it fails with a
-   `NotImplementedError` that reads like a broken test. Check the file size
-   before the run.
+2. **Point `SM70_MARLIN_DIR` at the dense build.** It must hold the dense
+   extension file (~276 MB); item 6 says how to identify it, and names the
+   failure a wrong file produces.
 
 3. **Export `SM70_TURBOMIND_SO`** (and `SGLANG_SM70_TURBOMIND_SO`). Without it,
    three fp8_moe tests die at import.
@@ -41,18 +39,36 @@ like one.
    change under test breaking things. Confirm the bundle's `versions.txt`
    records the pin's sglang version.
 
+6. **Identify the dense extension by the file, not by its name.** A site can
+   carry the right name and the wrong file. Check the size on disk in the
+   directory `SM70_MARLIN_DIR` points at, whatever the files are called there
+   (a receipt passed with `_C.so` at 276,745,992 B and `_moe_C.so` at
+   258,397,688 B). The failure this prevents: a site whose names look right but
+   whose file is the 1.2 MB stub, which exports `marlin_gemm` with no CUDA
+   implementation and fails with a `NotImplementedError` that reads like a
+   broken kernel.
+
+7. **Write the evidence directory outside the checkout.** `gpu_suite.sh`
+   measures the worktree before it creates `--out`, so an in-repo default marks
+   the run `dirty_files=1` even though `evidence/` is generated, and the next
+   receipt then needs `--allow-dirty`. Point `--out` at a directory on the data
+   volume (for example `.../builds/evidence-<head>`), and remove any stale
+   `evidence/` or `evidence.tgz` left in the checkout by an earlier attempt
+   before starting. The failure this prevents: a green run you cannot sign, or
+   a second run paid to clear a leftover file rather than a source change.
+
 ## Measurement
 
-6. **Leave room in `--contexts` for the output.** A prompt of exactly the
+8. **Leave room in `--contexts` for the output.** A prompt of exactly the
    context length, with generated tokens on top, returns HTTP 400. Use 3,900
    against an 8,192 context.
 
-7. **Take tree hashes from the script.** They exclude `__pycache__`, and the
+9. **Take tree hashes from the script.** They exclude `__pycache__`, and the
    composite digest is locale-pinned inside the script. Do not re-derive them
    with your own `find`/`sort`: a hash that depends on the caller's environment
    is not a gate.
 
-8. **Do not compare load time or page-cache state across sessions.** The same
+10. **Do not compare load time or page-cache state across sessions.** The same
    checkpoint took 132.7 s and 389.3 s to load; that is I/O, not the code under
    test. An arm whose load straddles external I/O is not the same arm. Run no
    bulk filesystem I/O while a measurement session is active.
