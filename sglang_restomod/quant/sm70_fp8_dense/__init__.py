@@ -22,6 +22,25 @@ import torch
 logger = logging.getLogger(__name__)
 
 
+def make_block_fp8_method(weight_block_size: list[int]):
+    """Build a block-FP8 method through its constructor.
+
+    A method built with ``__new__`` lacks every attribute the constructor
+    sets; the pin then reads one (v0.5.23: ``block_fp8_as_mxfp8``) and fails
+    at model init. Construct it properly, then opt into the SM70 kernel.
+    """
+    from sglang.srt.layers.quantization.fp8 import Fp8Config, Fp8LinearMethod
+
+    config = Fp8Config(
+        is_checkpoint_fp8_serialized=True,
+        activation_scheme="dynamic",
+        weight_block_size=list(weight_block_size),
+    )
+    method = Fp8LinearMethod(config)
+    method.use_sm70_turbomind = True
+    return method
+
+
 def install() -> bool:
     """Route SM70 block-FP8 linears to the TurboMind W8A16 kernels."""
     from sglang.srt.layers.quantization.fp8 import Fp8LinearMethod
