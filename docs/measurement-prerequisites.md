@@ -41,11 +41,14 @@ like one.
 
    Build a tree with `scripts/fetch_upstream.sh` then `scripts/apply_patches.sh`
    rather than taking a shared site on trust, and check any site before you
-   measure on it. A v0.5.23 tree without `patches/0002-ipc-tuple-get.patch`
-   cannot compile `sgl_kernel_jit_cuda_ipc`, and the server **silently** falls
-   back to NCCL ring allreduce: the allreduce cell goes from about 0.9 ms to
-   about 4.6 ms and the step from 26.25 to 31.20 ms in one measured pair. The
-   only sign is one line in the server log:
+   measure on it: a site can be missing the whole patch queue, not one patch.
+   A v0.5.23 tree without `patches/0002-ipc-tuple-get.patch` cannot compile
+   `sgl_kernel_jit_cuda_ipc`, and the server **silently** falls back to NCCL
+   ring allreduce. On the same host, the allreduce cell went from 0.86 ms on a
+   patched site to 4.59 ms on the unpatched one. The step moved 26.25 to
+   31.20 ms in that pair, but the arms also carry different engine revisions,
+   so only the allreduce cell is attributable to the missing patch. The only
+   sign is one line in the server log:
 
    ```sh
    grep -c 'Setup Custom allreduce failed' <server log>   # must be 0
