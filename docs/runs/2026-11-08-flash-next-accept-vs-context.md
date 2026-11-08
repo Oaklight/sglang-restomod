@@ -15,9 +15,19 @@ The receipted Flash-Next NVFP4 shape: 4x V100-SXM2-32GB on one island
 | | |
 |---|---|
 | Tree | main `39d4bc7b`, engine digest `44bfdfa4…` (`scripts/tree_hash.sh`, pin 297e54fd) |
-| Engine | v0.5.23 site with all three patches, at `work/pin-site-v0.5.23-patched`; `ipc.cuh` sha256 `eb19c88b…` |
+| Engine | v0.5.23 site at `work/pin-site-v0.5.23-patched`: **0002 applied** (`ipc.cuh` `eb19c88b…`), **0001 and 0003 not applied** |
 | Host | lambda6 GPUs 0-3, driver 550.163.01, CUDA 12.8 image; entry inventory all four cards at kmarlor baseline, no server process |
 | Kernels | issue178 marlin build (`_C.so`, 276,745,992 B), `SM70_TURBOMIND_SO` and `SGLANG_SM70_TURBOMIND_SO` |
+
+The patch state of the site was hashed directly rather than taken from its
+name: `srt/mem_cache/cpp_utils/native_hash.py` is `7eb1968b…` (0001 unpatched)
+and `fused_moe_triton/fused_marlin_moe.py` is `ae798192…` (0003 unpatched),
+against `ipc.cuh` `eb19c88b…` (0002 patched). Neither missing patch touches this
+run: 0001 only affects HiCache storage backends, which this launch does not
+use, and 0003 only changes a QPN2 expert bank, which this configuration does
+not build. `scripts/check_site.py` from #263 reports `MISSING` for all three on
+this site because the site is an installed layout (`<site>/sglang`) and the
+manifest paths start at `python/`; the hashes above are the direct measurement.
 
 Custom allreduce: zero `Setup Custom allreduce failed` lines in all three
 cells, and the JIT cache gained `custom_all_reduce_fp16_t_4_false` at this
