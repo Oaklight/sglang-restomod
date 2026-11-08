@@ -41,7 +41,25 @@ if [[ ! -f "$root/UPSTREAM_PIN.toml" ]]; then
   exit 2
 fi
 
-read -r ref commit < <(python3 - "$root/UPSTREAM_PIN.toml" <<'PY'
+# Reading the pin needs tomllib (Python 3.11+). Host pythons on the lab machines
+# can be older, and a gate that silently uses a different interpreter than the
+# one you think you ran is not a gate, so say which one was chosen.
+py="${PYTHON:-}"
+if [[ -z "$py" ]]; then
+  for candidate in python3 python; do
+    if command -v "$candidate" >/dev/null 2>&1 &&
+       "$candidate" -c 'import tomllib' >/dev/null 2>&1; then
+      py="$candidate"
+      break
+    fi
+  done
+fi
+if [[ -z "$py" ]] || ! "$py" -c 'import tomllib' >/dev/null 2>&1; then
+  echo "no interpreter with tomllib (Python 3.11+); set PYTHON to one" >&2
+  exit 2
+fi
+
+read -r ref commit < <("$py" - "$root/UPSTREAM_PIN.toml" <<'PY'
 import pathlib, sys, tomllib
 pin = tomllib.loads(pathlib.Path(sys.argv[1]).read_text())["upstream"]
 print(pin["ref"], pin["commit"])
