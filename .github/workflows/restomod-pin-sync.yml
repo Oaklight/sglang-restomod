@@ -5,8 +5,11 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Read-only: this job verifies the reference branch, it does not move it. The
+# move needs a credential that may push workflow files, which a GITHUB_TOKEN
+# cannot be granted; see scripts/move_upstream.sh.
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: restomod-pin-sync
@@ -15,57 +18,9 @@ concurrency:
 jobs:
   restomod-pin-sync:
     runs-on: ubuntu-latest
-    # The pin's history is fetched in full (see the fetch step), so a bump pays
-    # for a large download; a run with nothing to do still finishes in seconds.
-    timeout-minutes: 30
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Move the reference upstream branch to the pin
-        run: |
-          set -euo pipefail
-          git config user.name "restomod-bot"
-          git config user.email "restomod-bot@users.noreply.github.com"
-
-          python - <<'PY' > /tmp/pin
-          import pathlib, tomllib
-          pin = tomllib.loads(pathlib.Path("UPSTREAM_PIN.toml").read_text())["upstream"]
-          print(pin["kind"])
-          print(pin["ref"])
-          print(pin["commit"])
-          PY
-          kind=$(sed -n '1p' /tmp/pin)
-          ref=$(sed -n '2p' /tmp/pin)
-          commit=$(sed -n '3p' /tmp/pin)
-
-          # A push to main runs this job, and almost every push leaves the pin
-          # alone. Stop before the download, not after it.
-          if [ "$(git rev-parse --verify --quiet refs/remotes/origin/upstream)" = "$commit" ]; then
-            echo "origin/upstream is already ${commit}; nothing to do"
-            exit 0
-          fi
-
-          # Fetch the pin's history in full. A shallow fetch cannot be pushed:
-          # the pack leaves out the boundary commit's parent, and the receiver
-          # rejects it (index-pack: "did not receive expected object <parent>",
-          # which is how the last four runs failed). Deepening does not help,
-          # because it only moves the missing parent one commit up; the receiver
-          # checks connectivity over everything the new tip reaches.
-          if [ "$kind" = "tag" ]; then
-            git fetch --force \
-              https://github.com/sgl-project/sglang.git \
-              "refs/tags/${ref}:refs/tags/${ref}"
-          else
-            git fetch --force \
-              https://github.com/sgl-project/sglang.git \
-              "$commit"
-          fi
-
-          git cat-file -e "${commit}^{commit}"
-          git push origin "${commit}:refs/heads/upstream" --force
-
-          label="${ref:-${commit:0:12}}"
-          git tag -f "upstream-${label}" "$commit"
-          git push origin "refs/tags/upstream-${label}" --force
+      - name: Check the reference upstream branch against the pin
+        run: scripts/move_upstream.sh --check
