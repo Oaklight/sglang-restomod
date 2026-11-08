@@ -63,8 +63,11 @@ like one.
    context length, with generated tokens on top, returns HTTP 400. Use 3,900
    against an 8,192 context.
 
-9. **Take tree hashes from the script.** They exclude `__pycache__`, and the
-   composite digest is locale-pinned inside the script. Do not re-derive them
+9. **Take tree hashes from `scripts/tree_hash.sh`.** It covers
+   `UPSTREAM_PIN.toml`, `patches/` and `sglang_restomod/`, excludes
+   `__pycache__`, and pins the locale inside the script. Record the digest with
+   the commit it belongs to, and check a later tree against it with
+   `scripts/tree_hash.sh <tree> --expect <digest>`. Do not re-derive the value
    with your own `find`/`sort`: a hash that depends on the caller's environment
    is not a gate.
 
