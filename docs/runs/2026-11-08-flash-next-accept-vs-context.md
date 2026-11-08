@@ -25,9 +25,26 @@ and `fused_moe_triton/fused_marlin_moe.py` is `ae798192…` (0003 unpatched),
 against `ipc.cuh` `eb19c88b…` (0002 patched). Neither missing patch touches this
 run: 0001 only affects HiCache storage backends, which this launch does not
 use, and 0003 only changes a QPN2 expert bank, which this configuration does
-not build. `scripts/check_site.py` from #263 reports `MISSING` for all three on
-this site because the site is an installed layout (`<site>/sglang`) and the
-manifest paths start at `python/`; the hashes above are the direct measurement.
+not build. `scripts/check_site.py` (PR #263, head `775171f5`) reports the same
+state on the running site:
+
+```
+layout      installed
+patch       ABSENT    0001-hicache-openssl-fallback.patch
+patch       PRESENT   0002-ipc-tuple-get.patch
+patch       ABSENT    0003-qpn2-marlin-moe-shape.patch
+config      present   triton_3_5_1/E=512,N=160,device_name=Tesla_V100-SXM2-32GB.json
+config      present   triton_3_5_1/E=512,N=160,device_name=Tesla_V100-SXM2-32GB_down.json
+tree        6ab1b48cdd7e17d61b57daf558f937a4ea1ca32864a90ee23c4cb5c154c3bdd0
+SITE: FAIL   (exit 1)
+```
+
+`SITE: FAIL` is correct here and is not an error in the run: the tool fails
+when any patch target is absent, and two are. It is recorded rather than
+reworded because it says the site is adequate for this run, not fully patched.
+An earlier revision of the tool reported `MISSING` for all three, because the
+installed layout (`<site>/sglang`) was resolved against the manifest's
+`python/`-rooted paths; `775171f5` fixes that and prints the `layout` line.
 
 Custom allreduce: zero `Setup Custom allreduce failed` lines in all three
 cells, and the JIT cache gained `custom_all_reduce_fp16_t_4_false` at this
