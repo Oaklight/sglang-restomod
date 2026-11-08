@@ -12,9 +12,11 @@
 #       --model-dir /path/to/checkpoint --contexts 8192,32768
 #
 # Environment:
-#   OOB      path to oob (default: oob from PATH)
-#   PYTHON   interpreter with torch (default: python3)
-#   GPUS     CUDA_VISIBLE_DEVICES for the probe (default: 0)
+#   OOB       path to oob (default: oob from PATH)
+#   PYTHON    interpreter with torch (default: python3)
+#   GPUS      CUDA_VISIBLE_DEVICES for the probe (default: 0)
+#   SM70_SITE sglang site the launch used; checked with scripts/check_site.py
+#             and recorded as site.txt (unset: not checked)
 #
 # --concurrency takes a comma list (for example 1,2,4); the bench runs once per
 # value and appends to bench.log, so one bundle carries the single-stream rate
@@ -81,6 +83,18 @@ mkdir -p "$OUT"
   # Kernel and machine class only: uname -a would print the node name.
   uname -srm
 } > "$OUT/commit.txt"
+
+# A site that cannot build its own kernels still serves and still produces a
+# green bundle: custom allreduce falls back to NCCL and the tuned MoE configs
+# fall back to a heuristic, each invisible except for one line in the server
+# log. When the operator names the site, refuse to pack evidence for one that
+# is not in its patched state.
+if [[ -n "${SM70_SITE:-}" ]]; then
+  if ! "$PYTHON" scripts/check_site.py "$SM70_SITE" > "$OUT/site.txt" 2>&1; then
+    echo "error: $SM70_SITE is not usable for a receipt; see $OUT/site.txt" >&2
+    exit 1
+  fi
+fi
 
 if [[ "$SKIP_GPU_PROBE" != "1" ]]; then
   nvidia-smi -q > "$OUT/nvidia-smi-q.txt" 2>&1 || true

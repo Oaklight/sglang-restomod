@@ -47,12 +47,24 @@ like one.
    ring allreduce. On the same host, the allreduce cell went from 0.86 ms on a
    patched site to 4.59 ms on the unpatched one. The step moved 26.25 to
    31.20 ms in that pair, but the arms also carry different engine revisions,
-   so only the allreduce cell is attributable to the missing patch. The only
-   sign is one line in the server log:
+   so only the allreduce cell is attributable to the missing patch.
+
+   Run `scripts/check_site.py <site>` before the run. It reports each patch
+   target as PRESENT, ABSENT or MISMATCH (a half-patched site is possible),
+   the tuned MoE configs the site carries, and a site tree hash that can be
+   compared between two sites. `gpu_suite.sh` runs it when `SM70_SITE` is set
+   and refuses to pack a bundle for a site it rejects.
+
+   Two server-log lines are gates in their own right:
 
    ```sh
-   grep -c 'Setup Custom allreduce failed' <server log>   # must be 0
+   grep -c 'Setup Custom allreduce failed' <server log>      # must be 0
+   grep -c 'Using default MoE kernel config' <server log>    # 0 unless declared
    ```
+
+   The second one cost 0.86 ms/step on 2026-11-08: the v0.5.22 site carries
+   tuned fused-MoE JSONs for this device and the v0.5.23 site does not, so one
+   arm ran the tuned tile and the other the default heuristic.
 
 6. **Identify the dense extension by the file, not by its name.** A site can
    carry the right name and the wrong file. Check the size on disk in the
