@@ -85,7 +85,8 @@ Rules:
 
 - `main`: the layer; protected by PR plus `restomod-ci` and
   `restomod-patch-guard`.
-- `upstream`: reference pin; only `restomod-pin-sync` moves it.
+- `upstream`: reference pin; moved only by `scripts/move_upstream.sh`, and
+  `restomod-pin-sync` fails when it is stale.
 - `bump/upstream-*`: pin bumps opened by CI.
 - Sign off commits (`git commit -s`) when DCO applies.
 
