@@ -29,11 +29,14 @@ def _tree(root: Path) -> Path:
     return root
 
 
-def _digest(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
+def _digest(
+    root: Path, *args: str, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["bash", str(SCRIPT), str(root), *args],
         capture_output=True,
         text=True,
+        env=env,
     )
 
 
@@ -88,3 +91,26 @@ def test_a_directory_without_a_pin_is_refused(tmp_path):
     result = _digest(tmp_path)
     assert result.returncode == 2
     assert "not a pin tree" in result.stderr
+
+
+def test_an_interpreter_without_tomllib_is_refused(tmp_path):
+    """A host python older than 3.11 must fail loudly, not silently misparse."""
+    import os
+
+    root = _tree(tmp_path)
+    env = dict(os.environ, PYTHON="/bin/false")
+    result = _digest(root, env=env)
+    assert result.returncode == 2
+    assert "no interpreter with tomllib" in result.stderr
+
+
+def test_python_selects_the_interpreter(tmp_path):
+    """$PYTHON wins, so a host with an old python3 can name a newer one."""
+    import os
+    import sys
+
+    root = _tree(tmp_path)
+    env = dict(os.environ, PYTHON=sys.executable)
+    result = _digest(root, env=env)
+    assert result.returncode == 0, result.stderr
+    assert _value(result) == _value(_digest(root))
