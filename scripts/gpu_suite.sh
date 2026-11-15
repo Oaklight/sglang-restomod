@@ -10,6 +10,7 @@
 #   scripts/gpu_suite.sh --out evidence \
 #       --bench-host 127.0.0.1:11435 --model qwen38next-nvfp4 \
 #       --model-dir /path/to/checkpoint --contexts 8192,32768
+#   scripts/gpu_suite.sh --out evidence --server-log /tmp/server.log
 #
 # Environment:
 #   OOB       path to oob (default: oob from PATH)
@@ -25,6 +26,11 @@
 # The suite runs `pytest -m gpu tests/` and records the result as
 # gpu_tests.txt; a failure fails the suite after the bundle is packed. Use
 # --skip-gpu-tests on a host without the SM70 environment.
+#
+# --server-log names the serving log to scan for a failed custom-allreduce
+# setup, which costs about 3.1 ms per decode step and is otherwise silent.
+# custom_allreduce.txt is written either way: without the argument it records
+# that the check did not run, because a missing file reads as a pass.
 set -euo pipefail
 
 OUT=evidence
@@ -34,6 +40,7 @@ MODEL_DIR=""
 CONTEXTS="8192,32768"
 OUTPUT_TOKENS=128
 CONCURRENCY=""
+SERVER_LOG=""
 SKIP_GPU_PROBE=0
 SKIP_GPU_TESTS=0
 
@@ -46,9 +53,10 @@ while [[ $# -gt 0 ]]; do
     --contexts) CONTEXTS="$2"; shift 2 ;;
     --output-tokens) OUTPUT_TOKENS="$2"; shift 2 ;;
     --concurrency) CONCURRENCY="$2"; shift 2 ;;
+    --server-log) SERVER_LOG="$2"; shift 2 ;;
     --skip-gpu-probe) SKIP_GPU_PROBE=1; shift ;;
     --skip-gpu-tests) SKIP_GPU_TESTS=1; shift ;;
-    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,33p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -385,6 +393,18 @@ if [[ "$SKIP_GPU_TESTS" != "1" ]]; then
   "$PYTHON" -m pytest -q -m gpu tests/ > "$OUT/gpu_tests.txt" 2>&1 || GPU_TEST_RC=$?
 fi
 
+# A custom-allreduce setup that fails to build costs about 3.1 ms per decode
+# step and leaves one warning in the serving log; nothing else in this bundle
+# can see it. The state is written whether or not a log was supplied, because a
+# missing file reads as a pass.
+ALLREDUCE_RC=0
+if [[ -n "$SERVER_LOG" ]]; then
+  "$PYTHON" scripts/check_allreduce.py --server-log "$SERVER_LOG" \
+    --out "$OUT/custom_allreduce.txt" > /dev/null || ALLREDUCE_RC=$?
+else
+  "$PYTHON" scripts/check_allreduce.py --out "$OUT/custom_allreduce.txt" > /dev/null
+fi
+
 # The archive goes to a public release asset. Strip paths under a home or site
 # mount, NVIDIA serials, UUIDs and bus ids, and any IDENTITY_DENYLIST name
 # before anything is packed.
@@ -395,6 +415,10 @@ PACK="${OUT%/}.tgz"
 echo "evidence: $PACK"
 if [[ "$GPU_TEST_RC" -ne 0 ]]; then
   echo "error: a GPU test failed; see $OUT/gpu_tests.txt" >&2
+  exit 1
+fi
+if [[ "$ALLREDUCE_RC" -ne 0 ]]; then
+  echo "error: custom allreduce is not usable on this launch; see $OUT/custom_allreduce.txt" >&2
   exit 1
 fi
 if [[ "$DIRTY" != "0" ]]; then

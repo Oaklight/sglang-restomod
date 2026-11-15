@@ -135,6 +135,18 @@ computes what it claims. A failure fails the suite after the bundle is packed,
 so the evidence still explains it. `--skip-gpu-tests` exists for a host without
 the SM70 environment, and a bundle made with it says so by its absence.
 
+`--server-log <path>` answers a question no other file in the bundle can: did
+custom allreduce build? A failure there does not fail the launch — the server
+warns once, falls back to NCCL ring, and serves about 3.1 ms per decode step
+slower with every number still looking plausible (#260). The scan writes
+`custom_allreduce.txt` in three states: `failed` when the log carries
+`Setup Custom allreduce failed with`, `failure-absent-only` when it does not,
+and `not checked` when no log was passed. The middle state is deliberately not
+called a pass: at the pin there is no success line on the CUDA path, only the
+warning, so absence of the warning cannot confirm that the setup worked. A
+failure fails the suite after packing; a wrong `--server-log` path is an error,
+not a state.
+
 ### Checking which components actually registered
 
 `versions.txt` cannot answer this: it comes from `importlib.metadata`, which
