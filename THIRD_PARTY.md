@@ -9,6 +9,8 @@ are candidate sources for selected components.
 | sglang-v100-plus | `heislera763/sglang-v100-plus` | Apache-2.0 | Candidate source; local snapshot at `sglang-restomod-reference` |
 | sglang-V100 | `haohervchb/sglang-V100` | Apache-2.0 (verify) | Candidate source |
 | sglang-sxm2 | `dg1kjd/sglang-sxm2` | Apache-2.0 (verify) | Source of `attention_v100` and the long-context decode kernel |
+| sm70-kernels | `Oaklight/sm70-kernels` | Apache-2.0 (declared in its `pyproject.toml`; the tree at the pin carries no `LICENSE` file) | Source of the two generated kernel files. Submodule at `third_party/sm70-kernels`, not vendored; see `docs/kernel-sync.md` |
+| TileLang FA V100 | `haohervchb/GooseLLM` `3rdparty/tilelang-fa-v100` | Apache-2.0 (declared by sm70-kernels) | Upstream lineage of `_kernels_paged.py`, reached through sm70-kernels |
 | flash-attention-v100 | `heislera763/flash-attention-v100` | see upstream | Candidate kernel dependency |
 | marlin_v100 | `zhinianqin/marlin_v100` | see upstream | SM70 Marlin kernels; built separately for NVFP4 and block-FP8 expert GEMM |
 | 1Cat-vLLM | `1CatAI/1Cat-vLLM` | see upstream | FP8 expert GEMM contract; not vendored |
