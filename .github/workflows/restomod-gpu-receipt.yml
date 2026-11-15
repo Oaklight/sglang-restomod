@@ -82,8 +82,15 @@ jobs:
             echo "requires=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          # A receipt is evidence about GPU behaviour, so a documentation change
+          # has nothing for it to certify. Without the markdown filter a typo fix
+          # in PROVENANCE.md or a recipe note could never merge: the path prefix
+          # matched, no run could produce the evidence, and the only way through
+          # was to bundle an unrelated code change with it.
           if gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files?per_page=100" \
-               --jq '.[].filename' | grep -qE '^(sglang_restomod/|patches/|recipes/)'; then
+               --jq '.[].filename' \
+               | grep -vE '\.md$' \
+               | grep -qE '^(sglang_restomod/|patches/|recipes/)'; then
             echo "requires=true" >> "$GITHUB_OUTPUT"
           else
             echo "requires=false" >> "$GITHUB_OUTPUT"
