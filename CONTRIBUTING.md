@@ -20,8 +20,9 @@ source .venv/bin/activate
 pip install -e . --no-deps
 ```
 
-`--no-deps` keeps SGLang out of the development environment. Install
-`sglang==0.5.22` separately if you need to run the server.
+`--no-deps` keeps SGLang out of the development environment. Install the
+SGLang version named by `UPSTREAM_PIN.toml` (`pypi_version`) separately if you
+need to run the server.
 
 ## Checks
 

@@ -46,13 +46,39 @@ KV dtype is orthogonal to the weight format, and the state differs by engine:
    gets the unquantized method. `SGLANG_SM70_FP8_MOE=auto|on|off` selects the
    behaviour; see the FP8 section below.
 3. **NVFP4.** `modelopt_fp4` selects Marlin v100 for dense layers on SM70
-   (`--fp4-gemm-backend marlin`). The SM70 NVFP4 MoE decode kernel is used when
-   the checkpoint layout matches; otherwise the Marlin MoE path applies.
+   (`--fp4-gemm-backend marlin`). The SM70 NVFP4 MoE decode GEMV is used when
+   the checkpoint layout and the shape both match; otherwise the Marlin MoE
+   path applies. See "NVFP4 decode GEMV eligibility" below.
 4. **INT4 W4A16.** `compressed-tensors` WNA16 is admitted at capability 7.0
    only when the Marlin v100 backend is available; the stock floor of 8.0 is a
    portability bug, not a hardware limit.
 5. **Unquantized.** On SM70, `FusedMoE` swaps in `SM70FP16MoEMethod` when
    `params_dtype` is fp16 and no quant method was selected.
+
+## NVFP4 decode GEMV eligibility
+
+`fp4_moe` carries a decode-shaped GEMV (`decode_gemv.py`) that has no M tile, so
+one expert's route rows are read once instead of padded to the Marlin 64-row
+tile. It declines every shape it cannot read exactly, and the call falls back to
+Marlin unchanged. It is not dead code: a decode-only torch-profiler trace of the
+TP4 launch (2026-11-15) shows it at 48 calls per step, 62 us each, at M=4.
+
+- **Layout.** The Marlin-layout bank. `SGLANG_SM70_FP4_MOE_LAYOUT=qpn2` selects
+  the separate QPN2 bank and `decode_qpn2.py`; that is not the shipping default,
+  because the QPN2 prefill reader is not integrated yet (see `qpn2-layout.md`).
+- **N.** `N % 64 == 0` and `N / 64` odd. The down projection is `N = 2560`,
+  `N / 64 = 40`, so it is refused on purpose: at that shape the kernel measured
+  49.3 us against Marlin's 48.3 us.
+- **K.** `K % 16 == 0` and the K groups divisible by the split-K factor.
+- **M.** `size_m <= 8`. With NEXTN 3/4 at one request the `gate_up` call is 4
+  rows, which passes. From three concurrent requests it is 12 rows and Marlin
+  takes the call; the down call counts `tokens * top_k` and is already refused
+  on N.
+
+Read the path a launch took from its log. `decode gemv: rows=...` means the
+kernel ran; `decode gemv skipped: unsupported m=... n=... k=... topk=... block=...`
+names the shape that fell back. Do not diagnose it from a single line: one
+skipped shape (the down projection) is expected at every step.
 
 ## Fallback policy
 
@@ -127,13 +153,20 @@ Every cell below needs a run and a receipt before it is called validated.
 | Model | FP8 | NVFP4 | INT4 W4A16 |
 |---|---|---|---|
 | Qwen3.8-27B | validated (#17); 30-35 tok/s with the graph fix (#31) | open (#24) | measured, not competitive |
-| Qwen3.8-Flash-Next | expert GEMM validated (#20); end-to-end blocked on the QSA decode head layout | measured (85-100 tok/s) | n/a |
+| Qwen3.8-Flash-Next | expert GEMM validated (#20); end to end validated on 8x and 4x, with the QSA decode head layout resolved | measured (85-100 tok/s) | n/a |
 
 ## Open gaps
 
 - Block-FP8 W8A16 MoE kernel and its binding (#19): bound and wired into
-  `SM70Fp8MoEMethod` (#20), validated numerically. The remaining Flash-Next
-  blocker is the QSA decode head layout, not the expert GEMM.
+  `SM70Fp8MoEMethod` (#20), validated numerically. The QSA decode head layout
+  blocker is resolved: the SM70 kernels are templated over the query-head group
+  (see `COMPATIBILITY.md`).
+- NVFP4 prefill is flat in context: cold prefill holds at roughly 900 tok/s
+  from 8k to 64k prompt tokens on Flash-Next
+  (`docs/runs/2026-11-15-flash-next-nvfp4-tp4-context-cold-warm.md`). That run
+  attributes the flat curve to the expert GEMM shape and marks the
+  attribution as inference; a kernel-level profile is needed before the
+  work is placed.
 - 1Cat NVFP4 dense kernel extraction (#37) for the 27B memory path.
 - Shared expert and router stay BF16 in the FP8 checkpoint; whether to requantize
   them is #33.

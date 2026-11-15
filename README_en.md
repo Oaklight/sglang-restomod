@@ -22,18 +22,21 @@ tests. The repository is not a fork of SGLang or of any V100 project.
 
 ## Status
 
-Eight components ship, all opt-in via `SGLANG_RESTOMOD_COMPONENTS`:
+Thirteen components ship, all opt-in via `SGLANG_RESTOMOD_COMPONENTS`:
 
 | component | what it does |
 |---|---|
 | `fp8_moe` | block-FP8 expert GEMM on sm70. The TurboMind library SGLang ships for SM70 exports `fp8_moe_gemm_sm70_out` but never registers it with torch; this resolves the symbol with a small `dlopen`/`dlsym` shim and exposes a typed surface. This is what makes the official block-FP8 MoE checkpoints runnable on V100. |
 | `fp8_dense` | SM70 W8A16 dense FP8 linear kernels for the pinned engine. |
+| `fp8_lm_head` | Quantizes the LM head to block FP8 after load and hands it to `fp8_dense`. The 27B checkpoint keeps `lm_head` in `ignored_layers`, so the head stays f16 and every draft step reads 1.27 GB of weights per card. On one V100 at M=6, the TP2 shard shape, the f16 linear took 2.001 ms against 0.793 ms for FP8; in the engine it moved 8k decode from 63.08 to 70.37 tok/s (three fresh reps, 512 output tokens) and left 32k unchanged. It needs `fp8_dense` and refuses to install without it. |
 | `fp8_dense_quant` | Quantizes a BF16 checkpoint's dense linears to block FP8 after load and hands them to `fp8_dense`, because at M=1..4 those GEMMs are bandwidth-bound and the byte count is the cost. Admission is narrow: 2-D weight, both sides a multiple of the 128 block, not an expert, not the LM head. On Flash-Next NVFP4 the decode step falls 32.79 -> 31.08 ms with `fp8_lm_head` (issue #95). |
 | `attention_v100` | V100 full attention for the pin. Vendors `flash_attn_v100_backend.py`, the SM70 QSA backend and the `tilelang_fa_v100` kernels, registers the `tilelang_fa_v100` backend name (the pin does not define it), and implements `init_forward_metadata_out_graph` on the backend, which the graph runner calls and the base class leaves as a no-op. Without the last one a decode CUDA graph cannot capture; without the first two the launch does not start. It also serves the MTP draft decode through the same split-KV kernel, converting each draft step's KV index list into a page table. |
 | `fp4_moe` | NVFP4 expert GEMM through the `marlin_v100` extension: load-time repack, SM70 scale encoding, and the GEMM bridge. The Marlin kernel SGLang ships is an empty body below SM80. |
 | `fp4_dense` | Dense NVFP4 (W4A16) linear GEMM through the `marlin_v100` extension. With `--fp4-gemm-backend marlin` the pin's `ModelOptFp4LinearMethod` already returns into `apply_fp4_marlin_linear` before it quantizes an activation, so a layer tagged `NVFP4` runs as W4A16 on Volta; only the kernel is missing. This routes the three names `marlin_utils_fp4` imports into its own namespace -- GEMM, repack, scale permute -- to the SM70 build, and collapses a fused layer's per-shard global scale the way the A16 method does. |
+| `sm70_marlin_v100` | Dense WNA16 (INT4 GPTQ/AWQ) linear GEMM through the `marlin_v100` extension. The pin JIT-builds its own Marlin kernel, and that build does not compile for sm70 (`namespace sglang::device::marlin has no member marlin_mm`). This routes the engine's GPTQ call to the prebuilt SM70 kernel named by `SM70_MARLIN_DIR`, and lifts the stock capability floor that otherwise refuses INT4 on compute capability 7.0. |
 | `ple_sm70` | SM70 decode for the fp8 PLE host-embedding gather, which the pinned kernel cannot compile because it casts to `tl.float8e4nv`. |
 | `spec_sm70` | top-k/top-p renorm replacements so non-greedy EAGLE verify does not reach FlashInfer's sm75 floor. |
+| `moe_align_sm70` | Routes the tiny-batch MoE alignment to the CUDA pair on SM70. The pin admits a single-CTA Triton kernel at decode size; on the Flash-Next TP4 NVFP4 MoE it costs 29.3 us per call in-server, against 5.0 + 2.3 us for the generic CUDA pair, because one CTA leaves an 80-SM card idle. Setting `SMALL_NUMEL_LIMIT` to zero makes the Triton branch unreachable and every caller falls through to the pair, which produces the same metadata. |
 | `gdn_tilelang_sm70` | SM70 TileLang GDN chunked prefill. The pin's Triton chunk kernels take 63.9% of a 27B prefill chunk; this component answers the same call with a TileLang kernel: 1,933.6 / 1,924.9 tok/s at 8,041 prompt tokens and 1,658.3 / 1,655.1 at 31,158, against 719.9 and 684.6 on Triton (receipt `evidence-55cb6e7-gdn-tilelang`). |
 | `lsa_sm70` | Latent Sparse Attention (LSA) for SM70 full attention. Keys are clustered in a learned latent space, each query scores bucket centroids instead of every key, and the read takes the selected keys plus a local window and sinks. Ports the flat D-LSA design for Qwen3.8-27B (16 full-attention layers, GQA 24/4), with the index sharded across the attention TP group, the selection in two Triton programs, and the read through the pin's Triton decode kernel. Selects `--attention-backend lsa_sm70`; needs `SGLANG_RESTOMOD_LSA_MAP`, `--page-size 1` and `--disable-cuda-graph`. The implementation is the standalone package `Oaklight/lsa-sm70` at the commit pinned in `UPSTREAM_PIN.toml`; this component only registers it, so install that commit first: `pip install 'lsa-sm70 @ git+https://github.com/Oaklight/lsa-sm70@3a4798093224933988175ee685084d521474da0b'`. |
 
@@ -41,9 +44,11 @@ Eight components ship, all opt-in via `SGLANG_RESTOMOD_COMPONENTS`:
 SGLANG_RESTOMOD_COMPONENTS=fp8_moe,attention_v100
 ```
 
-With the variable unset the plugin stays inert. The patch queue is still empty
-(`patches/manifest.json`), so nothing here edits upstream files; it all arrives
-through the plugin entry point.
+With the variable unset the plugin stays inert. The patch queue carries three
+upstream edits, each with its paths and reason in `patches/manifest.json`:
+a HiCache/OpenSSL header fallback, the `cuda_ipc` JIT fix without which custom
+allreduce is silently disabled, and a QPN2 shape gate in `fused_marlin_moe`.
+Everything else arrives through the plugin entry point.
 
 ## Reference projects
 
@@ -149,7 +154,11 @@ How to read it:
 - Prefill tok/s is a prefill rate only with a cold prefix. `scripts/bench.py`
   salts each request by default (`--fresh`); without it the radix cache serves
   the prompt and `prompt_tokens / TTFT` reports 12-14k at 3.5k tokens on V100.
-  Quote prefill only from a cold-prefix run (issue #95).
+  Quote prefill only from a cold-prefix run (issue #95). Cold Flash-Next NVFP4
+  prefill measures 921 / 921 / 868 tok/s at 8,176 / 16,337 / 64,017 prompt
+  tokens. The run reads that flat curve as an expert-GEMM shape problem and
+  records the reading as inference, not a profile:
+  [context run](docs/runs/2026-11-15-flash-next-nvfp4-tp4-context-cold-warm.md).
 - FP8 rows use 8 cards, NVFP4 rows use 4. Per-card throughput is the
   comparable quantity, not the row total.
 - The `evidence-175a630-e5m2-shift` and `evidence-79aef7a-vec-gather` rows
@@ -189,7 +198,7 @@ scripts/build.sh
 ## Layout
 
 ```
-pyproject.toml          sglang-restomod; pins sglang==0.5.22
+pyproject.toml          packaging for the layer; the engine pin is UPSTREAM_PIN.toml
 sglang_restomod/        plugin, overrides, selected components
 patches/                upstream-file changes + manifest
 recipes/                validated launch profiles

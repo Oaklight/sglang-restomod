@@ -21,25 +21,32 @@
 
 ## 状态
 
-目前有七个组件，都通过 `SGLANG_RESTOMOD_COMPONENTS` 显式启用：
+目前有十三个组件，都通过 `SGLANG_RESTOMOD_COMPONENTS` 显式启用：
 
 | 组件 | 作用 |
 |---|---|
 | `fp8_moe` | sm70 上的 block-FP8 expert GEMM。SGLang 随包提供的 SM70 TurboMind 库导出了 `fp8_moe_gemm_sm70_out`，但从未向 torch 注册；本组件用一个小的 `dlopen`/`dlsym` shim 解析该符号并暴露类型化接口。官方 block-FP8 MoE 权重能在 V100 上跑，靠的就是它。 |
 | `fp8_dense` | 固定 pin 引擎的 SM70 W8A16 稠密 FP8 线性层内核。 |
+| `fp8_lm_head` | 加载后把 LM head 量化为 block FP8，交给 `fp8_dense`。27B 权重把 `lm_head` 放在 `ignored_layers`，所以 head 保持 f16，每个 draft step 每卡读 1.27 GB 权重。单卡 M=6（TP2 分片形状）时 f16 线性层 2.001 ms，FP8 0.793 ms；引擎内 8k decode 从 63.08 升到 70.37 tok/s（三次新起进程，512 输出 token），32k 基本不变。依赖 `fp8_dense`，缺失时拒绝安装。 |
+| `fp8_dense_quant` | 加载后把 BF16 权重的稠密线性层量化为 block FP8，交给 `fp8_dense`。M=1..4 时这些 GEMM 受带宽限制，字节数就是成本。准入很窄：二维权重、两侧都是 128 的倍数、不是 expert、不是 LM head。Flash-Next NVFP4 上配合 `fp8_lm_head`，decode step 从 32.79 降到 31.08 ms（issue #95）。 |
 | `attention_v100` | pin 上的 V100 全注意力。内置 `flash_attn_v100_backend.py`、SM70 QSA backend 与 `tilelang_fa_v100` 内核，注册 pin 未定义的 `tilelang_fa_v100` 后端名，并在该 backend 上实现 `init_forward_metadata_out_graph`（graph runner 会调用，基类留成 no-op）。缺最后这项则 decode CUDA graph 无法捕获；缺前两项则启动直接失败。MTP 的 draft decode 也走同一个 split-KV kernel：把每个 draft step 的 KV 索引表转成 page table。 |
 | `fp4_moe` | 经 `marlin_v100` 扩展实现的 NVFP4 expert GEMM：加载期 repack、SM70 scale 编码、GEMM 桥接。SGLang 随包的 Marlin 内核在 SM80 以下是空实现。 |
 | `fp4_dense` | 经 `marlin_v100` 扩展实现的 dense NVFP4（W4A16）线性 GEMM。带 `--fp4-gemm-backend marlin` 时，pin 的 `ModelOptFp4LinearMethod` 在量化激活之前就返回 `apply_fp4_marlin_linear`，所以标为 `NVFP4` 的层在 Volta 上按 W4A16 运行，缺的只是内核。本组件把 `marlin_utils_fp4` 导入到自身命名空间里的三个名字（GEMM、repack、scale 置换）接到 SM70 构建上，并按 A16 方法的方式折叠融合层的按分片 global scale。 |
+| `sm70_marlin_v100` | 经 `marlin_v100` 扩展实现的稠密 WNA16（INT4 GPTQ/AWQ）线性 GEMM。pin 会 JIT 编译自己的 Marlin 内核，而该构建在 sm70 上无法编译（`namespace sglang::device::marlin has no member marlin_mm`）。本组件把引擎的 GPTQ 调用转到 `SM70_MARLIN_DIR` 指向的预编译 SM70 内核，并解除上游在 compute capability 7.0 上拒绝 INT4 的门槛。 |
 | `ple_sm70` | fp8 PLE host-embedding gather 的 SM70 版本。固定 pin 的内核会 cast 到 `tl.float8e4nv`，在 SM70 上无法编译。 |
 | `spec_sm70` | top-k/top-p renorm 替换，使非贪心 EAGLE verify 不再触到 FlashInfer 的 sm75 下限。 |
+| `moe_align_sm70` | 把 tiny-batch MoE 对齐转到 SM70 上的 CUDA 双内核。pin 在 decode 尺寸下选单 CTA 的 Triton 内核；在 Flash-Next TP4 NVFP4 MoE 上它每次调用 29.3 us，而通用 CUDA 双内核为 5.0 + 2.3 us，因为单个 CTA 让 80 SM 的卡空转。把 `SMALL_NUMEL_LIMIT` 设为 0 即可让 Triton 分支不可达，所有调用走双内核；两者产出的元数据相同。 |
 | `gdn_tilelang_sm70` | SM70 上的 TileLang GDN 分块预填内核。pin 的 Triton 分块内核占 27B 单次预填分块的 63.9%；本组件用 TileLang 内核接管同一次调用：8,041 token 时 1,933.6 / 1,924.9 tok/s，31,158 token 时 1,658.3 / 1,655.1，Triton 下分别为 719.9 与 684.6（凭证 `evidence-55cb6e7-gdn-tilelang`）。 |
+| `lsa_sm70` | SM70 全注意力的 Latent Sparse Attention（LSA）。key 在学习到的隐空间里聚类，每个 query 只对桶中心打分，读取时取选中的 key 加本地窗口和 sink。移植 Qwen3.8-27B 的 flat D-LSA 设计（16 个全注意力层，GQA 24/4），索引按 attention TP 组分片，选择由两个 Triton program 完成，读取走 pin 的 Triton decode 内核。选择 `--attention-backend lsa_sm70`；需要 `SGLANG_RESTOMOD_LSA_MAP`、`--page-size 1` 和 `--disable-cuda-graph`。实现是独立包 `Oaklight/lsa-sm70`，commit 固定在 `UPSTREAM_PIN.toml`；本组件只负责注册，先按该 commit 安装：`pip install 'lsa-sm70 @ git+https://github.com/Oaklight/lsa-sm70@3a4798093224933988175ee685084d521474da0b'`。 |
 
 ```bash
 SGLANG_RESTOMOD_COMPONENTS=fp8_moe,attention_v100
 ```
 
-不设置这个变量时插件保持惰性。patch 队列仍为空（`patches/manifest.json`），
-所以这一层不修改上游文件，全部通过插件入口生效。
+不设置这个变量时插件保持惰性。patch 队列有三处上游修改，路径和理由都记录在
+`patches/manifest.json`：HiCache/OpenSSL 头文件回退、`cuda_ipc` JIT 修复（缺它会
+静默关闭 custom allreduce）、以及 `fused_marlin_moe` 中的 QPN2 形状门。其余能力
+全部通过插件入口生效。
 
 ## 参考项目
 
@@ -156,7 +163,7 @@ scripts/build.sh
 ## 目录
 
 ```
-pyproject.toml          sglang-restomod；固定 sglang==0.5.22
+pyproject.toml          本层的打包配置；引擎 pin 在 UPSTREAM_PIN.toml
 sglang_restomod/        插件、overrides、选入的组件
 patches/                上游文件修改 + manifest
 recipes/                已验证的启动配置
