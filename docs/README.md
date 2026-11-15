@@ -48,6 +48,8 @@ Newest first. Each entry states what the run established, not what it hoped to.
 
 | Date | Record | Established |
 |---|---|---|
+| 2026-11-15 | [Attribution and TP4 placement](runs/2026-11-15-attribution-and-tp4-placement.md) | A/B/C separates the effects: the GDN pair is prefill 2.4x and decode 0, while the open #286 discovery is decode 2.4x and prefill -46%, an open defect; TP4 belongs on one host (65.9% cross-host all-reduce); the #287 tail gate was costing a decode step; receipt `3880f8e058` is signed and `fail` |
+| 2026-11-15 | [GDN pair in serving, and token equality](runs/2026-11-15-gdn-pair-serving-and-repeatability.md) | The pair is reached in a served prefill (TileLang grids, zero Triton chunks) and prefill is 2.48x on a pair-only arm; token equality cannot gate it, because the pure-Triton control diverges cold-to-cold |
 | 2026-11-15 | [Flash-Next NVFP4 TP4, 8k/16k/64k, cold vs warm](runs/2026-11-15-flash-next-nvfp4-tp4-context-cold-warm.md) | Cold prefill is flat at 921 / 921 / 868 tok/s from 8k to 64k; the run reads that as an expert-GEMM shape problem and marks the reading as inference; warm TTFT pays a fixed ~0.5 s; decode step is flat at 49-55 ms |
 | 2026-11-15 | [GDN prefill kernels: Triton vs TileLang](runs/2026-11-15-gdn-tilelang-prefill-ab.md) | 108x and 33x on the two GDN prefill kernels; 1.96x measured on a contended box with unequal arms, 1.84x patch-attributable; the durable number is the 1390 ms kernel saving, not the tok/s multiple |
 | 2026-11-08 | [Flash-Next accept length vs context](runs/2026-11-08-flash-next-accept-vs-context.md) | Accept length and verify step time are flat from 3.8k to 30.8k; neither draft nor verify degrades in that range |
