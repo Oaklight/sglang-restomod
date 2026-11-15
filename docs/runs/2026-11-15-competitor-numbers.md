@@ -61,6 +61,13 @@ at 1007-1018 ms (4048-4092 tok/s), against **1147 ms measured here**, so about
 **13-14% of that gap is the lambda6 host** and the rest is not attributed. The
 contended-island 3450-3565 stays withheld from the verdict.
 
+**Every prefill number in this note is bf16-dense on an arm we do not serve.**
+The launches logged `SM70 TurboMind FP8 operators unavailable: no library path`,
+so the dense FP8 components were selected, registered, and inactive. The ratios
+above remain comparisons between measured arms; they are not our configured
+performance. Details and the re-measurement are under "The prefill numbers above
+are on a configuration we do not serve".
+
 **Cross-quant caveat that applies to the whole note.** Strata runs IQ2_XS
 (35.5 GB of experts) against our fp8/fp4 (125.9 GiB). That is not a tok/s
 comparison: the work per token differs by construction, and quality was never
@@ -209,9 +216,51 @@ attributed to a host from the record. It stays in the table as **reported, host
 unconfirmed**; no row's verdict depends on it, and every decomposition that uses
 it says so.
 
-Rule: **never cite a prefill number without the component list.** The
-difference is invisible at `register()` time and does not appear as a log
-line, so the component list is the only record of which arm ran.
+Rule: **never cite a prefill number without the component list and the log
+line.** The component list says what was asked for; the log line says what was
+active. Cite both, or the number is unattributed. A selected component can
+register and still do nothing: the dense FP8 components in the runs below did
+exactly that, and the component list cannot show it.
+
+### The prefill numbers above are on a configuration we do not serve
+
+The prefill figures in this note — 2971 and 3593 tok/s on lambda6, 1549 and 1663
+on lambda1 — were taken on launches whose logs carry
+
+```text
+SM70 TurboMind FP8 operators unavailable: no library path
+```
+
+so `fp8_dense`, `fp8_lm_head` and `fp8_dense_quant` were inactive and the dense
+linears ran as **bf16**. They are accurate descriptions of a configuration nobody
+intended to measure, not wrong numbers; but they describe an arm we do not
+serve, and they must not be read as our configured performance. The fp8-dense
+arm is being re-measured, and this note will carry those numbers when they land.
+
+### Prefill hardware bounds, and how to re-derive them
+
+Two ratios bound the prefill families. Both are arithmetic on measured times and
+fixed model dimensions, so a reader can audit them without our tools.
+
+Model (`model-sm70` text config): hidden 2560, 48 layers, 512 experts, top-10,
+moe intermediate 640. Window: `step[EXTEND toks=4096]`, 857.5 ms; families
+measured in the window: allreduce 56.4 ms, marlin 277.1 ms.
+
+- **Allreduce bandwidth.** 96 allreduces (2 per layer × 48), each
+  4096 × 2560 × 2 B = 20.97 MB. Ring per-rank traffic is `2(N-1)/N` = 1.5×, so
+  3.02 GB per rank; `3.02 GB / 56.4 ms = 53.5 GB/s = 35.7%` of the 150 GB/s per
+  card. Data-only convention: 2.01 GB → 35.7 GB/s → 23.8%.
+- **Marlin FLOPs.** `2 × 10 × 3 × 2560 × 640 × 4096 × 48 = 19.33 TFLOP`;
+  `/ 277.1 ms = 69.7 TFLOPS = 55.8%` of the 125 TFLOPS V100-SXM2 fp16 peak.
+- **Overlap.** Unioning kernel intervals rather than summing them, the GPU is
+  busy 745.0 of 857.5 ms = **86.9%**; the 112 ms of holes has only 30.7 ms in
+  gaps ≥0.5 ms. Summing durations overstates idle whenever kernels overlap.
+
+The lab-side tools are `prefill_attr.py <trace>` (family times in the longest
+`step[EXTEND]`) and `prefill_bounds.py --window-ms --ar-ms --marlin-ms`; on the
+inputs above they print the figures stated here. They are not in this repository
+because the trace format is lab-specific, which is why the formulas are written
+out.
 
 ## Decode comparability
 
