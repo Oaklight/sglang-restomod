@@ -45,12 +45,27 @@ _MODULE = None
 _FAILED = False
 _WORKSPACE = None
 _DEBUGGED: list[int] = []
+# Every skip reason below fires once per MoE layer per call, so at 36 expert
+# layers and four ranks a decode step wrote 144 INFO lines. Each distinct
+# reason is now logged once and then only at DEBUG, which keeps the fallback
+# visible in a server log without formatting a line that repeats.
+_LOG_ONCE: set[str] = set()
+_LOG_ONCE_MAX = 32
 
 _CSRC = Path(__file__).resolve().parent / "csrc" / "decode_gemv.cu"
 
 
 def enabled() -> bool:
     return os.environ.get(ENV_ENABLE, "1") != "0"
+
+
+def _log_once(key: str, fmt: str, *args) -> None:
+    """Report the first occurrence of ``key`` at INFO, later ones at DEBUG."""
+    if key in _LOG_ONCE or len(_LOG_ONCE) >= _LOG_ONCE_MAX:
+        logger.debug(fmt, *args)
+        return
+    _LOG_ONCE.add(key)
+    logger.info(fmt, *args)
 
 
 def _load():
@@ -138,18 +153,23 @@ def maybe_call(
 ):
     """Run the decode kernel, or return ``None`` to leave the call to Marlin."""
     if c is None or global_scale is None or topk_weights is None:
-        logger.info("decode gemv skipped: missing tensor")
+        _log_once("missing tensor", "decode gemv skipped: missing tensor")
         return None
     if not _is_cuda(a):
-        logger.info("decode gemv skipped: not cuda")
+        _log_once("not cuda", "decode gemv skipped: not cuda")
         return None
     if not supports(size_m, size_n, size_k, top_k, moe_block_size):
-        logger.info("decode gemv skipped: unsupported m=%d n=%d k=%d topk=%d block=%d",
-                    size_m, size_n, size_k, top_k, moe_block_size)
+        # ``size_m`` is the per-call variable -- the chunk length during
+        # prefill -- so it stays out of the key; the rest name the projection.
+        _log_once(
+            f"unsupported n={size_n} k={size_k} topk={top_k} block={moe_block_size}",
+            "decode gemv skipped: unsupported m=%d n=%d k=%d topk=%d block=%d",
+            size_m, size_n, size_k, top_k, moe_block_size,
+        )
         return None
     module = _load()
     if module is None:
-        logger.info("decode gemv skipped: extension unavailable")
+        _log_once("extension unavailable", "decode gemv skipped: extension unavailable")
         return None
 
     rows = c.size(0)
@@ -162,22 +182,28 @@ def maybe_call(
     # The kernel addresses a and c as dense row-major buffers. A sliced or
     # otherwise strided view would write outside the tensor.
     if not (a.is_contiguous() and c.is_contiguous()):
-        logger.info("decode gemv skipped: non-contiguous a=%s c=%s",
-                    a.is_contiguous(), c.is_contiguous())
+        _log_once(
+            f"non-contiguous a={a.is_contiguous()} c={c.is_contiguous()}",
+            "decode gemv skipped: non-contiguous a=%s c=%s",
+            a.is_contiguous(), c.is_contiguous(),
+        )
         return None
     # The reduce kernel indexes topk_weights by route, so it needs one entry
     # per route. The server passes ``topk_weights`` shaped ``[size_m, top_k]``,
     # which flattens to exactly that.
     if topk_weights.numel() < rows:
-        logger.info("decode gemv skipped: topk_weights %d < rows %d",
-                    topk_weights.numel(), rows)
+        _log_once(
+            f"topk_weights {topk_weights.numel()}<{rows}",
+            "decode gemv skipped: topk_weights %d < rows %d",
+            topk_weights.numel(), rows,
+        )
         return None
     # `expert_ids` is allocated for the worst case and the align kernel writes
     # only the blocks it fills; the rest of the tensor is uninitialised. The
     # padded token count is the authority on how many blocks exist, and the
     # kernel bounds itself on it before it reads `expert_ids`.
     if not (_is_cuda(num_tokens_post_padded) and num_tokens_post_padded.numel() >= 1):
-        logger.info("decode gemv skipped: no padded-token count")
+        _log_once("no padded-token count", "decode gemv skipped: no padded-token count")
         return None
     if os.environ.get("SM70_MOE_GEMV_DEBUG") == "1" and not _DEBUGGED:
         _DEBUGGED.append(1)
@@ -194,7 +220,14 @@ def maybe_call(
                 int(expert_ids.min()), int(expert_ids.max()),
                 tuple(topk_weights.shape), top_k, rows,
             )
-    logger.info("decode gemv: rows=%d tiles=%d n=%d k=%d", rows, expert_ids.size(0), size_n, size_k)
+    # Kept as a once-per-shape line rather than dropped: "the fast path ran"
+    # is the fact that took a profiler to establish the last time it was
+    # questioned, so it should be readable from the server log.
+    _log_once(
+        f"dispatch n={size_n} k={size_k}",
+        "decode gemv: rows=%d tiles=%d n=%d k=%d",
+        rows, expert_ids.size(0), size_n, size_k,
+    )
     workspace = _workspace_for(rows, size_n, c.device)
     return module.decode_moe_gemv(
         a, c, b_q_weight, b_scales, global_scale, sorted_token_ids,
