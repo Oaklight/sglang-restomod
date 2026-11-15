@@ -56,10 +56,10 @@ and have nothing to compare it to: 1Cat publishes only its MTP arm.
 
 **Prefill**, our first pair with MTP on both sides: **2971 tok/s**, SPEC=1 on
 lambda6, cold (`cached=0`), against 1Cat's 4825 MTP4 — **1.62x theirs, we trail
-38%**. Like for like in arm, unlike in box: the same arm on the reported clean
-island runs at 4048-4092 tok/s, so about **13-14% of that gap is the lambda6
-host** and the rest is not attributed. The contended-island 3450-3565 stays
-withheld from the verdict.
+38%**. Like for like in arm, unlike in box: the same arm on **lambda4, reported**
+at 1007-1018 ms (4048-4092 tok/s), against **1147 ms measured here**, so about
+**13-14% of that gap is the lambda6 host** and the rest is not attributed. The
+contended-island 3450-3565 stays withheld from the verdict.
 
 **Cross-quant caveat that applies to the whole note.** Strata runs IQ2_XS
 (35.5 GB of experts) against our fp8/fp4 (125.9 GiB). That is not a tok/s
@@ -180,8 +180,8 @@ Neither arm of that A/B has run on a clean island, so its magnitude is open.
 box; the host factor is only reported:
 
 - measured, lambda6: SPEC=0 3593 → SPEC=1 2971 tok/s, factor **1.21**
-- reported, clean 4-card island pair-on SPEC=0 at 1007-1018 ms, i.e. 4048-4092
-  tok/s, against lambda6's 1147 ms: factor **1.13-1.14**
+- reported, **lambda4** pair-on SPEC=0 at 1007-1018 ms, i.e. 4048-4092 tok/s,
+  against **lambda6, measured here**, at 1147 ms: factor **1.13-1.14**
 
 Product 1.37-1.38, which is exactly the ratio between the reported 4048-4092 and
 2971 (1.36-1.38). So on the only lambda4 evidence that exists, the gap is **fully
