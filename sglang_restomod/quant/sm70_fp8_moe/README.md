@@ -43,6 +43,11 @@ torch.ops.sglang_sm70_fp8_moe.fp8_moe_gemm(
 
 Notes from the validation:
 
+- `K` must be a multiple of the 128-wide quantization group and `N` a
+  multiple of 32 (HMMA-884 packs N in 32-column tiles). `prepare_experts` and
+  `gemm` reject anything else before packing or dispatch: the kernel's own
+  failure mode is a split-K stall or a silently wrong result, not an error.
+  `gemm` also rejects a `K`/`N` that disagrees with the prepared weights.
 - Scales are `[N/128, K/128]`, not per channel. `fp8_prepare` rejects anything
   else with "output scale block mismatch".
 - `interleave_gated_silu=True` is required for gated MLPs. With it the kernel
