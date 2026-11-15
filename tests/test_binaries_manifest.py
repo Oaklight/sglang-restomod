@@ -89,3 +89,31 @@ def test_sha256_helper(tmp_path):
     import hashlib
 
     assert cli._sha256(target) == hashlib.sha256(b"restomod").hexdigest()
+
+
+def test_import_failure_is_inactive(monkeypatch):
+    from sglang_restomod import attest, plugins
+
+    attest.reset()
+    fake = plugins.Component(
+        name="bogus",
+        module="sglang_restomod._does_not_exist",
+        description="a component whose module is missing",
+    )
+    monkeypatch.setitem(plugins.COMPONENTS, "bogus", fake)
+
+    loaded = plugins.load_enabled({"SGLANG_RESTOMOD_COMPONENTS": "bogus"})
+    assert list(loaded) == []
+
+    snapshot = attest.snapshot()
+    assert "bogus" in snapshot["inactive"]
+    assert "import failed" in snapshot["components"]["bogus"]["detail"]
+    assert snapshot["failed"] == []
+
+
+def test_commit_matches_prefixes():
+    cli = _load_cli()
+    assert cli._commit_matches("4765795ce3abc", "4765795ce3")
+    assert cli._commit_matches("4765795ce3", "4765795ce3abc")
+    assert not cli._commit_matches("4765795ce3", "deadbeef")
+    assert not cli._commit_matches(None, "4765795ce3")
