@@ -30,6 +30,8 @@ import threading
 
 import torch
 
+from sglang_restomod import attest
+
 from . import qpn2
 from .marlin import ENV_DIR, available, ensure_loaded
 from .scales import encode_global_scale, encode_scales
@@ -157,9 +159,7 @@ def _select_split_k(size_m: int, size_k: int) -> None:
     if mode in ("", "per-shape", "per_shape"):
         decode = size_m <= _SPLIT_K_DECODE_MAX_M
         long_call = size_k >= _SPLIT_K_LONG_MIN and size_k % _SPLIT_K_ALIGN == 0
-        os.environ[MARLIN_SPLIT_K] = (
-            _SPLIT_K_LONG if decode and long_call else "1"
-        )
+        os.environ[MARLIN_SPLIT_K] = _SPLIT_K_LONG if decode and long_call else "1"
         return
     if mode in _SPLIT_K_OFF:
         return
@@ -187,8 +187,7 @@ def check_expert_shape(size_n: int, size_k: int) -> None:
     """
     if size_k % 16 or size_n % 64:
         raise RuntimeError(
-            "SM70 NVFP4 Marlin needs K divisible by 16 and N by 64, got "
-            f"N={size_n} K={size_k}"
+            f"SM70 NVFP4 Marlin needs K divisible by 16 and N by 64, got N={size_n} K={size_k}"
         )
 
 
@@ -211,9 +210,7 @@ def _repack_experts(weight: torch.Tensor) -> torch.Tensor:
     check_expert_shape(size_n, size_k)
     ops = ensure_loaded()
     perm = torch.empty(0, dtype=torch.int32, device=weight.device)
-    out = torch.empty(
-        (experts, size_k // 16, size_n * 2), dtype=torch.int32, device=weight.device
-    )
+    out = torch.empty((experts, size_k // 16, size_n * 2), dtype=torch.int32, device=weight.device)
     for expert in range(experts):
         qweight = weight[expert].view(torch.int32).T.contiguous()
         out[expert] = ops.repack(qweight, perm, size_k, size_n, 4, False)
@@ -264,7 +261,11 @@ def _warn_decode_fallback(size_m, size_n, size_k, top_k, block) -> None:
         "SM70 QPN2: a decode-shaped call (m=%d n=%d k=%d topk=%d block=%d) "
         "reached the prefill repack; this prefix will be repacked on every "
         "step until the decode kernel covers the shape",
-        size_m, size_n, size_k, top_k, block,
+        size_m,
+        size_n,
+        size_k,
+        top_k,
+        block,
     )
 
 
@@ -298,8 +299,7 @@ def prepare_moe_nvfp4(layer, group_size: int | None = None) -> None:
 
     if layer.params_dtype != torch.float16:
         raise RuntimeError(
-            "The SM70 NVFP4 profile requires FP16 activations, got "
-            f"{layer.params_dtype}"
+            f"The SM70 NVFP4 profile requires FP16 activations, got {layer.params_dtype}"
         )
     ep_size = _ep_size()
     if ep_size is not None and ep_size != 1:
@@ -350,17 +350,11 @@ def prepare_moe_nvfp4(layer, group_size: int | None = None) -> None:
 
         if global_scales.ndim == 2:
             if not torch.equal(global_scales[:, 0], global_scales[:, 1]):
-                raise RuntimeError(
-                    "Unequal NVFP4 gate/up global scales are unsupported on SM70"
-                )
+                raise RuntimeError("Unequal NVFP4 gate/up global scales are unsupported on SM70")
             global_scales = global_scales[:, 0]
 
-        encoded, factor = encode_scales(
-            scales.transpose(1, 2).contiguous(), torch.float16
-        )
-        global_scales = (
-            encode_global_scale(global_scales, torch.float16) / factor
-        ).contiguous()
+        encoded, factor = encode_scales(scales.transpose(1, 2).contiguous(), torch.float16)
+        global_scales = (encode_global_scale(global_scales, torch.float16) / factor).contiguous()
 
         copy_or_rebind_param(layer, prefix + "_weight", _repack_experts(weight))
         copy_or_rebind_param(layer, prefix + "_weight_scale", encoded)
@@ -437,9 +431,7 @@ def moe_wna16_marlin_gemm(
     """
     if zero_inactive_output:
         if c_or_none is None:
-            c_or_none = torch.zeros(
-                (size_m * top_k, size_n), dtype=a.dtype, device=a.device
-            )
+            c_or_none = torch.zeros((size_m * top_k, size_n), dtype=a.dtype, device=a.device)
         else:
             c_or_none = c_or_none.zero_()
     if is_ep:
@@ -447,8 +439,7 @@ def moe_wna16_marlin_gemm(
         # rank's weights by global expert id, so an EP launch would read the
         # wrong expert without either layer noticing. Fail at startup instead.
         raise RuntimeError(
-            "SM70 NVFP4 Marlin does not support expert parallelism; "
-            "launch with --ep-size 1"
+            "SM70 NVFP4 Marlin does not support expert parallelism; launch with --ep-size 1"
         )
     if qpn2.is_qpn2_weight(b_q_weight):
         # The layout is read off the tensor: QPN2 weights are uint8, the Marlin
@@ -479,9 +470,7 @@ def moe_wna16_marlin_gemm(
         # resident; only one layer's Marlin copy exists at a time.
         from . import qpn2_repack
 
-        shim = qpn2_repack.prefill_shim(
-            b_q_weight, global_scale_or_none, size_n, size_k
-        )
+        shim = qpn2_repack.prefill_shim(b_q_weight, global_scale_or_none, size_n, size_k)
         if shim is None:
             raise RuntimeError(
                 "SM70 NVFP4 MoE: QPN2 expert weights reached a shape the QPN2 "
@@ -651,14 +640,21 @@ def install() -> bool:
         return True
     mode = _mode()
     if mode == "off":
+        attest.inactive("fp4_moe", f"{ENV_MODE}=off")
         return False
     if mode not in ("auto", "on"):
         raise ValueError(f"{ENV_MODE} must be auto, on or off; got {mode!r}")
     if not _is_sm70():
         if mode == "on":
             raise RuntimeError(f"{ENV_MODE}=on requires an SM70 device")
+        attest.inactive("fp4_moe", "not an SM70 device")
         return False
     if not available():
+        attest.inactive(
+            "fp4_moe",
+            f"{ENV_DIR} does not hold a loadable marlin_v100 build "
+            f"({os.environ.get(ENV_DIR, '<unset>')})",
+        )
         # ``sglang.srt.plugins`` wraps plugin execution in
         # ``except Exception: logger.exception(...)`` at the pin, so a raise
         # here would only be logged and the engine would keep loading with the
@@ -677,8 +673,7 @@ def install() -> bool:
         _patch(marlin_utils_fp4, "prepare_moe_nvfp4_layer_for_marlin", _refuse)
         _patch(modelopt_quant, "prepare_moe_nvfp4_layer_for_marlin", _refuse)
         logger.error(
-            "SM70 NVFP4 MoE: no usable marlin_v100 build in %s; weight loading "
-            "will fail",
+            "SM70 NVFP4 MoE: no usable marlin_v100 build in %s; weight loading will fail",
             os.environ.get(ENV_DIR, "<unset>"),
         )
         return False
@@ -728,6 +723,7 @@ def install() -> bool:
         for module in (marlin_utils_fp4, modelopt_quant):
             _patch(module, "prepare_moe_nvfp4_layer_for_marlin", _refuse_binding)
         logger.error("SM70 NVFP4 MoE: hook(s) did not bind: %s", names)
+        attest.inactive("fp4_moe", f"hook(s) did not bind: {names}")
         return False
     try:
         from sglang.srt.layers.moe.fused_moe_triton import fused_marlin_moe
