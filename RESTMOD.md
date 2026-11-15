@@ -1,5 +1,15 @@
 # Architecture
 
+## This is a mod, not a mirror
+
+The project exists because SGLang does not work well on SM70. Where upstream is
+wrong for this hardware -- a kernel that lowers `tl.dot` to scalar FMA, a backend
+that assumes SM80, a shape gate that refuses a Volta-only layout -- this
+repository changes it. The patch queue and the component interface are the
+bookkeeping for those changes, not a gate on whether to make them. What still
+binds is evidence: nothing lands without a run on the hardware, and nothing is
+called verified until one says so.
+
 ## The model
 
 `main` is a layer, not a fork:
