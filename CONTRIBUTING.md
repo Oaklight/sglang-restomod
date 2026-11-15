@@ -78,7 +78,10 @@ Statuses: `pending`, `accepted`, `local-only`, `rejected`.
    `scripts/sync_kernels.py --check` after re-pinning `[kernels].commit`.
 3. Re-check the vendored QSA backend against the pin's own file and re-apply
    the SM70 routes on top of it. It has been pin-based rather than fork-based
-   since #243, and a pin bump is when the two can drift apart. Details:
+   since #243. The step recurs because a bump adopts upstream QSA commits
+   (#45752 and #45791 were two) whose effect on our routes is not visible in
+   the bump's own diff: the file we re-apply onto changes, and nothing fails
+   until a route reads text that moved. Details:
    [docs/qsa-sm70-audit.md](docs/qsa-sm70-audit.md).
 
 ## Branches and commits
