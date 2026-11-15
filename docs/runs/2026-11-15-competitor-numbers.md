@@ -18,10 +18,16 @@ as if measured, and both were caught by someone re-deriving them.
 
 ## Headline
 
-At 4 cards: **1Cat is 1.36x our decode throughput and 1.35-1.40x our prefill
-throughput** — 129.6 vs 95.3 output tok/s, 4825 vs 3450-3565 prompt tok/s.
-Equivalently, we trail by 27% on decode and 26-29% on prefill. The prefill pair
-is quoted component-on; see the component rule below.
+At 4 cards: **1Cat is 1.36x our decode throughput** — 129.6 vs 95.3 output
+tok/s, i.e. we trail by 27%.
+
+**The prefill ratio is withheld from this revision.** The only component-on
+prefill pair this lane holds (3450-3565 tok/s) was measured with a co-tenant on
+the island, and the clean-island number is materially different. Publishing the
+contended figure as ours would overstate our deficit roughly twofold (26-29%
+against about 13% on a clean island). The SPEC=1 arm that matches 1Cat's MTP4
+is being run on that clean island now; both prefill ratios are finalised from
+one box, not stitched from two.
 
 **Cross-quant caveat that applies to the whole note.** Strata runs IQ2_XS
 (35.5 GB of experts) against our fp8/fp4 (125.9 GiB). That is not a tok/s
@@ -84,11 +90,14 @@ these numbers**.
 - Measured by this lane: **none completed**. Build at `13eedf55` (sm70, CUDA
   12.8) succeeded and the Q2_0 GGUF (66.4 GB) was downloaded; the single-card
   point was not run before the lane was reassigned.
-- An earlier peer figure of **36.8 tok/s** on a single card, also IQ2_XS but
-  with the expert cache on auto and the opt-in switches off, does not agree with
-  the 66.6 above. Different run, different switches; I cannot reconcile them
-  from the material I hold, so both are recorded and neither is used in the
-  headline.
+- The earlier single-card figure of **36.8 tok/s** (`smoke2.log:58`: 8 tokens in
+  217.3 ms) is a **cold 8-token smoke decode** — two or three draft rounds with
+  the first-window overhead dominating. It is not steady state and not a peer
+  point to the 66.6 above; the same file records 48.1 tok/s for an 8-token warm
+  decode on a 57-token prompt, the same shape. **66.6 supersedes it as the
+  single-card point** (6,521-token prompt, 64 generated, 961 ms, drafts 12/12,
+  expert cache 98.5%). Both are now labelled by shape rather than set side by
+  side.
 - Claimed by the project (`strata/docs/NVIDIA_V100.md`, `OLDER_GPUS.md`): one
   V100-PCIE-32GB, **UD-IQ4_XS**, int8 KV, MTP `--spec 2`: prefill 1164 / 1251 /
   1123 tok/s at 7,194 / 28,650 / 114,338 prompt tokens; decode 38-51 tok/s,
@@ -104,7 +113,7 @@ these numbers**.
 |---|---|---|
 | 1 | not runnable | not runnable |
 | 2 | not runnable | not runnable |
-| 4 (single node) | **3450-3565 reported, components include `gdn_tilelang_sm70`**; **1549 measured, pair off, SPEC=1** (4121 prompt tokens, 2644 ms median); 1663 in the SPEC=0 arm | **95.3 measured, SPEC=1** (slope 10.50 ms/output-token; 128 completion tokens, 48 verify steps, 1627 ms long run, short 32 tokens in 619 ms) → accept 2.67 → 28.0 ms/step. Accept varied by request: 2.67 / 3.56 / 2.67 at 48 / 36 / 48 steps, so the marginal step is 28.0-37.4 ms. **58.8 measured, SPEC=0** (slope 17.00 ms/token, accept 1) — not comparable to 1Cat |
+| 4 (single node) | **3450-3565 reported, contended island, components include `gdn_tilelang_sm70` — withheld from the verdict**; **1549 measured, pair off, SPEC=1** (4121 prompt tokens, 2644 ms median); 1663 in the SPEC=0 arm | **95.3 measured, SPEC=1** (slope 10.50 ms/output-token; 128 completion tokens, 48 verify steps, 1627 ms long run, short 32 tokens in 619 ms) → accept 2.67 → 28.0 ms/step. Accept varied by request: 2.67 / 3.56 / 2.67 at 48 / 36 / 48 steps, so the marginal step is 28.0-37.4 ms. **58.8 measured, SPEC=0** (slope 17.00 ms/token, accept 1) — not comparable to 1Cat |
 | 4 (dual node) | comm-bound at 66% (reported), no number held here | — |
 | 8 | untested | untested |
 
@@ -131,6 +140,12 @@ box, same tree, same prompt, same `LATB=triton`:
 
 My pair-off numbers on lambda1 — 1549 at SPEC=1, 1663 at SPEC=0, a different
 box — are that same configuration, not a conflicting result.
+
+Neither arm of that A/B has run on a clean island, so its **magnitude** is open.
+A clean 4-card island reports **4199 tok/s** for the pair-on arm (SPEC arm still
+in flight) against 3450-3565 on the contended one. The direction holds in every
+pairing we hold; the size of the win does not, and the contended numbers are not
+quotable as ours.
 
 Rule: **never cite a prefill number without the component list.** The
 difference is invisible at `register()` time and does not appear as a log
