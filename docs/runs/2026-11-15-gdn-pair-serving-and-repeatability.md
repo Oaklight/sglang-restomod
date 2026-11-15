@@ -6,8 +6,8 @@ established on this stack by token equality.**
 
 ## What was run
 
-lambda4, GPUs 4-7 (one island, TP4), Flash-Next checkpoint at
-`/nfs/ml_lab/.../flashnext/model-sm70`, commit `241a17747d`, `IMPL=pair`,
+one GPU island, TP4, the Flash-Next checkpoint under the site tree
+(`<site>/flashnext/model-sm70`), commit `241a17747d`, `IMPL=pair`,
 `--mem-fraction-static 0.82`, CUDA graphs enabled, `--linear-attn-prefill-backend
 triton`, SPEC off. Component presence was read from `/proc/<pid>/environ`, not
 from the launcher: an earlier launch silently omitted `gdn_tilelang_sm70` from
