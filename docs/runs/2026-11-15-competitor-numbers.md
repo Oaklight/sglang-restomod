@@ -281,31 +281,65 @@ experts, top-10, moe intermediate 640.
   (The bf16 arm was 86.9% busy with 112 ms of holes. Summing durations overstates
   idle whenever kernels overlap; that mistake was made once here and corrected.)
 
-**The wall-clock figure is not this window.** Unprofiled, the same arm serves
-4109 cold tokens in 1132 ms = 3641 tok/s; the profiled window is 839.4 ms for
-the 4096-token chunk. The two are not subtractable and this note does not
-subtract them: **what the remaining ~293 ms is has not been measured**. The trace
-cannot answer it — it contains, after the 839 ms window, a span labelled
+**One trace in this section is unclean and is kept only as a negative control.**
+The p4 trace holds, after its 839 ms window, a span labelled
 `step[EXTEND toks=13]` that runs 2343 ms and holds 29 535 kernel rows, plus 959 ms
 of tail after the last step span. A 13-token chunk cannot cost 2.3 s, so that
-span wraps work that is not this request, and the profile is inflated relative to
-the unprofiled median by an unknown factor. The family *shares* are robust
-because they come from one window; the absolute window rate is an in-window rate
+span wraps work that is not this request. Its family *shares* remain usable
+because they come from one window; its absolute window rate is an in-window rate
 and is labelled as such wherever it appears.
 
-### A withdrawn inference, and the rule it produced
+### Prefill is kernel-bound, and the wall is measured separately
 
-An earlier revision of this section inferred that the prefill gap was **not** in
-the kernels, by comparing an in-window rate (4880 tok/s) to an unprofiled wall
-(3641 tok/s). Those are different denominators; **the inference is withdrawn**.
-The trace contains a 13-token span wrapping 2343 ms and 29 535 kernel rows, so it
+The clean trace — one cold 4096-token request, quiesced server, `num_steps=1`,
+structurally checked before use — settles what the earlier one could not. Inside
+the outer `step[EXTEND bs=1 toks=4096]` span of **844.4 ms**: 2816 kernels, and
+**sum 779.7 ms equals union 779.7 ms**, so nothing overlaps and there is no
+hidden parallelism. That is **92.3% busy**, leaving at most **64.7 ms** of
+recoverable host gap inside prefill. A second run gives 888.1 / 830.4 = 93.5%,
+so the figure is stable. The 208 kernels outside the span are the two
+`step[DRAFT]` calls that follow it, 28.1 + 63.9 = 92 ms.
+
+So **prefill is kernel-bound**, and no large prefill gap can be hiding in host
+time. That kills the earlier reading that the gap was not in the kernels, without
+any cross-run assumption.
+
+**The wall is a separate run, and a profiled run's `client_elapsed` is not a
+wall.** The profiled request reported 8.518 s; the identical request unprofiled
+on the same server takes **1.166 s and 1.181 s** on two warm reps (3.434 s cold).
+Profiling multiplied the request wall by 7.2x because it auto-stops on
+`num_steps=1` and exports 211k events, 178k of them `python_function`, inside the
+request. Feeding that number to a wall fraction would print 9% busy and be wrong
+in exactly the way the withdrawn inference was.
+
+The honest pair is therefore: **1.166 s unprofiled wall, 844 ms traced prefill
+span, 92 ms of that span's neighbourhood the two draft steps** — and the
+remainder is scheduling, detokenisation and HTTP outside prefill, not a prefill
+hole.
+
+### A withdrawn inference, and the rules it produced
+
+An earlier revision inferred that the prefill gap was **not** in the kernels, by
+comparing an in-window rate (4880 tok/s) to an unprofiled wall (3641 tok/s).
+Those are different denominators; **the inference is withdrawn**. The trace it
+came from contains a 13-token span wrapping 2343 ms and 29 535 kernel rows, so it
 does not describe a single request and no wall fraction can be derived from it.
 
-Rule: **do not derive a wall fraction by subtracting a profiled window from an
-unprofiled median.** Profiling changes occupancy, and the window may not contain
-only this request. If a wall fraction is needed, measure both sides under the same
-conditions — a single cold request, `num_steps=1`, client elapsed recorded beside
-the trace — or leave it unmeasured.
+Three rules follow, each from a mistake made here:
+
+1. **Do not derive a wall fraction by subtracting a profiled window from an
+   unprofiled median.** Profiling changes occupancy, and the window may not
+   contain only this request. Measure both sides under the same conditions or
+   leave it unmeasured.
+2. **Do not use a profiled run's `client_elapsed` as the wall denominator.** On
+   this build it is inflated 7.2x by the profiler's own stop-and-export inside
+   the request. Take the wall from a separate unprofiled run and label the pair as
+   two runs.
+3. **A quiesce check that reads a field the build does not return asserts
+   nothing.** `/get_server_info` has no `num_running_reqs` here, so a
+   `running()` helper read `None` and returned "idle" unconditionally. The trace's
+   own structure — one `EXTEND` span at the requested token count, no long tail
+   span — is the gate that actually held.
 
 The lab-side tools are `prefill_attr.py <trace>` (family table; it selects the
 window with the most `toks=`, not the longest span — the longest span here is the
@@ -314,9 +348,10 @@ wrapping one and picking it inverted every share), `prefill_gaps.py <trace>`
 what runs outside them), and `prefill_bounds.py --window-ms --ar-ms --marlin-ms`
 (the two ratios), plus `prefill_wall.py <trace> --client-ms N --toks 4096`, which
 **refuses** to report a wall fraction unless the trace holds one `EXTEND` span at
-that token count and no long tail span — the check that this trace fails. They are
-not in this repository because the trace format is lab-specific, which is why the
-formulas are written out.
+that token count and no long tail span — the check that the p4 trace fails. Give
+it an **unprofiled** wall: a profiled `client_elapsed` on this build is 7.2x
+inflated. They are not in this repository because the trace format is
+lab-specific, which is why the formulas are written out.
 
 ## Decode comparability
 
