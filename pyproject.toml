@@ -18,7 +18,7 @@ classifiers = [
 dependencies = [
   # The baseline. When patches exist, scripts/build.sh installs a patched
   # source tree at the same version instead of this wheel.
-  "sglang==0.5.22",
+  "sglang==0.5.23",
 ]
 
 [project.optional-dependencies]
