@@ -356,7 +356,9 @@ def _run_fwd_h(k, w, u, g, initial_state, initial_state_indices, inplace_update)
         # "no state" sentinel: the reference starts those rows at zero and does
         # not write them back.
         valid = (initial_state_indices >= 0).view(B, 1, 1, 1)
-        slots = initial_state_indices.clamp_min(0)
+        # The pin's cache_indices are int32; index_select and index_copy_ want
+        # int64 and raise otherwise. The cast is one kernel over [B] entries.
+        slots = initial_state_indices.clamp_min(0).to(torch.int64)
         s0 = torch.where(valid, initial_state.index_select(0, slots), 0.0).contiguous()
 
     h, v_new = kernel(

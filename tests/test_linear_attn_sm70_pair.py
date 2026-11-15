@@ -409,3 +409,15 @@ def test_chunk_h_declines_a_multi_span_and_reaches_triton(pair, monkeypatch):
     )
     assert result == ("triton_h", "triton_v")
     assert len(original.calls) == 1
+
+def test_chunk_h_accepts_int32_slot_indices(pair, monkeypatch):
+    """The pin hands over int32 cache_indices; the pool ops require int64."""
+    kernels = _StateKernels()
+    monkeypatch.setattr(pair, "_KERNELS", (kernels.chunk_o, kernels.chunk_h))
+    pool = torch.zeros(4, H, V, K, dtype=torch.float16)
+    pool[2] = 5.0
+    idx = torch.tensor([2], dtype=torch.int32)
+
+    k, w, u, g, _ = _chunk_h_inputs()
+    pair._run_fwd_h(k, w, u, g, pool, idx, True)
+    assert torch.equal(pool[2], pool.new_full((H, V, K), 6.0))
