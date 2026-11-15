@@ -1,0 +1,29 @@
+== 1. 288-byte group, lane/column map, K order, section-4 addresses
+   288 B group, 32 lane<->column pairs, K bijection, and the
+   code-index vs buffer-address distinction all hold.
+== 2. supported N=64 K=32: oracle round trip max|d|=0.000e+00
+   oracle bytes vs 9b bytes: identical
+   oracle decode of 9b bytes vs source: max|d|=0.000e+00
+   9b decode vs oracle decode of the same bytes: max|d|=8.179e-07
+== 2. supported N=320 K=64: oracle round trip max|d|=0.000e+00
+   oracle bytes vs 9b bytes: identical
+   oracle decode of 9b bytes vs source: max|d|=0.000e+00
+   9b decode vs oracle decode of the same bytes: max|d|=9.338e-07
+== 2. supported N=64 K=160: oracle round trip max|d|=0.000e+00
+   oracle bytes vs 9b bytes: identical
+   oracle decode of 9b bytes vs source: max|d|=0.000e+00
+   9b decode vs oracle decode of the same bytes: max|d|=9.338e-07
+== 3. fp16-RNE scale vs the reference float32 multiply
+   byte=0x7b gs=123.4: spec=43424.0 float32=43436.8 delta=-1.280e+01
+   full decode: spec-fp16 vs reference-fp32 max|d|=7.680e+01
+== 4. padded N (40) with explicit zero lanes and scale
+   tiles=2 bytes=1152 padded lanes zero: True
+   defined columns match source: True
+   9b repack: rejected N=40 -> QPN2 needs N%32==0 and K%16==0, got N=40 K=32
+== 5. TP4 w13 (tiles split) and w2 (groups split)
+   w13 N=1280->320: per-rank tiles contiguous and byte-identical: True
+   w2 K=640->160: per-rank groups match, strided per tile: True
+   repack-after sharding gives the rank's own stride directly;
+   repack-before needs a per-tile copy for w2 and a contiguous one for w13.
+   expert stride 460800 bytes, 2-expert buffer matches: True
+oracle checks complete
