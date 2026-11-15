@@ -30,9 +30,24 @@ def _resolve_sm70_paths():
 
 _sm70_csrc, _sm70_prebuilt = _resolve_sm70_paths()
 
-_DEFAULT_OPS_PATH = (
-    str(_sm70_prebuilt("_sm70_turbomind_v100.so")) if _sm70_prebuilt else None
-)
+def _discover_default_ops_path() -> str | None:
+    """Locate the TurboMind library without requiring a fork module.
+
+    The fork resolves it through ``sglang.kernels.sm70_paths``, which the pinned
+    upstream does not ship. Discovery in :mod:`sglang_restomod._sm70_paths`
+    covers the environment and the standard directories, so a stock engine
+    finds the library without anyone exporting a variable.
+    """
+    from sglang_restomod._sm70_paths import find_prebuilt
+
+    found = find_prebuilt(
+        "_sm70_turbomind_v100.so",
+        env_names=("SM70_TURBOMIND_SO", "SGLANG_SM70_TURBOMIND_SO"),
+    )
+    return str(found) if found is not None else None
+
+
+_DEFAULT_OPS_PATH = _discover_default_ops_path()
 _OPS_LOAD_ATTEMPTED = False
 _OPS_AVAILABLE = False
 

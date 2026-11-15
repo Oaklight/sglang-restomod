@@ -92,21 +92,22 @@ class Experts:
 def _default_so_path() -> str:
     """Resolve the TurboMind library the engine ships.
 
-    The pinned upstream has no ``sglang.kernels.sm70_paths`` module; that path
-    belongs to the fork. When it is absent the caller must point
-    ``SM70_TURBOMIND_SO`` (or ``SGLANG_SM70_TURBOMIND_SO``) at the library, so
-    fail with an actionable message instead of a bare ImportError.
+    Resolution goes through :mod:`sglang_restomod._sm70_paths`, which checks the
+    environment, the fork's ``sm70_prebuilt`` helper, and a list of standard
+    directories. A stock upstream engine has no ``sglang.kernels.sm70_paths``,
+    which is the case this project exists for, so that must not be a hard
+    failure: only an exhausted search is.
     """
-    try:
-        from sglang.kernels.sm70_paths import sm70_prebuilt
-    except ImportError as exc:
-        raise FileNotFoundError(
-            "SM70 TurboMind library path cannot be resolved: this engine has no "
-            "sglang.kernels.sm70_paths module. Set SM70_TURBOMIND_SO (or "
-            "SGLANG_SM70_TURBOMIND_SO) to the _sm70_turbomind_v100.so path."
-        ) from exc
+    from sglang_restomod._sm70_paths import describe_search, find_prebuilt
 
-    return str(sm70_prebuilt("_sm70_turbomind_v100.so"))
+    name = "_sm70_turbomind_v100.so"
+    found = find_prebuilt(name, env_names=(_SO_ENV, _SO_ENV_ALIAS))
+    if found is None:
+        raise FileNotFoundError(
+            "SM70 TurboMind library path cannot be resolved: "
+            + describe_search(name, env_names=(_SO_ENV, _SO_ENV_ALIAS))
+        )
+    return str(found)
 
 
 def ensure_loaded(so_path: str | None = None) -> str:
