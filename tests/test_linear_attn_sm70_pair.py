@@ -37,7 +37,7 @@ def _chunk_o_inputs(t=T):
     q = torch.zeros(B, t, HG, K, dtype=torch.float16)
     k = torch.zeros(B, t, HG, K, dtype=torch.float16)
     v = torch.zeros(B, t, H, V, dtype=torch.float16)
-    h = torch.zeros(B, t // 64, H, V, K, dtype=torch.float16)
+    h = torch.zeros(B, -(-t // 64), H, V, K, dtype=torch.float16)
     g = torch.zeros(B, t, H, dtype=torch.float32)
     return q, k, v, h, g
 
@@ -77,7 +77,6 @@ def test_chunk_o_gate_accepts_the_supported_shape(pair):
     [
         pytest.param(lambda a: (None, a[1], a[2], a[3], a[4]), id="no-q"),
         pytest.param(lambda a: (a[0], a[1], a[2], a[3], None), id="no-gate"),
-        pytest.param(lambda a: tuple(_chunk_o_inputs(96)), id="odd-tokens"),
         pytest.param(lambda a: (a[0], a[1], a[2], a[3][:, :1], a[4]), id="short-h"),
         pytest.param(
             lambda a: (a[0], a[1], a[2].float(), a[3], a[4]),
@@ -225,10 +224,59 @@ def test_chunk_h_gate_refuses_unsupported_calls(pair, overrides):
     assert pair._gate_fwd_h(k, w, u, kwargs.pop("g", g), **kwargs) != ""
 
 
-def test_chunk_h_gate_refuses_odd_tokens(pair):
+def test_both_gates_accept_a_partial_tail_chunk(pair):
+    """A chunked prefill ends on a partial chunk for most prompts; pad, do not refuse."""
+    q, k, v, h, g = _chunk_o_inputs(96)
+    assert pair._gate_chunk_o(q, k, v, h, g, None, None, 64) == ""
+    kh, w, u, gh, state = _chunk_h_inputs(96)
+    assert pair._gate_fwd_h(*_good_h_args(kh, w, u, gh, state)) == ""
+
+
+class _PaddedKernels:
+    """Records the shapes the wrappers hand to the kernels."""
+
+    def __init__(self):
+        self.o_shapes = []
+        self.h_shapes = []
+
+    def chunk_o(self, b, t, h, hg, k, v, bt=64, bv=64, threads=128):
+        self.o_shapes.append((b, t))
+
+        def kernel(qt, kt, vt, ht, gt):
+            return torch.zeros(b, t, h, v, dtype=torch.float16)
+
+        return kernel
+
+    def chunk_h(self, b, t, h, hg, k, v, bt=64, bv=32, threads=128):
+        self.h_shapes.append((b, t))
+
+        def kernel(kt, wt, ut, gt, s0):
+            return (
+                torch.zeros(b, t // 64, h, v, k, dtype=torch.float16),
+                torch.zeros(b, t, h, v, dtype=torch.float16),
+            )
+
+        return kernel
+
+
+def test_chunk_o_pads_the_tail_and_trims_the_output(pair, monkeypatch):
+    kernels = _PaddedKernels()
+    monkeypatch.setattr(pair, "_KERNELS", (kernels.chunk_o, kernels.chunk_h))
+    q, k, v, h, g = _chunk_o_inputs(96)
+    out = pair._run_chunk_o(q, k, v, h, g)
+    assert kernels.o_shapes == [(B, 128)]
+    assert tuple(out.shape) == (B, 96, H, V)
+
+
+def test_chunk_h_pads_the_tail_and_trims_v_new(pair, monkeypatch):
+    kernels = _PaddedKernels()
+    monkeypatch.setattr(pair, "_KERNELS", (kernels.chunk_o, kernels.chunk_h))
     k, w, u, g, state = _chunk_h_inputs(96)
-    reason = pair._gate_fwd_h(*_good_h_args(k, w, u, g, state))
-    assert "multiple" in reason
+    idx = torch.zeros(1, dtype=torch.int64)
+    h, v_new = pair._run_fwd_h(k, w, u, g, state, idx, True)
+    assert kernels.h_shapes == [(B, 128)]
+    assert tuple(h.shape) == (B, 2, H, V, K)
+    assert tuple(v_new.shape) == (B, 96, H, V)
 
 
 # -- chunk_h state pool ----------------------------------------------------

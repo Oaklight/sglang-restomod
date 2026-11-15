@@ -198,10 +198,9 @@ def _gate_chunk_o(q, k, v, h, g, scale, cu_seqlens, chunk_size) -> str:
         reason = _single_span(cu_seqlens, B, "chunk_o")
         if reason:
             return reason
-    if T % BT != 0:
-        return f"refused chunk_o: T={T} is not a multiple of {BT}"
-    if tuple(h.shape) != (B, T // BT, H, V, K):
-        return f"refused chunk_o: h.shape={tuple(h.shape)} != {(B, T // BT, H, V, K)}"
+    chunks = -(-T // BT)
+    if tuple(h.shape) != (B, chunks, H, V, K):
+        return f"refused chunk_o: h.shape={tuple(h.shape)} != {(B, chunks, H, V, K)}"
     if (
         q.dtype is not torch.float16
         or k.dtype is not torch.float16
@@ -221,19 +220,37 @@ def _gate_chunk_o(q, k, v, h, g, scale, cu_seqlens, chunk_size) -> str:
     return ""
 
 
+def _pad_tail(x, padded: int, fill: str):
+    """Extend the token axis to ``padded`` rows; the tail duplicates or zeroes."""
+    if x.shape[1] == padded:
+        return x
+    out = x.new_zeros(x.shape[0], padded, *x.shape[2:])
+    out[:, : x.shape[1]] = x
+    if fill == "last":
+        out[:, x.shape[1] :] = x[:, -1:]
+    return out
+
+
 def _run_chunk_o(q, k, v, h, g):
     B, T, Hg, K = q.shape
     H, V = v.shape[2], v.shape[3]
-    kernel = _chunk_o_for(B, T, H, Hg, K, V)
+    chunks = -(-T // BT)
+    padded = chunks * BT
+    kernel = _chunk_o_for(B, padded, H, Hg, K, V)
     if kernel is None:
         return None
-    return kernel(
-        q.contiguous(),
-        k.contiguous(),
-        v.contiguous(),
-        h.contiguous().view(B * (T // BT), H, V, K),
-        g.contiguous(),
+    # The tail chunk is padded, not skipped: a partial chunk would otherwise
+    # send the whole call back to Triton. Padded rows only produce padded
+    # output rows, which the trim drops, and the gate is repeated so the tail
+    # rows carry the last real decay rather than a discontinuity.
+    out = kernel(
+        _pad_tail(q, padded, "zero").contiguous(),
+        _pad_tail(k, padded, "zero").contiguous(),
+        _pad_tail(v, padded, "zero").contiguous(),
+        h.contiguous().view(B * chunks, H, V, K),
+        _pad_tail(g, padded, "last").contiguous(),
     )
+    return out[:, :T] if padded != T else out
 
 
 def chunk_fwd_o(q, k, v, h, g=None, scale=None, cu_seqlens=None, chunk_size=64):
@@ -319,8 +336,6 @@ def _gate_fwd_h(
         reason = _single_span(cu_seqlens, B, "chunk_h")
         if reason:
             return reason
-    if T % BT != 0:
-        return f"refused chunk_h: T={T} is not a multiple of {BT}"
     if k.dtype is not torch.float16 or w.dtype is not torch.float16 or u.dtype is not torch.float16:
         return "refused chunk_h: activations are not float16"
     if g.dtype is not torch.float32:
@@ -344,7 +359,9 @@ def _run_fwd_h(k, w, u, g, initial_state, initial_state_indices, inplace_update)
 
     B, T, Hg, K = k.shape
     H, V = u.shape[2], u.shape[3]
-    kernel = _chunk_h_for(B, T, H, Hg, K, V)
+    chunks = -(-T // BT)
+    padded = chunks * BT
+    kernel = _chunk_h_for(B, padded, H, Hg, K, V)
     if kernel is None:
         return None
 
@@ -361,18 +378,21 @@ def _run_fwd_h(k, w, u, g, initial_state, initial_state_indices, inplace_update)
         slots = initial_state_indices.clamp_min(0).to(torch.int64)
         s0 = torch.where(valid, initial_state.index_select(0, slots), 0.0).contiguous()
 
+    # Zero-padding w and u makes every padded row's v_new zero, so the padded
+    # rows add nothing to the carried state; g repeats its last real value so
+    # the chunk's decay reads the same glast the reference does.
     h, v_new = kernel(
-        k.contiguous(),
-        w.contiguous(),
-        u.contiguous(),
-        g.contiguous(),
+        _pad_tail(k, padded, "zero").contiguous(),
+        _pad_tail(w, padded, "zero").contiguous(),
+        _pad_tail(u, padded, "zero").contiguous(),
+        _pad_tail(g, padded, "last").contiguous(),
         s0,
     )
 
     if initial_state is not None and inplace_update:
         current = initial_state.index_select(0, slots)
         initial_state.index_copy_(0, slots, torch.where(valid, s0, current))
-    return h.view(B, T // BT, H, V, K), v_new
+    return h.view(B, chunks, H, V, K), v_new[:, :T]
 
 
 def chunk_gated_delta_rule_fwd_h(
