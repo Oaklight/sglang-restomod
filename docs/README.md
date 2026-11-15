@@ -49,6 +49,7 @@ Newest first. Each entry states what the run established, not what it hoped to.
 | Date | Record | Established |
 |---|---|---|
 | 2026-11-15 | [Flash-Next NVFP4 TP4, 8k/16k/64k, cold vs warm](runs/2026-11-15-flash-next-nvfp4-tp4-context-cold-warm.md) | Cold prefill is flat at 921 / 921 / 868 tok/s from 8k to 64k; the run reads that as an expert-GEMM shape problem and marks the reading as inference; warm TTFT pays a fixed ~0.5 s; decode step is flat at 49-55 ms |
+| 2026-11-15 | [GDN prefill kernels: Triton vs TileLang](runs/2026-11-15-gdn-tilelang-prefill-ab.md) | 108x and 33x on the two GDN prefill kernels; 1.96x measured on a contended box with unequal arms, 1.84x patch-attributable; the durable number is the 1390 ms kernel saving, not the tok/s multiple |
 | 2026-11-08 | [Flash-Next accept length vs context](runs/2026-11-08-flash-next-accept-vs-context.md) | Accept length and verify step time are flat from 3.8k to 30.8k; neither draft nor verify degrades in that range |
 | 2026-10-26 | [Flash-Next decode under CUDA graph](runs/2026-10-26-flash-next-cuda-graph.md) | 25.9-36.9 tok/s with a graph against 5.5-6.3 without, on 8x V100 TP8/EP8 |
 | 2026-10-26 | [Flash-Next decode without per-layer host reads](runs/2026-10-26-flash-next-decode-syncs.md) | Decode 2.9 to 5.5-6.3 tok/s; the remainder is launch overhead and expert-parallel all-reduce |
