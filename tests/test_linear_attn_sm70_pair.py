@@ -93,9 +93,17 @@ def test_chunk_o_gate_refuses_unsupported_calls(pair, mutate):
     assert pair._gate_chunk_o(*mutate(_chunk_o_inputs()), None, None, 64) != ""
 
 
-def test_chunk_o_gate_refuses_varlen_and_other_scale(pair):
+def test_chunk_o_gate_accepts_a_single_span(pair):
+    """Serving always passes cu_seqlens; a single span is the contiguous case."""
     q, k, v, h, g = _chunk_o_inputs()
-    assert "varlen" in pair._gate_chunk_o(q, k, v, h, g, None, torch.zeros(2), 64)
+    single = torch.tensor([0, T], dtype=torch.int64)
+    assert pair._gate_chunk_o(q, k, v, h, g, None, single, 64) == ""
+
+
+def test_chunk_o_gate_refuses_multi_span_and_other_scale(pair):
+    q, k, v, h, g = _chunk_o_inputs()
+    spans = torch.tensor([0, 32, T], dtype=torch.int64)
+    assert "spans" in pair._gate_chunk_o(q, k, v, h, g, None, spans, 64)
     assert "scale" in pair._gate_chunk_o(q, k, v, h, g, 0.5, None, 64)
     assert "chunk_size" in pair._gate_chunk_o(q, k, v, h, g, None, None, 32)
 
@@ -127,9 +135,8 @@ def test_chunk_o_falls_back_with_the_arguments_intact(pair, monkeypatch):
     monkeypatch.setattr(pair, "_run_chunk_o", lambda *a: pytest.fail("ran on refusal"))
 
     q, k, v, h, g = _chunk_o_inputs()
-    cu = torch.zeros(2, dtype=torch.int64)
-    assert pair.chunk_fwd_o(q, k, v, h, g=g, scale=None, cu_seqlens=cu) == "triton"
-    expected = ((q, k, v, h), {"g": g, "scale": None, "cu_seqlens": cu, "chunk_size": 64})
+    assert pair.chunk_fwd_o(q, k, v, h, g=g, scale=None, chunk_size=32) == "triton"
+    expected = ((q, k, v, h), {"g": g, "scale": None, "cu_seqlens": None, "chunk_size": 32})
     assert original.calls == [expected]
 
 
@@ -173,13 +180,26 @@ def test_chunk_h_gate_accepts_the_supported_shape(pair):
     assert pair._gate_fwd_h(*_good_h_args(k, w, u, g, state)) == ""
 
 
+def test_chunk_h_gate_accepts_a_single_span(pair):
+    k, w, u, g, state = _chunk_h_inputs()
+    args = list(_good_h_args(k, w, u, g, state))
+    args[8] = torch.tensor([0, T], dtype=torch.int64)
+    assert pair._gate_fwd_h(*args) == ""
+
+
+def test_chunk_h_gate_refuses_multi_span(pair):
+    k, w, u, g, state = _chunk_h_inputs()
+    args = list(_good_h_args(k, w, u, g, state))
+    args[8] = torch.tensor([0, 32, T], dtype=torch.int64)
+    assert "spans" in pair._gate_fwd_h(*args)
+
+
 @pytest.mark.parametrize(
     "overrides",
     [
         {"gk": torch.zeros(B, T, HG, K)},
         {"use_exp2": True},
-        {"cu_seqlens": torch.zeros(2)},
-        {"chunk_indices": torch.zeros(1, 2)},
+        {"initial_state_indices": torch.zeros(2, dtype=torch.int64)},
         {"track_state": torch.zeros(1)},
         {"track_chunk_idx": torch.zeros(1, dtype=torch.int64)},
         {"save_new_value": False},

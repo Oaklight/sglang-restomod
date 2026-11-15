@@ -124,3 +124,55 @@ def test_install_reaches_the_engine_caller():
     assert fla_chunk.chunk_gated_delta_rule_fwd_h is gdn_pair.chunk_gated_delta_rule_fwd_h
     assert chunk_o.chunk_fwd_o is gdn_pair.chunk_fwd_o
     assert chunk_delta_h.chunk_gated_delta_rule_fwd_h is gdn_pair.chunk_gated_delta_rule_fwd_h
+
+
+def test_chunk_o_matches_triton_with_a_single_span():
+    """Serving always passes cu_seqlens; the single-span call must agree too."""
+    torch, gdn_pair = _skip_unless_usable()
+    from sglang.kernels.ops.attention.fla.chunk_o import chunk_fwd_o as triton_chunk_o
+
+    q, k, v, h, g = _chunk_o_inputs(torch)
+    spans = torch.tensor([0, T], device="cuda", dtype=torch.int64)
+    ref = triton_chunk_o(q, k, v, h, g, scale=K**-0.5, cu_seqlens=spans)
+    gdn_pair._ORIGINALS["chunk_fwd_o"] = triton_chunk_o
+    got = gdn_pair.chunk_fwd_o(q, k, v, h, g=g, scale=K**-0.5, cu_seqlens=spans)
+
+    assert got.shape == ref.shape and got.dtype == ref.dtype
+    _assert_close(got, ref, "chunk_o single span")
+
+
+def test_chunk_h_matches_triton_with_a_single_span():
+    torch, gdn_pair = _skip_unless_usable()
+    from sglang.kernels.ops.attention.fla.chunk_delta_h import (
+        chunk_gated_delta_rule_fwd_h as triton_fwd_h,
+    )
+
+    k, w, u, g, pool = _chunk_h_inputs(torch)
+    spans = torch.tensor([0, T], device="cuda", dtype=torch.int64)
+    indices = torch.tensor([2], device="cuda", dtype=torch.int64)
+    ref_pool, got_pool = pool.clone(), pool.clone()
+
+    ref_h, ref_v = triton_fwd_h(
+        k=k,
+        w=w,
+        u=u,
+        g=g,
+        initial_state=ref_pool,
+        initial_state_indices=indices,
+        cu_seqlens=spans,
+    )
+    gdn_pair._ORIGINALS["chunk_gated_delta_rule_fwd_h"] = triton_fwd_h
+    got_h, got_v = gdn_pair.chunk_gated_delta_rule_fwd_h(
+        k=k,
+        w=w,
+        u=u,
+        g=g,
+        initial_state=got_pool,
+        initial_state_indices=indices,
+        cu_seqlens=spans,
+    )
+
+    assert got_h.shape == ref_h.shape and got_v.shape == ref_v.shape
+    _assert_close(got_h, ref_h, "chunk_h single span states")
+    _assert_close(got_v, ref_v, "chunk_h single span v_new")
+    _assert_close(got_pool[2], ref_pool[2], "chunk_h single span final state")

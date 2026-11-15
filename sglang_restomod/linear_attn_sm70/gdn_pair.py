@@ -137,12 +137,33 @@ def _refusal_key(reason: str) -> str:
 # --------------------------------------------------------------------------
 
 
+def _single_span(cu_seqlens, B: int, what: str) -> str:
+    """Refuse every varlen shape except the one the kernel already computes.
+
+    With a single span at ``B == 1`` the reference's ``chunk_indices`` is the
+    identity and ``chunk_offsets[0]`` is zero, so the contiguous layout the
+    kernel expects is exactly what the varlen call describes. Anything else
+    needs a real varlen kernel and is refused. The test is a shape check only:
+    reading the span values would put a device sync in every layer.
+    """
+    import torch
+
+    if B != 1:
+        return f"refused {what}: varlen with B={B}; the reference requires 1"
+    if cu_seqlens.ndim != 1 or cu_seqlens.numel() != 2:
+        return (
+            f"refused {what}: {int(cu_seqlens.numel()) - 1} spans; "
+            "only a single span is the contiguous case"
+        )
+    if cu_seqlens.dtype not in (torch.int32, torch.int64):
+        return f"refused {what}: cu_seqlens dtype {cu_seqlens.dtype}"
+    return ""
+
+
 def _gate_chunk_o(q, k, v, h, g, scale, cu_seqlens, chunk_size) -> str:
     """Return "" when the vendored chunk_o kernel computes this call exactly."""
     import torch
 
-    if cu_seqlens is not None:
-        return "refused chunk_o: varlen (cu_seqlens is set)"
     if chunk_size != BT:
         return f"refused chunk_o: chunk_size={chunk_size}, the kernel is BT={BT}"
     if g is None:
@@ -163,12 +184,16 @@ def _gate_chunk_o(q, k, v, h, g, scale, cu_seqlens, chunk_size) -> str:
         return f"refused chunk_o: g.shape={tuple(g.shape)} != {(B, T, H)}"
     if Hg == 0 or H % Hg != 0:
         return f"refused chunk_o: H={H} is not a multiple of Hg={Hg}"
-    if T % BT != 0:
-        return f"refused chunk_o: T={T} is not a multiple of {BT}"
     if K % 16 != 0:
         return f"refused chunk_o: K={K} is not a multiple of 16"
     if V % _BV_O != 0:
         return f"refused chunk_o: V={V} is not a multiple of {_BV_O}"
+    if cu_seqlens is not None:
+        reason = _single_span(cu_seqlens, B, "chunk_o")
+        if reason:
+            return reason
+    if T % BT != 0:
+        return f"refused chunk_o: T={T} is not a multiple of {BT}"
     if tuple(h.shape) != (B, T // BT, H, V, K):
         return f"refused chunk_o: h.shape={tuple(h.shape)} != {(B, T // BT, H, V, K)}"
     if (
@@ -254,8 +279,6 @@ def _gate_fwd_h(
     """Return "" when the vendored chunk_h kernel computes this call exactly."""
     import torch
 
-    if cu_seqlens is not None or chunk_indices is not None:
-        return "refused chunk_h: varlen (cu_seqlens/chunk_indices is set)"
     if gk is not None:
         return "refused chunk_h: per-channel gate (gk)"
     if use_exp2:
@@ -282,12 +305,16 @@ def _gate_fwd_h(
         return f"refused chunk_h: g.shape={tuple(g.shape)} != {(B, T, H)}"
     if Hg == 0 or H % Hg != 0:
         return f"refused chunk_h: H={H} is not a multiple of Hg={Hg}"
-    if T % BT != 0:
-        return f"refused chunk_h: T={T} is not a multiple of {BT}"
     if K % 16 != 0:
         return f"refused chunk_h: K={K} is not a multiple of 16"
     if V % _BV_H != 0:
         return f"refused chunk_h: V={V} is not a multiple of {_BV_H}"
+    if cu_seqlens is not None:
+        reason = _single_span(cu_seqlens, B, "chunk_h")
+        if reason:
+            return reason
+    if T % BT != 0:
+        return f"refused chunk_h: T={T} is not a multiple of {BT}"
     if k.dtype is not torch.float16 or w.dtype is not torch.float16 or u.dtype is not torch.float16:
         return "refused chunk_h: activations are not float16"
     if g.dtype is not torch.float32:
@@ -315,7 +342,6 @@ def _run_fwd_h(k, w, u, g, initial_state, initial_state_indices, inplace_update)
     if kernel is None:
         return None
 
-    valid = None
     if initial_state is None:
         s0 = torch.zeros(B, H, V, K, device=k.device, dtype=k.dtype)
     else:
