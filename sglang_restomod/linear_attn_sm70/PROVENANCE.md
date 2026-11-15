@@ -79,3 +79,64 @@ not a stable estimate.
 engine environment (0.1.8 was the version measured here), and the kernel import
 is guarded: if it is absent, the component logs once and leaves every call on
 Triton.
+
+## Kernel pair (`gdn_pair`, `gdn_pair_tilelang`)
+
+| Field | Value |
+|---|---|
+| Repository | `Oaklight/sm70-kernels` |
+| Commit | `d75987a` (merge of PR #13) |
+| Files | `sm70_kernels/gdn_chunk_o/_chunk_o.py`, `sm70_kernels/gdn_chunk_h/_chunk_h.py` |
+| License | Authored in `sm70-kernels`; the repository has no `LICENSE` file at this commit and records Apache-2.0 for its other components. Flagged, not resolved. |
+| Vendored as | `gdn_pair_tilelang.py` (both kernels, bodies unchanged) |
+
+### What is selected
+
+The two kernels only: the chunk output `chunk_o` and the sequential state pass
+`chunk_h`. The package's `__init__.py` getters, benchmarks and tests are not
+vendored.
+
+### Integration
+
+No engine patch. `gdn_pair.install()` rebinds two functions in their source
+modules -- `fla.chunk_o.chunk_fwd_o` and
+`fla.chunk_delta_h.chunk_gated_delta_rule_fwd_h` -- and in every module that
+already imported them, then asserts the replacements are reachable from
+`fla.chunk`. That last check is the point: `fla.chunk` binds both names at
+import, so patching the source modules alone leaves the engine calling Triton.
+
+Each call is gated. Anything the kernel cannot compute exactly runs the
+original Triton function with its arguments untouched:
+
+| refused | why |
+|---|---|
+| `cu_seqlens` / `chunk_indices` | the kernels take one contiguous sequence, not chunk indices |
+| `T % 64 != 0`, `chunk_size != 64` | the state pass steps one chunk at a time; the reference masks the tail |
+| `g is None`, `gk`, `use_exp2` | no gate tensor, or a per-channel gate the kernel does not take |
+| `track_state` / `track_chunk_idx` | no checkpoint snapshots |
+| `save_new_value=False` | the kernel always writes `v_new` |
+| `scale != K**-0.5` | the kernel hardcodes `K**-0.5` before the fp16 store |
+| non-fp16 activations, non-fp32 gate, bad head dims, non-SM70, not CUDA | outside the kernel's types and tiles |
+
+A launch exception also falls back, once per exception type, so a serving
+process cannot be taken down by the fast path.
+
+`chunk_fwd_o` returns a fresh tensor, as the reference does. `chunk_h` writes
+the final state back into `initial_state` at the caller's slot indices when
+`inplace_update` is set, as the reference does; a negative slot is the pin's
+"no state" sentinel and starts at zero without being written back.
+
+### Measured
+
+Kernel time, V100-SXM2, B=1, T=4096, H=12, Hg=4, K=V=128 (per TP rank), from
+`benchmarks/gdn_chunk_o.py` and `benchmarks/gdn_chunk_h.py` at `d75987a`:
+chunk_o 24.94 ms Triton against 0.27 ms TileLang (108x), chunk_h 15.4 ms
+against 0.47 ms (33x). Numerics: 0.41-1.28 fp16 ULP against the Triton
+reference.
+
+End-to-end, the pair accounted for 1390 ms of a 3045 ms prefill on the
+FlashNext 8xV100 box. That delta is kernel-time and config-independent; the
+tok/s multiple measured on that contended box with unequal memory fractions is
+a reference, not a target. A clean alternating A/B on lambda4 (Triton 1633
+prompt tok/s, isolation confirmed) is the number this component is sized
+against, and it has not been taken yet.

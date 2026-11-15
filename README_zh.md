@@ -36,7 +36,7 @@
 | `ple_sm70` | fp8 PLE host-embedding gather 的 SM70 版本。固定 pin 的内核会 cast 到 `tl.float8e4nv`，在 SM70 上无法编译。 |
 | `spec_sm70` | top-k/top-p renorm 替换，使非贪心 EAGLE verify 不再触到 FlashInfer 的 sm75 下限。 |
 | `moe_align_sm70` | 把 tiny-batch MoE 对齐转到 SM70 上的 CUDA 双内核。pin 在 decode 尺寸下选单 CTA 的 Triton 内核；在 Flash-Next TP4 NVFP4 MoE 上它每次调用 29.3 us，而通用 CUDA 双内核为 5.0 + 2.3 us，因为单个 CTA 让 80 SM 的卡空转。把 `SMALL_NUMEL_LIMIT` 设为 0 即可让 Triton 分支不可达，所有调用走双内核；两者产出的元数据相同。 |
-| `gdn_tilelang_sm70` | SM70 上的 TileLang GDN 分块预填内核。pin 的 Triton 分块内核占 27B 单次预填分块的 63.9%；本组件用 TileLang 内核接管同一次调用：8,041 token 时 1,933.6 / 1,924.9 tok/s，31,158 token 时 1,658.3 / 1,655.1，Triton 下分别为 719.9 与 684.6（凭证 `evidence-55cb6e7-gdn-tilelang`）。 |
+| `gdn_tilelang_sm70` | SM70 上的 TileLang GDN 分块预填内核。pin 的 Triton 分块内核占 27B 单次预填分块的 63.9%；本组件用 TileLang 内核接管同一次调用：8,041 token 时 1,933.6 / 1,924.9 tok/s，31,158 token 时 1,658.3 / 1,655.1，Triton 下分别为 719.9 与 684.6（凭证 `evidence-55cb6e7-gdn-tilelang`）。组件同时把 FLA 包装函数 `chunk_fwd_o` 与 `chunk_gated_delta_rule_fwd_h` 重定向到 `sm70-kernels` 的 TileLang 内核对，因此分块路径的所有调用方都能受益；内核无法精确计算的情况一律回落到 Triton。`SGLANG_V100_GDN_TILELANG_IMPL=auto|pair|whole` 选择替换方式，`SM70_GDN_TILELANG=0` 是 A/B 对比用的 Triton 对照组。 |
 | `lsa_sm70` | SM70 全注意力的 Latent Sparse Attention（LSA）。key 在学习到的隐空间里聚类，每个 query 只对桶中心打分，读取时取选中的 key 加本地窗口和 sink。移植 Qwen3.8-27B 的 flat D-LSA 设计（16 个全注意力层，GQA 24/4），索引按 attention TP 组分片，选择由两个 Triton program 完成，读取走 pin 的 Triton decode 内核。选择 `--attention-backend lsa_sm70`；需要 `SGLANG_RESTOMOD_LSA_MAP`、`--page-size 1` 和 `--disable-cuda-graph`。实现是独立包 `Oaklight/lsa-sm70`，commit 固定在 `UPSTREAM_PIN.toml`；本组件只负责注册，先按该 commit 安装：`pip install 'lsa-sm70 @ git+https://github.com/Oaklight/lsa-sm70@3a4798093224933988175ee685084d521474da0b'`。 |
 
 ```bash
