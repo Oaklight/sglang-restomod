@@ -145,6 +145,12 @@ def _single_span(cu_seqlens, B: int, what: str) -> str:
     kernel expects is exactly what the varlen call describes. Anything else
     needs a real varlen kernel and is refused. The test is a shape check only:
     reading the span values would put a device sync in every layer.
+
+    The values are therefore assumed, not verified: the serving call site builds
+    ``query_start_loc`` as ``cat([0, cumsum(lengths)])``, so two elements mean
+    ``[0, T]`` for the single sequence ``q`` carries. A caller passing a
+    two-element tensor that is not ``[0, T]`` would be admitted and computed as
+    if it were. Enforcing that would cost the sync this avoids.
     """
     import torch
 
