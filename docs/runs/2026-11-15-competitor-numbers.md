@@ -54,19 +54,21 @@ what moves (2.67 on lambda1, 2.84-3.56 on lambda6).
 At SPEC=0 we measure **58.5-58.8 tok/s** (accept 1 by construction) on two boxes
 and have nothing to compare it to: 1Cat publishes only its MTP arm.
 
-**Prefill**, our first pair with MTP on both sides: **2971 tok/s**, SPEC=1 on
-lambda6, cold (`cached=0`), against 1Cat's 4825 MTP4 — **1.62x theirs, we trail
-38%**. Like for like in arm, unlike in box: the same arm on **lambda4, reported**
-at 1007-1018 ms (4048-4092 tok/s), against **1147 ms measured here**, so about
-**13-14% of that gap is the lambda6 host** and the rest is not attributed. The
-contended-island 3450-3565 stays withheld from the verdict.
+**Prefill on the arm we serve** — lambda4 4-7, SPEC=1, GDN pair on, dense FP8
+active (`98 dense linears quantized to block FP8, 0 refused`): **3641 tok/s**
+(1132 ms median for 4109 cold tokens, spread 5.6%, reported from the serving
+box) against 1Cat's 4825 MTP4 = **1.33x theirs, we trail 24.5%**.
 
-**Every prefill number in this note is bf16-dense on an arm we do not serve.**
-The launches logged `SM70 TurboMind FP8 operators unavailable: no library path`,
-so the dense FP8 components were selected, registered, and inactive. The ratios
-above remain comparisons between measured arms; they are not our configured
-performance. Details and the re-measurement are under "The prefill numbers above
-are on a configuration we do not serve".
+The pair below, **2971 tok/s** on lambda6 against the same 4825 (38% behind), was
+measured with the dense FP8 components inactive. Like for like in arm and unlike
+in box: the same bf16 arm on lambda4 was reported at 1007-1018 ms, against
+1147 ms on lambda6, so about 13-14% of that 38% is the lambda6 host. It is
+recorded, not quoted as our performance.
+
+**Every prefill number below is bf16-dense on an arm we do not serve.** The
+launches logged `SM70 TurboMind FP8 operators unavailable: no library path`, so
+the dense FP8 components were selected, registered, and inactive. Details are
+under "The prefill numbers above are on a configuration we do not serve".
 
 **Cross-quant caveat that applies to the whole note.** Strata runs IQ2_XS
 (35.5 GB of experts) against our fp8/fp4 (125.9 GiB). That is not a tok/s
@@ -153,6 +155,7 @@ these numbers**.
 | 1 | not runnable | not runnable |
 | 2 | not runnable | not runnable |
 | 4 (single node) | **3450-3565 reported, contended island, components include `gdn_tilelang_sm70` — withheld from the verdict**; **4199 reported, SPEC=0, host unconfirmed**; **1549 measured, pair off, SPEC=1** (4121 prompt tokens, 2644 ms median); 1663 in the SPEC=0 arm | **95.3 measured, SPEC=1** (slope 10.50 ms/output-token; 128 completion tokens, 48 verify steps, 1627 ms long run, short 32 tokens in 619 ms) → accept 2.67 → 28.0 ms/step. Accept varied by request: 2.67 / 3.56 / 2.67 at 48 / 36 / 48 steps, so the marginal step is 28.0-37.4 ms. **58.8 measured, SPEC=0** (slope 17.00 ms/token, accept 1); 1Cat ships no SPEC=0 arm, so it has no peer |
+| 4 (single node, lambda4, served arm) | **3641 reported, SPEC=1, dense FP8 active, GDN pair on** (1132 ms median, 4109 cold tokens, spread 5.6%) | decode not held in this note |
 | 4 (dual node) | comm-bound at 66% (reported), no number held here | — |
 | 4 (single node, lambda6) | **3593 measured, SPEC=0** (1147 ms, runs 1-2, run 0 JIT-excluded, spread 5.4%); **2971 measured, SPEC=1** (4121 prompt tokens, 1387 ms median, cold `cached=0`, spread 5.9%) | **115.5 measured median, SPEC=1** (104-145 across three prompts; per-run triples in the comparability table); **59.0 measured, SPEC=0** (16.95 ms/step, accept 1) |
 | 8 | untested | untested |
@@ -234,33 +237,86 @@ SM70 TurboMind FP8 operators unavailable: no library path
 so `fp8_dense`, `fp8_lm_head` and `fp8_dense_quant` were inactive and the dense
 linears ran as **bf16**. They are accurate descriptions of a configuration nobody
 intended to measure, not wrong numbers; but they describe an arm we do not
-serve, and they must not be read as our configured performance. The fp8-dense
-arm is being re-measured, and this note will carry those numbers when they land.
+serve, and they must not be read as our configured performance.
 
-### Prefill hardware bounds, and how to re-derive them
+**The re-measurement has landed**: 3641 tok/s on lambda4 with the dense FP8 path
+active, quoted in the headline, and the trace below. QPN8 is **absent in effect**
+in that arm — its source loads but its exact-shape gate admits nothing on this
+model, so nothing here treats it as a variable. The bf16 linears that remain are
+unaligned by construction: `hyper_connection.input_mix_weight_down` [320, 10240],
+`block_inject_weight` [4, 10240], merged `gate_up_proj` [320, 2560],
+`shared_expert.down_proj` [2560, 160] and the visual tower all fail the
+128-alignment block-FP8 requires, so the conversion has taken everything it
+structurally can.
 
-Two ratios bound the prefill families. Both are arithmetic on measured times and
-fixed model dimensions, so a reader can audit them without our tools.
+### Prefill hardware bounds on the served arm, and how to re-derive them
 
-Model (`model-sm70` text config): hidden 2560, 48 layers, 512 experts, top-10,
-moe intermediate 640. Window: `step[EXTEND toks=4096]`, 857.5 ms; families
-measured in the window: allreduce 56.4 ms, marlin 277.1 ms.
+All figures below are from one trace of the served arm (lambda4 4-7, SPEC=1, GDN
+pair on, dense FP8 active), TP-0, window `step[EXTEND bs=1 toks=4096]` of
+**839.4 ms**, model `model-sm70` text config: hidden 2560, 48 layers, 512
+experts, top-10, moe intermediate 640.
 
-- **Allreduce bandwidth.** 96 allreduces (2 per layer × 48), each
-  4096 × 2560 × 2 B = 20.97 MB. Ring per-rank traffic is `2(N-1)/N` = 1.5×, so
-  3.02 GB per rank; `3.02 GB / 56.4 ms = 53.5 GB/s = 35.7%` of the 150 GB/s per
-  card. Data-only convention: 2.01 GB → 35.7 GB/s → 23.8%.
-- **Marlin FLOPs.** `2 × 10 × 3 × 2560 × 640 × 4096 × 48 = 19.33 TFLOP`;
-  `/ 277.1 ms = 69.7 TFLOPS = 55.8%` of the 125 TFLOPS V100-SXM2 fp16 peak.
-- **Overlap.** Unioning kernel intervals rather than summing them, the GPU is
-  busy 745.0 of 857.5 ms = **86.9%**; the 112 ms of holes has only 30.7 ms in
-  gaps ≥0.5 ms. Summing durations overstates idle whenever kernels overlap.
+| family | ms | % of window |
+|---|---:|---:|
+| marlin (routed experts) | 287.3 | 34.2% |
+| volta_gemm (bf16 wmma leftovers) | 107.0 | 12.7% |
+| fp8_dense (TurboMind) | 89.5 | 10.7% |
+| allreduce | 52.5 | 6.2% |
+| norm | 28.7 | 3.4% |
+| gdn (TileLang) | 5.3 | 0.6% |
+| attention | 1.5 | 0.2% |
+| moe (Triton `fused_moe`, default tiles) | 1.4 | 0.2% |
 
-The lab-side tools are `prefill_attr.py <trace>` (family times in the longest
-`step[EXTEND]`) and `prefill_bounds.py --window-ms --ar-ms --marlin-ms`; on the
-inputs above they print the figures stated here. They are not in this repository
-because the trace format is lab-specific, which is why the formulas are written
-out.
+- **Allreduce is not a bandwidth problem.** 96 allreduces (2 per layer × 48),
+  each 4096 × 2560 × 2 B = 20.97 MB; ring per-rank traffic `2(N-1)/N` = 1.5×,
+  so 3.02 GB per rank in 52.5 ms = **57.5 GB/s = 38.3%** of the 150 GB/s per
+  card (data-only convention 2.01 GB → 25.6%). The prefill allreduce here is
+  **NCCL ring**, not our custom 1shot kernel: "custom allreduce is enabled" and
+  "custom allreduce is used at prefill" are different statements.
+- **Marlin is doing real work.** `2 × 10 × 3 × 2560 × 640 × 4096 × 48 =
+  19.33 TFLOP` in 287.3 ms = **67.3 TFLOPS = 53.8%** of the 125 TFLOPS
+  V100-SXM2 fp16 peak. The expert GEMM is not where a wall-clock gap comes from.
+- **Overlap.** Unioning kernel intervals, not summing them: the GPU is busy
+  767.0 of 839.4 ms = **91.4%**, holes 72.4 ms of which 18.4 ms in gaps ≥0.5 ms.
+  (The bf16 arm was 86.9% busy with 112 ms of holes. Summing durations overstates
+  idle whenever kernels overlap; that mistake was made once here and corrected.)
+
+**The wall-clock figure is not this window.** Unprofiled, the same arm serves
+4109 cold tokens in 1132 ms = 3641 tok/s; the profiled window is 839.4 ms for
+the 4096-token chunk. The two are not subtractable and this note does not
+subtract them: **what the remaining ~293 ms is has not been measured**. The trace
+cannot answer it — it contains, after the 839 ms window, a span labelled
+`step[EXTEND toks=13]` that runs 2343 ms and holds 29 535 kernel rows, plus 959 ms
+of tail after the last step span. A 13-token chunk cannot cost 2.3 s, so that
+span wraps work that is not this request, and the profile is inflated relative to
+the unprofiled median by an unknown factor. The family *shares* are robust
+because they come from one window; the absolute window rate is an in-window rate
+and is labelled as such wherever it appears.
+
+### A withdrawn inference, and the rule it produced
+
+An earlier revision of this section inferred that the prefill gap was **not** in
+the kernels, by comparing an in-window rate (4880 tok/s) to an unprofiled wall
+(3641 tok/s). Those are different denominators; **the inference is withdrawn**.
+The trace contains a 13-token span wrapping 2343 ms and 29 535 kernel rows, so it
+does not describe a single request and no wall fraction can be derived from it.
+
+Rule: **do not derive a wall fraction by subtracting a profiled window from an
+unprofiled median.** Profiling changes occupancy, and the window may not contain
+only this request. If a wall fraction is needed, measure both sides under the same
+conditions — a single cold request, `num_steps=1`, client elapsed recorded beside
+the trace — or leave it unmeasured.
+
+The lab-side tools are `prefill_attr.py <trace>` (family table; it selects the
+window with the most `toks=`, not the longest span — the longest span here is the
+wrapping one and picking it inverted every share), `prefill_gaps.py <trace>`
+(interval union and where the holes sit), `prefill_outside.py <trace>` (spans and
+what runs outside them), and `prefill_bounds.py --window-ms --ar-ms --marlin-ms`
+(the two ratios), plus `prefill_wall.py <trace> --client-ms N --toks 4096`, which
+**refuses** to report a wall fraction unless the trace holds one `EXTEND` span at
+that token count and no long tail span — the check that this trace fails. They are
+not in this repository because the trace format is lab-specific, which is why the
+formulas are written out.
 
 ## Decode comparability
 
