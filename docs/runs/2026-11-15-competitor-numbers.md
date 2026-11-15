@@ -119,7 +119,7 @@ these numbers**.
 |---|---|---|
 | 1 | not runnable | not runnable |
 | 2 | not runnable | not runnable |
-| 4 (single node) | **3450-3565 reported, contended island, components include `gdn_tilelang_sm70` — withheld from the verdict**; **1549 measured, pair off, SPEC=1** (4121 prompt tokens, 2644 ms median); 1663 in the SPEC=0 arm | **95.3 measured, SPEC=1** (slope 10.50 ms/output-token; 128 completion tokens, 48 verify steps, 1627 ms long run, short 32 tokens in 619 ms) → accept 2.67 → 28.0 ms/step. Accept varied by request: 2.67 / 3.56 / 2.67 at 48 / 36 / 48 steps, so the marginal step is 28.0-37.4 ms. **58.8 measured, SPEC=0** (slope 17.00 ms/token, accept 1) — not comparable to 1Cat |
+| 4 (single node) | **3450-3565 reported, contended island, components include `gdn_tilelang_sm70` — withheld from the verdict**; **4199 reported, SPEC=0, clean island**; **1549 measured, pair off, SPEC=1** (4121 prompt tokens, 2644 ms median); 1663 in the SPEC=0 arm | **95.3 measured, SPEC=1** (slope 10.50 ms/output-token; 128 completion tokens, 48 verify steps, 1627 ms long run, short 32 tokens in 619 ms) → accept 2.67 → 28.0 ms/step. Accept varied by request: 2.67 / 3.56 / 2.67 at 48 / 36 / 48 steps, so the marginal step is 28.0-37.4 ms. **58.8 measured, SPEC=0** (slope 17.00 ms/token, accept 1) — not comparable to 1Cat |
 | 4 (dual node) | comm-bound at 66% (reported), no number held here | — |
 | 8 | untested | untested |
 
@@ -148,10 +148,10 @@ My pair-off numbers on lambda1 — 1549 at SPEC=1, 1663 at SPEC=0, a different
 box — are that same configuration, not a conflicting result.
 
 Neither arm of that A/B has run on a clean island, so its **magnitude** is open.
-A clean 4-card island reports **4199 tok/s** for the pair-on arm (SPEC arm still
-in flight) against 3450-3565 on the contended one. The direction holds in every
-pairing we hold; the size of the win does not, and the contended numbers are not
-quotable as ours.
+A clean 4-card island reports **4199 tok/s** for a pair-on **SPEC=0** arm (the
+SPEC=1 arm on that island is in flight) against 3450-3565 on the contended one.
+The direction holds in every pairing we hold; the size of the win does not, and
+the contended numbers are not quotable as ours.
 
 Rule: **never cite a prefill number without the component list.** The
 difference is invisible at `register()` time and does not appear as a log
@@ -211,6 +211,71 @@ For 1Cat we have not proven this from its code. What we have is that its
 129.6 tok/s, 19.4 ms/step and accept 2.51 are **consistent with the same
 definition**. Not "the same definition": if its docs define accept otherwise,
 the ratio moves and we would be the ones who overclaimed.
+
+## SPEC=0 and SPEC=1, per competitor
+
+The tables above keep the competitors apart from our arms, which leaves the
+reader to do the pairing. Pairing is where a comparison goes wrong, so it is done
+here explicitly, with the arm each project actually publishes.
+
+### Our own two arms, one box
+
+Same box (lambda1), same protocol, GDN pair off, one variable:
+
+- prefill: SPEC=0 1663 → SPEC=1 1549 tok/s, so MTP **costs 6.9%** of prefill
+- decode: SPEC=0 58.8 → SPEC=1 95.3 tok/s, so MTP **buys 1.62x**
+
+That is the local answer to "what does MTP cost and buy here", and it is the only
+pair in this note whose arms share a box, a protocol and a run series.
+
+### Against 1Cat — SPEC=1 to SPEC=1
+
+1Cat publishes only its MTP4 arm and has no no-spec number, so a SPEC=0 pairing
+does not exist.
+
+| | our arm | 1Cat arm | our tok/s | 1Cat tok/s | ratio |
+|---|---|---|---:|---:|---|
+| decode | SPEC=1 | MTP4 | 95.3 | 129.6 | 1.36x theirs; we trail 27% |
+| prefill | **SPEC=0** | **MTP4** | **4199** | **4825** | **not like-for-like** |
+
+The prefill row is the one arm mismatch in this note: 4199 is our SPEC=0 arm on a
+clean island, 4825 is 1Cat's MTP4 arm. Side by side they look comparable and are
+not. Our SPEC=1 prefill is withheld pending the clean-island run, so **no prefill
+ratio is published**.
+
+### Against Strata — SPEC=1 to `--spec 2`
+
+Strata's runtime uses `--spec 2`, its MTP analog, so the decode pairing is
+legitimate. Comparing card counts without dividing is not, so the per-card column
+is carried as an **arithmetic consequence of the two cells, not a measured
+per-card rate**:
+
+| engine | arm | cards | decode tok/s | tok/s per card |
+|---|---|---:|---:|---:|
+| Strata | `--spec 2` | 1 | 66.6 reported | 66.6 |
+| Strata | `--spec 2` | 2 | 80.1 reported | 40.1 |
+| ours | SPEC=1 | 4 | 95.3 measured | 23.8 |
+| ours | SPEC=0 | 4 | 58.8 measured | no Strata peer |
+| Strata | no-spec | — | — | no such arm |
+| 1Cat | MTP4 | 1, 2, 8 | — | no such recipe |
+
+**This is the most important number in the note and it is not flattering.** We
+need four cards to beat Strata's one card by 1.43x. Per card we are **2.80x**
+behind its single-card point and **1.68x** behind its two-card per-card point.
+The honest reading is that our four-card win is **capacity, not efficiency**, and
+the per-card deficit is the kernel gap — consistent with the traces, which put
+62% of prefill in GDN chunk kernels, and a better argument for the TileLang work
+than any single figure we have published. This table is decode only; the prefill
+verdict stays withheld, because the only clean-island prefill we hold is a SPEC=0
+arm.
+
+**Cross-quant caveat, attached to this row.** Strata runs IQ2_XS (35.5 GB of
+experts) against our fp8/fp4 (125.9 GiB), so it does less work per token. Part of
+the 2.8x is quant and part is kernel; quality was never measured, so **we cannot
+decompose the two** and do not.
+
+Empty cells, with the reason in the row: Strata has no no-spec arm, so our SPEC=0
+has no Strata peer; 1Cat ships no 1/2/8-card recipe.
 
 ## Protocol caveats that apply to any reuse
 
