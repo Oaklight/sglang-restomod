@@ -61,10 +61,11 @@ extension (`sglang_restomod/quant/sm70_fp4_moe/PROVENANCE.md`) -- and it was
 never covered by `UPSTREAM_PIN.toml`, so its hash in `SHA256SUMS` guarded a
 file with no pin. Removed on 2026-11-01.
 
-`sm70_longctx_decode.cu` was first vendored before the two-CTA decode patch
-landed in the lab tree, so the component would have shipped the slower kernel.
-It now carries `sm70-decode-occ2.patch`: the batched tile loader, the
-warp-specialized pipeline and the `kCtas` template, selectable at runtime with
+`sm70_longctx_decode.cu` was first vendored before the two-CTA decode work
+landed in sm70-kernels, so the component would have shipped the slower kernel.
+It is now generated from the pin, where the batched tile loader, the
+warp-specialized pipeline and the `kCtas` template are part of the source
+history rather than a local patch. The variant is selectable at runtime with
 `SGLANG_SM70_DECODE_VARIANT=serial|occ2|pipelined` (default `occ2`). That is
 worth -28% per layer at 256k on e5m2 and +3.7% end-to-end decode.
 

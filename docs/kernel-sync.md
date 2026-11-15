@@ -85,7 +85,6 @@ Facts verified against the trees, not inferred:
 | Side | Item | Evidence |
 |---|---|---|
 | this repository | `tilelang/_decode_cuda.py` raises `NotImplementedError` for an E4M3 KV cache and says the Python side never selects that specialisation. The synced `.cu` does dispatch E4M3 (`dispatch_serial` selects `launch_serial<uint8_t, kCtas, true>`), and sm70-kernels' own `_loader.py` accepts it. | `_decode_cuda.py` guard vs `sm70_longctx_decode.cu` `a.e4m3` branches |
-| this repository | `PROVENANCE.md` says the `.cu` "carries `sm70-decode-occ2.patch`". No such patch exists; the file is generated from the pin, where occ2 is part of the source history. | `patches/` holds only the three upstream patches |
 | this repository | `scripts/sync_kernels.py --check` is not in CI. `pyproject.toml` says the submodule repository is private; it is public, so the check could run. | `restomod-ci.yml` runs `check_pin.py`, not `sync_kernels.py` |
 | sm70-kernels | the pin `bdf1e56` is a feature-branch commit; `origin/main` contains the same tree at the merge `c393136`. Re-pin to the main-line commit so the pin is reachable from the branch the project treats as stable. | `git diff --stat bdf1e56 origin/main` is empty |
 | sm70-kernels | no `LICENSE` or `NOTICE` file at the pin, although `pyproject.toml` declares Apache-2.0. The fix is on an unmerged `legal/license-notice` branch. This repository redistributes two derivative files and lists neither sm70-kernels nor its GooseLLM lineage in `THIRD_PARTY.md`. | tree listing; `THIRD_PARTY.md` |

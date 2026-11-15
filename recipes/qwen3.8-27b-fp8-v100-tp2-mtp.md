@@ -170,7 +170,7 @@ a no-regression, not a gain; its measurable win is at 32k.
 
 
 The trace, the three profiles and the log-probability comparison are in the lab
-note `notes/mtp-long-context-attribution.md`.
+note `notes/mtp-long-context-attribution.md` in `Oaklight/lambda-v100-lab` (private).
 
 **GDN prefill: the fork's TileLang kernel, or `gdn_tilelang_sm70` at the pin.**
 The fork runs it with `--linear-attn-prefill-backend tilelang`. That
@@ -204,7 +204,7 @@ Receipt `evidence-ad0addd-recipes` records the effect at this commit: prefill
 1,929.7 / 1,925.9 tok/s at 8,041 prompt tokens and 1,657.5 / 1,652.9 at 31,158,
 against 684.6 on the Triton chunk kernels. The 63.9% attribution for that
 baseline, and the kernel-level 3.2 ms against 75.2 ms, are in the lab note
-`notes/gdn-prefill-backends.md` and in issue #80.
+`notes/gdn-prefill-backends.md` (private lab repository) and in issue #80.
 
 A 128-output-token A/B, four reps per arm and **unsigned**, is recorded in
 `sglang_restomod/linear_attn_sm70/PROVENANCE.md`: prefill 1,648.4 / 1,645.1 /
@@ -611,7 +611,7 @@ grouped decoder, and at 32k with MTP it measures 47.4 tok/s against fp16's
 "per-row decoder needs fp16 KV" rule is gone.
 
 e4m3 against e5m2, 27B-FP8 TP2, four fixed continuations, per-token
-log-probability against an fp16 cache (the lab's `notes/kv-dtype-quality.md`):
+log-probability against an fp16 cache (the private lab repository's `notes/kv-dtype-quality.md`):
 
 | | e5m2 | e4m3 |
 |---|---:|---:|
