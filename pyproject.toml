@@ -64,7 +64,6 @@ include = ["sglang_restomod*"]
   "patches/README.md",
   "patches/manifest.json",
 ]
-"sglang_restomod.linear_attn_sm70" = ["PROVENANCE.md"]
 "sglang_restomod.spec" = ["cccl/cuda/functional"]
 
 [tool.ruff]
