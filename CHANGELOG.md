@@ -24,6 +24,12 @@ validated on hardware.
 
 ### Added
 
+- `attest` records a component whose module fails to import as `inactive` with
+  the import error; the loader can no longer report "loaded" while the engine
+  serves its own backend (#TBD).
+- `restomod doctor` fails when the checkout's recorded commit does not match
+  the declared `[engine].commit`; a stale site tree is an error, not a
+  configuration choice (#TBD).
 - `BINARIES.toml`, `restomod doctor`, and `scripts/fetch_binaries.py` /
   `scripts/build_binaries.py`: pin the out-of-repo artefacts (prebuilt
   libraries, flashinfer fork, container image) by sha256 and provenance, and
