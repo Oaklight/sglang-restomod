@@ -97,9 +97,61 @@ if [[ -n "${SM70_SITE:-}" ]]; then
 fi
 
 if [[ "$SKIP_GPU_PROBE" != "1" ]]; then
-  nvidia-smi -q > "$OUT/nvidia-smi-q.txt" 2>&1 || true
-  nvidia-smi --query-gpu=index,name,compute_cap,driver_version,clocks.current.sm,clocks.max.sm,memory.total,temperature.gpu --format=csv > "$OUT/gpus.csv" 2>&1 || true
-  nvidia-smi topo -m > "$OUT/topo.txt" 2>&1 || true
+  # nvidia-smi needs the host driver library on the container's search path.
+  # Inside the CUDA image it often prints "couldn't find libnvidia-ml.so"
+  # while CUDA itself works, and the bundle then carried that error text where
+  # topology belongs. Probe once; when the probe fails, say so and point at
+  # runtime.txt, which is the identity that always exists.
+  "$PYTHON" - "$OUT" <<'PY_PROBE'
+import os
+import subprocess
+import sys
+
+out = sys.argv[1]
+
+
+def run(args):
+    """Run one nvidia-smi command; return (ok, text)."""
+    try:
+        done = subprocess.run(args, capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, f"{args[0]}: {exc}"
+    if done.returncode != 0:
+        return False, (done.stderr or done.stdout).strip()
+    return True, done.stdout
+
+
+def write(name, text):
+    with open(os.path.join(out, name), "w") as handle:
+        handle.write(text)
+
+
+probe_ok, probe_text = run(
+    ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"]
+)
+if probe_ok:
+    for name, args in (
+        ("nvidia-smi-q.txt", ["nvidia-smi", "-q"]),
+        (
+            "gpus.csv",
+            [
+                "nvidia-smi",
+                "--query-gpu=index,name,compute_cap,driver_version,"
+                "clocks.current.sm,clocks.max.sm,memory.total,temperature.gpu",
+                "--format=csv",
+            ],
+        ),
+        ("topo.txt", ["nvidia-smi", "topo", "-m"]),
+    ):
+        ok, text = run(args)
+        write(name, text if ok else f"{' '.join(args)} failed:\n{text}\n")
+else:
+    write(
+        "topo.txt",
+        f"nvidia-smi unavailable: {probe_text}\nGPU identity is in runtime.txt.\n",
+    )
+    write("gpus.csv", "nvidia-smi unavailable; GPU identity is in runtime.txt\n")
+PY_PROBE
   CUDA_VISIBLE_DEVICES="$GPUS" "$PYTHON" - > "$OUT/runtime.txt" 2>&1 <<'PY'
 import torch
 

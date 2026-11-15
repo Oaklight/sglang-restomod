@@ -76,6 +76,13 @@ The script records `dirty_files`; sign with `--allow-dirty` only when that
 number is deliberate, because the receipt binds the commit's tree, not the
 worktree.
 
+`gpus.csv` and `topo.txt` come from nvidia-smi, which needs the host driver
+library on the container's search path. Inside the CUDA image it often cannot
+find `libnvidia-ml.so` while CUDA itself works; the probe then writes that
+reason into both files and names `runtime.txt` as the source of GPU identity,
+instead of leaving the error text where topology belongs. `runtime.txt` is the
+torch view and is always written.
+
 With `--bench-host`, the suite also stores the endpoint's `/server_info` as
 `server_info.json`. If neither `/server_info` nor `/get_server_info` answers,
 the bundle gets `server_info.unavailable.txt` instead and no

@@ -322,20 +322,43 @@ def _use_sm70_fp8_prefill_dispatch(layer: torch.nn.Module) -> bool:
     ) != 0 and hasattr(torch.ops.sglang_sm70_turbomind, "fp8_prefill_dispatch")
 
 
+def _resolve_ops_path() -> str | None:
+    """Name the TurboMind library, or ``None`` when nothing names it.
+
+    The dense kernel path predates the MoE one and used its own variable, but
+    the site launchers only export the MoE names. A host that serves the MoE
+    experts and leaves ``SGLANG_SM70_TURBOMIND_OPS_PATH`` alone therefore
+    disabled the dense kernel without saying so. Accept all three names:
+    the explicit dense variable first, then the fork's own resolver, then the
+    MoE aliases.
+    """
+    explicit = os.environ.get("SGLANG_SM70_TURBOMIND_OPS_PATH")
+    if explicit:
+        return explicit
+    if _DEFAULT_OPS_PATH:
+        return _DEFAULT_OPS_PATH
+    for name in ("SM70_TURBOMIND_SO", "SGLANG_SM70_TURBOMIND_SO"):
+        value = os.environ.get(name)
+        if value:
+            return value
+    return None
+
+
 def _load_sm70_turbomind_fp8_ops() -> bool:
     global _OPS_AVAILABLE, _OPS_LOAD_ATTEMPTED
     if _OPS_LOAD_ATTEMPTED:
         return _OPS_AVAILABLE
     _OPS_LOAD_ATTEMPTED = True
 
-    ops_path = os.environ.get("SGLANG_SM70_TURBOMIND_OPS_PATH") or _DEFAULT_OPS_PATH
+    ops_path = _resolve_ops_path()
     if not ops_path:
-        # Neither the environment nor the fork's path helper names the library.
-        # That is a provisioning gap, not a load failure: report it the same way
-        # a failed load is reported, so every caller can keep its fallback.
+        # Nothing names the library. That is a provisioning gap, not a load
+        # failure: report it the same way a failed load is reported, so every
+        # caller can keep its fallback.
         logger.warning(
             "SM70 TurboMind FP8 operators unavailable: no library path "
-            "(set SGLANG_SM70_TURBOMIND_OPS_PATH)"
+            "(set SGLANG_SM70_TURBOMIND_OPS_PATH, SM70_TURBOMIND_SO or "
+            "SGLANG_SM70_TURBOMIND_SO)"
         )
         return _OPS_AVAILABLE
     try:
