@@ -19,6 +19,12 @@ dependencies = [
   # The baseline. When patches exist, scripts/build.sh installs a patched
   # source tree at the same version instead of this wheel.
   "sglang==0.5.23",
+  # The engine asserts this at startup (`assert_pkg_version` in
+  # sglang/srt/utils/common.py) with a 0.4.9 floor and refuses to serve
+  # without it. It arrives transitively only when sglang is installed as a
+  # wheel; running from a patched source tree on PYTHONPATH drops the
+  # transitive dependency entirely, so it has to be declared here.
+  "sglang-kernel>=0.4.9",
 ]
 
 [project.optional-dependencies]
