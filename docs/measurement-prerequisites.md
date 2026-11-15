@@ -62,6 +62,13 @@ like one.
    grep -c 'Using default MoE kernel config' <server log>    # 0 unless declared
    ```
 
+   Pass the log with `--server-log <path>` and `gpu_suite.sh` records the
+   allreduce answer itself as `custom_allreduce.txt`. The marker is the only one
+   the pin emits: there is no success line on the CUDA path, so a zero count
+   means "the build did not announce a failure", not "custom allreduce is
+   active". That is why the recorded state is `failure-absent-only` and not
+   `ok`, and why a bundle without the line says `not checked`.
+
    The second one cost 0.86 ms/step on 2026-11-08: the v0.5.22 site carries
    tuned fused-MoE JSONs for this device and the v0.5.23 site does not, so one
    arm ran the tuned tile and the other the default heuristic.

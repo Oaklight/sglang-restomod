@@ -70,6 +70,17 @@ Statuses: `pending`, `accepted`, `local-only`, `rejected`.
 - `restomod-patch-guard` fails on an accepted patch that is still present and
   already reverse-applies.
 
+## Pin bump
+
+1. Re-pin `UPSTREAM_PIN.toml`, run `scripts/fetch_upstream.sh`, then
+   `scripts/apply_patches.sh`. `bump/upstream-*` is opened by CI, not by hand.
+2. Run `scripts/retire_patches.py` for accepted patches, and
+   `scripts/sync_kernels.py --check` after re-pinning `[kernels].commit`.
+3. Re-check the vendored QSA backend against the pin's own file and re-apply
+   the SM70 routes on top of it. It has been pin-based rather than fork-based
+   since #243, and a pin bump is when the two can drift apart. Details:
+   [docs/qsa-sm70-audit.md](docs/qsa-sm70-audit.md).
+
 ## Branches and commits
 
 - Branch from `main`: `feat/...`, `fix/...`, or `patch/...`.
