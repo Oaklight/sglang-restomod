@@ -1,7 +1,7 @@
 # 2026-11-15 — GDN prefill kernels: Triton vs TileLang on V100
 
 Status: **measured on a contended box; the ratio is a reference, not a target.
-A clean re-derivation on lambda4 is in flight.**
+A clean re-derivation on an isolated host is in flight.**
 
 The two Triton GDN prefill kernels were replaced with TileLang implementations
 and the prefill wall fell from 3045 ms to ~1555 ms at 4096 prompt tokens. The
@@ -81,7 +81,7 @@ plausibly less contention between the two runs.
 ## Two confounds in this run, both mine
 
 1. **The box was shared.** Both arms ran with two servers resident on the same
-   eight GPUs. The clean number on lambda4 for the same config is 1633 tok/s,
+   eight GPUs. The clean number on an isolated host for the same config is 1633 tok/s,
    **21% above this baseline**, which is what an isolated box buys.
 2. **The arms were not configured alike.** The baseline half ran
    `--mem-fraction-static 0.82` and the patched half ran 0.75, because 0.82
@@ -90,7 +90,7 @@ plausibly less contention between the two runs.
    not depend on it, but "should not" is not a measurement.
 
 Consequence: **the absolute numbers here are superseded** and the ratio must be
-re-derived on lambda4/lambda1 with one config and an alternating arm.
+re-derived on two isolated hosts with one config and an alternating arm.
 
 ## Correctness
 

@@ -313,7 +313,7 @@ measured while every draft step still ran on Triton. Since #205 the draft chain
 uses the `attention_v100` split-KV kernel, and the per-step draft cost no
 longer overwhelms the accept gain.
 
-Measured 2026-11-06 on lambda4, 2x V100-SXM2, the same launch for both arms
+Measured 2026-11-06 on a 2x V100-SXM2 host, the same launch for both arms
 (TP2, fp8_e5m2 KV, 40 splits, 3 steps / 4 draft tokens, greedy, 128 output
 tokens, warm prefix, 5 reps), 125,938 prompt tokens:
 

@@ -122,7 +122,7 @@ tokens, and record the prompt length the client reports rather than the
 decode extension builds through `torch.utils.cpp_extension`, and since #244 it
 refuses before nvcc when `TMPDIR` or `SGLANG_V100_DECODE_CUDA_BUILD_DIR` has
 less than 1 GiB free. On a host whose `/` is nearly full (28 MiB free on
-lambda6) a cold build fails with the preflight message; a cached build in the
+gpu-host-6) a cold build fails with the preflight message; a cached build in the
 default `/tmp/sglang_sm70_longctx_decode` lets the loader skip the check, so the
 failure only appears after the cache is cleared. Set
 `SGLANG_V100_DECODE_CUDA_BUILD_DIR` to a directory on the data mount in the
