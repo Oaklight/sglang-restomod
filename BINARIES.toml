@@ -1,0 +1,118 @@
+# Pinned out-of-repo artefacts for the SM70 serving stack.
+#
+# Path-free on purpose: this file is committed. Site paths live in
+# `restomod.site.toml`, which is site-local and named by
+# `RESTOMOD_SITE_CONFIG`. `restomod doctor` reads this file and fails when a
+# present artefact does not match its hash, or when a selected component's
+# artefact is absent.
+#
+# Each row answers four questions: what it is, where it came from, which
+# component needs it, and what silently breaks without it.
+#
+# Licence rule: nothing is promoted to `ship` until a licence text is in hand.
+# `license = "unverified"` means exactly that, not "probably fine".
+version = 1
+
+[[artefact]]
+name = "sm70-turbomind-v100"
+kind = "shared-library"
+sha256 = "fab255d13010ff92cb5e848b631c936764aca38d8543ea9595c70c814bffa613"
+size = 11059216
+consumers = ["fp8_dense", "fp8_lm_head", "fp8_dense_quant"]
+silent_break = "the three components register and do nothing; dense falls back to bf16"
+license = "unverified"
+provenance = { repo = "https://github.com/dg1kjd/sglang-sxm2", commit = "73abfe1dd7e7aae7a62b222a201e48f532fb298e" }
+resolve = { site_path = "turbomind_so" }
+produce = { kind = "copy", note = "built in the fork tree; no public URL yet. Do not redistribute until the licence is established." }
+
+[[artefact]]
+name = "marlin-dense"
+kind = "shared-library"
+sha256 = "9a49402a6a4171216fae33e52d44192d02a0fdc540359f0f84eb888e8cace957"
+size = 276745976
+consumers = ["fp4_moe"]
+silent_break = "fp4_moe refuses loudly; experts fall back to another backend"
+license = "unverified"
+provenance = { repo = "https://github.com/zhinianqin/marlin_v100", commit = "unknown" }
+resolve = { site_path = "marlin_dense" }
+produce = { kind = "build", command = ["./build.sh"], note = "upstream is Apache-2.0 (IST-DASLab), but this tree has no LICENSE file." }
+
+[[artefact]]
+name = "marlin-moe"
+kind = "shared-library"
+sha256 = "3c04f22ebb132b4ae8d446bb3ce1b53b8fc8605a985f0ac89d831c8bad637292"
+size = 258397088
+consumers = ["fp4_moe"]
+silent_break = "fp4_moe refuses loudly"
+license = "unverified"
+provenance = { repo = "https://github.com/zhinianqin/marlin_v100", commit = "unknown" }
+resolve = { site_path = "marlin_moe" }
+produce = { kind = "build", command = ["./build.sh"], note = "same build as marlin-dense." }
+
+[[artefact]]
+name = "sgl-kernel-sm70"
+kind = "shared-library"
+sha256 = "bee155d43ebb1e8a882604e418ed86783a73e5ce645d8e3894fc9ee0814b7355"
+size = 20752248
+consumers = ["fp8_dense", "fp4_moe", "attention_v100"]
+silent_break = "every engine import fails; sgl_kernel ships only sm100/common_ops on PyPI"
+license = "Apache-2.0"
+provenance = { repo = "https://github.com/dg1kjd/sglang-sxm2", commit = "73abfe1dd7e7aae7a62b222a201e48f532fb298e" }
+resolve = { site_path = "sgl_kernel_sm70" }
+produce = { kind = "build", command = ["python", "-m", "pip", "install", "--no-deps", "."], note = "AOT tree under python/sglang/kernels/aot; the PyPI 0.4.9 wheel is not usable on SM70." }
+
+[[artefact]]
+name = "flashinfer"
+kind = "python-package"
+sha256 = ""
+size = 0
+consumers = ["attention_v100"]
+silent_break = "different kernels; no log line"
+license = "Apache-2.0"
+provenance = { repo = "https://github.com/haohervchb/flashinfer", commit = "c3c40a7b90b792fc59f90f8f55c9e2de9c1b6833" }
+produce = { kind = "fetch", url = "git+https://github.com/haohervchb/flashinfer.git@c3c40a7b90b792fc59f90f8f55c9e2de9c1b6833", note = "third-party fork; three GPU tests are already blocked on its paths." }
+
+[[artefact]]
+name = "moe-tiles-v100"
+kind = "config"
+sha256 = "6689f113d32f46b3b415cef1284c554f94c55a0bb411f9b2b674efe55c1b8098"
+size = 868
+consumers = []
+silent_break = "default tiles; slower draft MoE; only a 'Using default MoE kernel config' line"
+license = "Apache-2.0"
+provenance = { repo = "hand-tuned for this hardware", commit = "" }
+produce = { kind = "ship", note = "sglang_restomod/configs/moe/triton_3_5_1/; two files, byte-identical." }
+
+[[artefact]]
+name = "qpn8-decode-cu"
+kind = "source"
+sha256 = "4ad3ba4e6fadf827db234b633482f012c3f30e7ba58ecfc8eaec15335c46bf2c"
+size = 15156
+consumers = ["fp8_dense_quant"]
+silent_break = "QPN8 stays inactive; dense decode uses the older path; no failure"
+license = "Apache-2.0"
+provenance = { repo = "sglang-restomod", commit = "" }
+produce = { kind = "ship", note = "sglang_restomod/quant/sm70_fp8_dense/csrc/sm70_fp8_qpn8_decode.cu" }
+
+[[artefact]]
+name = "checkout-metadata"
+kind = "metadata"
+sha256 = ""
+size = 0
+consumers = []
+silent_break = "no sglang.srt.plugins entry point: components never load, and the symptom is 'invalid backend choice'"
+license = "Apache-2.0"
+provenance = { repo = "sglang-restomod", commit = "" }
+produce = { kind = "ship", note = "sglang-0.5.23.dist-info and sglang_restomod-<version>.dist-info next to the checkouts; see docs/binaries.md." }
+
+[[artefact]]
+name = "cuda-image"
+kind = "image"
+sha256 = "2ce6ae69376a522180636c7f018b21f470e358c1d10518ee79626c880efe5f04"
+size = 5_152_456_704
+consumers = []
+silent_break = "GLIBC 2.38 and sm_70 codegen unavailable: marlin does not load and no GPU process starts"
+license = "NVIDIA container licence"
+provenance = { repo = "nvidia/cuda:12.8.0-devel-ubuntu24.04", commit = "" }
+resolve = { site_path = "cuda_image" }
+produce = { kind = "fetch", url = "docker://nvidia/cuda:12.8.0-devel-ubuntu24.04", note = "reference by digest, not by path." }

@@ -96,10 +96,17 @@ def _check_activation_k(layer: torch.nn.Module, x_2d: torch.Tensor) -> None:
 # once at weight load; decode GEMMs (M<=8) route to the QPN8 kernel instead
 # of the TurboMind fp8_gemm when enabled. The exact TP4 gate/up shape
 # additionally fuses its paired projections with the SiLU multiply at decode.
+# The fork resolves the source through `sglang.kernels.sm70_paths`; the pinned
+# upstream has no such module. The packaged copy is the default so a stock
+# engine works without an export; `SGLANG_SM70_QPN8_SRC` remains the override.
+_PACKAGED_QPN8_SRC = Path(__file__).with_name("csrc") / "sm70_fp8_qpn8_decode.cu"
 _QPN8_SRC_PATH = (
     _sm70_csrc("sm70_fp8_qpn8_decode.cu")
     if _sm70_csrc
-    else os.environ.get("SGLANG_SM70_QPN8_SRC")
+    else (
+        os.environ.get("SGLANG_SM70_QPN8_SRC")
+        or (str(_PACKAGED_QPN8_SRC) if _PACKAGED_QPN8_SRC.is_file() else None)
+    )
 )
 _QPN8_EXT = None
 _QPN8_MISSING_LOGGED = False

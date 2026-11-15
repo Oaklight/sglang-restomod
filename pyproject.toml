@@ -37,6 +37,9 @@ Issues = "https://github.com/Oaklight/sglang-restomod/issues"
 [project.entry-points."sglang.srt.plugins"]
 restomod = "sglang_restomod:register"
 
+[project.scripts]
+restomod = "sglang_restomod.cli:main"
+
 [tool.setuptools.dynamic]
 version = { attr = "sglang_restomod.__version__" }
 
@@ -53,6 +56,8 @@ include = ["sglang_restomod*"]
 # submodule repository is private. Run `python scripts/sync_kernels.py --check`
 # locally after touching the kernel.
 [tool.setuptools.package-data]
+"sglang_restomod" = ["configs/moe/triton_3_5_1/*.json"]
+"sglang_restomod.quant.sm70_fp8_dense" = ["csrc/*.cu"]
 "sglang_restomod.attention.v100" = ["kernels/*.cu", "kernels/SHA256SUMS", "PROVENANCE.md"]
 "sglang_restomod.attention.lsa_sm70" = ["PROVENANCE.md"]
 "sglang_restomod.linear_attn_sm70" = ["PROVENANCE.md"]

@@ -24,6 +24,14 @@ validated on hardware.
 
 ### Added
 
+- `BINARIES.toml`, `restomod doctor`, and `scripts/fetch_binaries.py` /
+  `scripts/build_binaries.py`: pin the out-of-repo artefacts (prebuilt
+  libraries, flashinfer fork, container image) by sha256 and provenance, and
+  fail loudly when a selected component's artefact is missing or mismatched
+  (#TBD).
+- The hand-tuned V100 MoE tiles (E=512, N=160) and the QPN8 decode source now
+  travel with the wheel; `SGLANG_SM70_QPN8_SRC` is an override, not a
+  requirement (#TBD).
 - Opt-in component loading through `SGLANG_RESTOMOD_COMPONENTS`; with the
   variable unset the plugin loads and changes nothing (#56).
 - `fp8_moe`: block-FP8 expert GEMM bound from the prebuilt TurboMind library

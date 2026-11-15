@@ -1,0 +1,30 @@
+# restomod.site.toml -- site-local configuration.
+#
+# Copy this file outside the repository, fill in the paths, and point
+# RESTOMOD_SITE_CONFIG at it:
+#
+#     export RESTOMOD_SITE_CONFIG=/some/site/restomod.site.toml
+#
+# Never commit the filled-in copy: check_identity.py rejects site mounts and
+# home directories, and the paths are machine inventory.
+
+[paths]
+# Keys match `resolve.site_path` in BINARIES.toml.
+turbomind_so = "/path/to/prebuilt/_sm70_turbomind_v100.so"
+marlin_dense = "/path/to/marlin_v100/vllm/_C.abi3.so"
+marlin_moe = "/path/to/marlin_v100/vllm/_moe_C.abi3.so"
+sgl_kernel_sm70 = "/path/to/site-packages/sgl_kernel/sm70/common_ops.abi3.so"
+cuda_image = "/path/to/cuda_12.8.0-devel-ubuntu24.04.sif"
+
+[build]
+# Source directories for artefacts whose produce.kind is "build".
+marlin-dense = "/path/to/marlin_v100"
+marlin-moe = "/path/to/marlin_v100"
+sgl-kernel-sm70 = "/path/to/sglang/python/sglang/kernels/aot"
+
+[components]
+# The same list the launcher exports. `restomod doctor` loads the plugin set
+# with it so "inactive" is meaningful.
+selected = "attention_v100,fp4_moe,moe_align_sm70,ple_sm70,spec_sm70,fp8_dense,fp8_lm_head,fp8_dense_quant,gdn_tilelang_sm70"
+# Optional: the file the server writes its registration record to.
+attest = "/path/to/logs/attest.json"
