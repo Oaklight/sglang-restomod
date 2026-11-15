@@ -14,6 +14,27 @@ stay light: it contains the plugin, the patch queue, recipes, and scripts, but
 
 Read first: `README.md`, `RESTMOD.md`, `BRANCHES.md`, `patches/README.md`.
 
+## This is a mod, not a mirror
+
+The project exists because SGLang does not work well on SM70. Where upstream is
+wrong for this hardware — a kernel that lowers `tl.dot` to scalar FMA, a backend
+that assumes SM80, a shape gate that refuses a Volta-only layout, a loader that
+drops the engine when it is on `PYTHONPATH` — **we change it**. That is the
+project, not an escalation, and it does not need anyone's permission.
+
+The patch queue and the component interface are the bookkeeping for those
+changes, not a gate on whether to make them. If the right fix is an upstream
+edit, write the patch and the manifest entry; if it is a component that replaces
+a path at runtime, write the component; if it is a new kernel, write the kernel.
+Do not settle for a small test or a workaround because the large fix needs a
+patch entry, and do not describe a limitation as a design choice when it is only
+an unexamined default.
+
+What still binds, and is not timidity: nothing lands without evidence that it
+works on the hardware, and nothing is called verified until a run says so. The
+confidence to change upstream is matched by the obligation to measure what the
+change did.
+
 ## Golden rules
 
 1. Never vendor the SGLang tree or copy a whole downstream project.
