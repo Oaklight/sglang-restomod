@@ -8,6 +8,23 @@ and the prefill wall fell from 3045 ms to ~1555 ms at 4096 prompt tokens. The
 kernel-level saving is the durable result; the tok/s multiple is not, because
 the box was shared and the two arms did not run the same memory fraction.
 
+## Setup
+
+A share of kernel time is not transferable across models or launch profiles, so
+the profile comes before the number.
+
+| item | value |
+|---|---|
+| host | 8 x V100-SXM2-32GB (NVLink, two islands of four), **two servers resident**: baseline on GPUs 0-3, patched on 4-7 |
+| model | Qwen3.8-Flash-Next, NVFP4, our re-export with `mtp.*` excluded from quantization |
+| precision | fp16 activations, NVFP4 weights, `--moe-runner-backend marlin` |
+| TP / EP | TP4 / EP1 per server, 32 GB per rank |
+| stack | SGLang v0.5.23 (`297e54fd105e`) + this repository's 3 patches; `sglang-restomod` at the #266 merge |
+| context | `--context-length 65536`, `--chunked-prefill-size 4096`, page size 64, HiCache 16 GB |
+| spec decode | NEXTN, 3 steps / 4 draft tokens, rejection sampling (SPEC=1) except where a row says SPEC=0 |
+| mem-fraction | **0.82 baseline arm, 0.75 patched arm** (see the confounds below) |
+| prompt | 4096 tokens requested; 4123 actual on the baseline arm, 4106 on the patched arm |
+
 ## What was replaced
 
 | kernel | Triton | TileLang | ratio |
@@ -18,6 +35,18 @@ the box was shared and the two arms did not run the same memory fraction.
 Isolated numbers, fixed-seed tensors on a free V100. The kernel pair accounted
 for **1436.9 ms of the SPEC=1 prefill wall and 63.6% of prefill kernel time**
 in a no-draft trace, which is why this pair was the first target.
+
+In the SPEC=1 wall rather than in kernel time, the same pair is **46.9%**:
+1425 ms of a 3041 ms wall on the pre-fix trace. The two shares differ because
+they have different denominators — 63.6% is of prefill *kernel* time in a
+no-draft trace, 46.9% is of the *production* wall with the draft layer running.
+Quote whichever matches the question, and never the two together.
+
+After the fix the ceiling moves rather than disappears. In the post-fix 4096
+window (1256.0 ms of kernel time) the largest remaining item is the MTP/draft
+MoE at 42.4%, then routed Marlin at 21.8%, then dense GEMM at 13.5%; the GDN
+pair is down to 1.7%. That ordering is why the next work is the draft layer's
+MoE and the decode dense kernels, not another attention kernel.
 
 Root cause, verified in the emitted code rather than inferred from timings:
 Triton 3.5.1 has no sm70 MMA lowering, so `chunk_fwd_kernel_o.ptx` contains
