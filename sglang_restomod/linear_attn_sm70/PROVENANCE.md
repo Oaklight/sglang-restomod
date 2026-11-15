@@ -85,9 +85,9 @@ Triton.
 | Field | Value |
 |---|---|
 | Repository | `Oaklight/sm70-kernels` |
-| Commit | `d75987a` (merge of PR #13) |
+| Commit | `7f7467a46eb4ddf79ea9be9dd0d0e9a61d2cb402` |
 | Files | `sm70_kernels/gdn_chunk_o/_chunk_o.py`, `sm70_kernels/gdn_chunk_h/_chunk_h.py` |
-| License | Authored in `sm70-kernels`; the repository has no `LICENSE` file at this commit and records Apache-2.0 for its other components. Flagged, not resolved. |
+| License | Apache-2.0. The repository carries `LICENSE` and a `NOTICE` naming its upstream attributions at this commit; these two kernels are original to it, which the NOTICE states. |
 | Vendored as | `_gdn_chunk_o.py`, `_gdn_chunk_h.py` -- byte copies, synced by `scripts/sync_kernels.py` from the `[[kernels.files]]` pin entries |
 
 ### What is selected

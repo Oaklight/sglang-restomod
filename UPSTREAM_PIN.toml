@@ -21,7 +21,7 @@ pinned_at = "2026-11-06"
 # SHA256SUMS next to the `.cu` files. `--check` fails on any drift.
 [kernels]
 repo = "https://github.com/Oaklight/sm70-kernels.git"
-commit = "d75987a7f334ed3c2af359679342634eec51b093"
+commit = "7f7467a46eb4ddf79ea9be9dd0d0e9a61d2cb402"
 path = "third_party/sm70-kernels"
 
 [[kernels.files]]
@@ -42,12 +42,12 @@ sha256 = "f12b45d6a1f67de2e4a3f6598d92dc58332b20eb7b1044d9f4e4a97690dd8b1a"
 [[kernels.files]]
 source = "sm70_kernels/gdn_chunk_o/_chunk_o.py"
 dest = "sglang_restomod/linear_attn_sm70/_gdn_chunk_o.py"
-sha256 = "21f455c5ba18241507e3c9b2baabf20d3d9ae5d5710906fb6f35b589af862b70"
+sha256 = "b1370f83735fb4693bcba65d79122e909f12a3e9990cfe4f975dc1570e393d13"
 
 [[kernels.files]]
 source = "sm70_kernels/gdn_chunk_h/_chunk_h.py"
 dest = "sglang_restomod/linear_attn_sm70/_gdn_chunk_h.py"
-sha256 = "87dfd30a4ff4afd556ac2a3c2b72ed11c970e835055e405e3f96e1efe2784bff"
+sha256 = "5bf333f83d8c259267301fa6bf5a4deef8f66f1b0df7f83a9d723470eabf5a19"
 
 # Latent Sparse Attention is not vendored either. The standalone package is the
 # only implementation; the `lsa_sm70` component in this repository is a shim

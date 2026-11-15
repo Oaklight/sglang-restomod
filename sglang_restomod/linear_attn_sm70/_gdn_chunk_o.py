@@ -2,6 +2,12 @@
 
 Mirrors sglang fla chunk_o.py chunk_fwd_kernel_o. Shapes are per TP rank.
 The gating is applied between the two gemms, matching the reference order.
+
+Domain: this kernel does not recur, but it consumes the chunk_h state. That
+recurrence is not contractive for arbitrary inputs: on unnormalized random w/u,
+both the Triton reference and the TileLang chunk_h produce identical failure
+counts (h nan=11,795,324, inf=1,160, absmax=65,504). Keep keys l2-normalized
+and w/u scaled as the model does; a NaN here is the input regime, not the port.
 """
 import tilelang
 import tilelang.language as T

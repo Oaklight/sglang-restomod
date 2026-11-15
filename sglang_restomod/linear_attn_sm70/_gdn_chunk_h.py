@@ -5,6 +5,13 @@ h_t     = exp(g_last_t) * h_{t-1} + v_new_t_scaled^T @ k_t
 h[t] is stored before the update (the state entering chunk t), matching the
 Triton reference; the final state is written back to S0 in place.
 State is carried in an fp32 fragment and cast to fp16 only as a gemm operand.
+
+Domain: h_t = exp(g_last) * h_{t-1} + v_new^T k is not contractive for
+arbitrary inputs. On unnormalized random w/u, this kernel and the Triton
+reference produce identical failure counts (h nan=11,795,324, inf=1,160,
+absmax=65,504), so the limit is the recurrence, not the port. The model keeps
+it in range with l2-normalized keys, w scaled by K^-0.5, u scaled by 0.5, and a
+chunk-local decay cumsum.
 """
 import tilelang
 import tilelang.language as T
