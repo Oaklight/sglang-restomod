@@ -76,9 +76,21 @@ stack therefore measures the baseline's run-to-run variation, not the kernel
 under test. Reporting either outcome as evidence for the pair would be wrong.
 
 `tie_word_embeddings` is false for this checkpoint, so the exact tie is not a
-shared embedding row. It is unexplained. Either the model produced two
-identical logits, or the top-k reporting path is repeating a value; that is
-worth one look before the tie is ever used as evidence of anything.
+shared embedding row. The two entries carry **distinct ids** (`15` and `16`),
+which rules out a reporting path that repeats one value under one id, and the
+bf16 `lm_head` rows behind them differ by up to 0.423 — so it is not identical
+weights either. That leaves two candidates: a collapse introduced after load
+(the head is re-quantized by `fp8_lm_head` in this component list, so the
+level count matters and was not read back from the loaded module), or a
+reporting path that duplicates a value across distinct ids. Unresolved; the
+decisive measurement is to dump the raw logits for both ids at that step and
+compare the bits, which was not done.
+
+The variation is **per call, not fixed at start**: both arms diverged
+cold-to-cold *within one server process*, so anything chosen once at init
+(kernel selection, a split-k value, custom-allreduce presence) cannot explain
+it. That leaves per-call state or a race. Atomic accumulation of split-k parts
+is compatible with this and remains untested.
 
 ## Open, and not established here
 
