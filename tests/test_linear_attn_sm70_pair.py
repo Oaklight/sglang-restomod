@@ -374,3 +374,38 @@ def test_switch_rejects_an_unknown_value(pair, monkeypatch):
     monkeypatch.setenv("SM70_GDN_TILELANG", "maybe")
     with pytest.raises(ValueError):
         pair.enabled()
+
+
+def test_chunk_o_declines_a_multi_span_and_reaches_triton(pair, monkeypatch):
+    """A batched forward passes N+1 offsets; the gate must decline rather than guess."""
+    original = _Recorder(result="triton_o")
+    pair._ORIGINALS["chunk_fwd_o"] = original
+    monkeypatch.setattr(pair, "_device_reason", lambda *a: "")
+    monkeypatch.setattr(pair, "_run_chunk_o", lambda *a: pytest.fail("ran on multi-span"))
+
+    q, k, v, h, g = _chunk_o_inputs()
+    spans = torch.tensor([0, 64, T], dtype=torch.int64)
+    assert pair.chunk_fwd_o(q, k, v, h, g=g, cu_seqlens=spans) == "triton_o"
+    assert len(original.calls) == 1
+
+
+def test_chunk_h_declines_a_multi_span_and_reaches_triton(pair, monkeypatch):
+    original = _Recorder(result=("triton_h", "triton_v"))
+    pair._ORIGINALS["chunk_gated_delta_rule_fwd_h"] = original
+    monkeypatch.setattr(pair, "_device_reason", lambda *a: "")
+    monkeypatch.setattr(pair, "_run_fwd_h", lambda *a: pytest.fail("ran on multi-span"))
+
+    k, w, u, g, state = _chunk_h_inputs()
+    idx = torch.zeros(1, dtype=torch.int64)
+    spans = torch.tensor([0, 64, T], dtype=torch.int64)
+    result = pair.chunk_gated_delta_rule_fwd_h(
+        k=k,
+        w=w,
+        u=u,
+        g=g,
+        initial_state=state,
+        initial_state_indices=idx,
+        cu_seqlens=spans,
+    )
+    assert result == ("triton_h", "triton_v")
+    assert len(original.calls) == 1
