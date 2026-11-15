@@ -44,6 +44,25 @@ somewhere to point:
 The acceptance gate is therefore the draft's accept rate, not the step time: a
 faster draft that accepts less is a trade, and it is reported as one.
 
+## Measured effect, and why it is off by default
+
+A cold 4096-token prefill on an isolated lambda6 (TP4, co-tenants at ~1.7 GiB
+per card) profiles to 7139 kernels / 994.1 ms, of which the draft's
+`fused_moe_kernel` is **40.2 ms, 4.0%** (25.9 ms gate_up over the full prompt,
+13.7 ms down). So this conversion can save at most ~30 ms of ~1000 ms —
+**about 3% of prefill**, not the third that a 42.4% share in an earlier note
+implied; that share was withdrawn in
+`docs/runs/2026-11-15-gdn-tilelang-prefill-ab.md`.
+
+The draft's *total* prefill cost is still real and is not this component's
+target: SPEC=1 prefill is 3439 tok/s against 3593-3639 at SPEC=0 on the same
+box, so the whole draft pass is ~15% of the wall, of which the MoE is 4 points
+of kernel time.
+
+That is why the component ships default-off and unmeasured on the served path:
+its GPU-marked tests were not run and no accept A/B was taken, because the
+effect did not justify two more model loads.
+
 ## Separability
 
 The ladder below is cheap to walk because the two halves are separate files:
