@@ -174,20 +174,6 @@ def test_chunk_h_matches_triton_with_a_single_span():
     _assert_close(got_pool[2], ref_pool[2], "chunk_h single span final state")
 
 
-def test_install_reaches_the_engine_caller():
-    torch, gdn_pair = _skip_unless_usable()
-    from sglang.kernels.ops.attention.fla import chunk as fla_chunk
-    from sglang.kernels.ops.attention.fla import chunk_delta_h, chunk_o
-
-    if gdn_pair._INSTALLED:
-        pytest.skip("the component was already installed by the plugin loader")
-    assert gdn_pair.install() is True
-    assert fla_chunk.chunk_fwd_o is gdn_pair.chunk_fwd_o
-    assert fla_chunk.chunk_gated_delta_rule_fwd_h is gdn_pair.chunk_gated_delta_rule_fwd_h
-    assert chunk_o.chunk_fwd_o is gdn_pair.chunk_fwd_o
-    assert chunk_delta_h.chunk_gated_delta_rule_fwd_h is gdn_pair.chunk_gated_delta_rule_fwd_h
-
-
 def test_chunk_o_matches_triton_on_a_partial_tail():
     """A chunked prefill ends on a partial chunk; the padded call must still agree."""
     torch, gdn_pair = _skip_unless_usable()
@@ -224,3 +210,17 @@ def test_chunk_h_matches_triton_on_a_partial_tail():
     _assert_close(got_h, ref_h, "chunk_h partial tail states")
     _assert_close(got_v, ref_v, "chunk_h partial tail v_new")
     _assert_close(got_pool[2], ref_pool[2], "chunk_h partial tail final state")
+
+
+def test_install_reaches_the_engine_caller():
+    torch, gdn_pair = _skip_unless_usable()
+    from sglang.kernels.ops.attention.fla import chunk as fla_chunk
+    from sglang.kernels.ops.attention.fla import chunk_delta_h, chunk_o
+
+    if gdn_pair._INSTALLED:
+        pytest.skip("the component was already installed by the plugin loader")
+    assert gdn_pair.install() is True
+    assert fla_chunk.chunk_fwd_o is gdn_pair.chunk_fwd_o
+    assert fla_chunk.chunk_gated_delta_rule_fwd_h is gdn_pair.chunk_gated_delta_rule_fwd_h
+    assert chunk_o.chunk_fwd_o is gdn_pair.chunk_fwd_o
+    assert chunk_delta_h.chunk_gated_delta_rule_fwd_h is gdn_pair.chunk_gated_delta_rule_fwd_h
