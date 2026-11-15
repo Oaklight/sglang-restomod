@@ -14,7 +14,7 @@ like one.
    # Tesla V100-SXM2-32GB, 7.0
    ```
 
-   Do not use lambda5: it is a T4 (sm_75), and the SM70 tests self-skip there,
+   Do not use gpu-host-5: it is a T4 (sm_75), and the SM70 tests self-skip there,
    so the receipt is green and about the wrong machine. Check the device name,
    not free memory.
 

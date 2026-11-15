@@ -7,7 +7,7 @@ Acceptance is 3.879 at 4k and 4.000 at 32k; step time is 27.08, 27.30 and
 ## What was run
 
 The receipted Flash-Next NVFP4 shape: 4x V100-SXM2-32GB on one island
-(lambda6 GPUs 0-3), TP4, `--ep-size 1`, `--ple-offload-embedding`, MTP
+(gpu-host-6 GPUs 0-3), TP4, `--ep-size 1`, `--ple-offload-embedding`, MTP
 `--speculative-num-steps 3 --speculative-eagle-topk 1
 --speculative-num-draft-tokens 4` with rejection sampling, greedy, page size
 64. Components: `attention_v100,fp4_moe,moe_align_sm70,ple_sm70,spec_sm70`.
@@ -16,7 +16,7 @@ The receipted Flash-Next NVFP4 shape: 4x V100-SXM2-32GB on one island
 |---|---|
 | Tree | main `39d4bc7b`, engine digest `44bfdfa4…` (`scripts/tree_hash.sh`, pin 297e54fd) |
 | Engine | v0.5.23 site at `work/pin-site-v0.5.23-patched`: **0002 applied** (`ipc.cuh` `eb19c88b…`), **0001 and 0003 not applied** |
-| Host | lambda6 GPUs 0-3, driver 550.163.01, CUDA 12.8 image; entry inventory all four cards at kmarlor baseline, no server process |
+| Host | gpu-host-6 GPUs 0-3, driver 550.163.01, CUDA 12.8 image; entry inventory all four cards at kmarlor baseline, no server process |
 | Kernels | issue178 marlin build (`_C.so`, 276,745,992 B), `SM70_TURBOMIND_SO` and `SGLANG_SM70_TURBOMIND_SO` |
 
 The patch state of the site was hashed directly rather than taken from its
