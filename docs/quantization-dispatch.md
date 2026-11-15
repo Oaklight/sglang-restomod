@@ -164,9 +164,21 @@ Every cell below needs a run and a receipt before it is called validated.
 - NVFP4 prefill is flat in context: cold prefill holds at roughly 900 tok/s
   from 8k to 64k prompt tokens on Flash-Next
   (`docs/runs/2026-11-15-flash-next-nvfp4-tp4-context-cold-warm.md`). That run
-  attributes the flat curve to the expert GEMM shape and marks the
-  attribution as inference; a kernel-level profile is needed before the
-  work is placed.
+  attributed the flat curve to the expert GEMM shape as inference. A later
+  kernel-level record on the same model and stack (Flash-Next NVFP4, TP4,
+  v0.5.23, 4,096-token prompts) places the two GDN Triton prefill kernels at
+  1436.9 ms and 63.6% of prefill kernel time in a no-draft trace, or 46.9% of
+  the SPEC=1 wall; the denominators differ, so quote one at a time. The
+  TileLang replacement saved 1390 ms of kernel time (1.84x patch-attributable;
+  1.96x is what the shared box produced). The cause is upstream: Triton 3.5.1
+  has no SM70 MMA lowering, so `chunk_fwd_kernel_o` compiles to scalar FMA with
+  5,258 register spills, while TileLang emits `mma.sync`.
+- After that replacement the prefill ceiling moves rather than disappears: the
+  largest remaining item is the MTP/draft MoE at 42.4% of kernel time, then
+  routed Marlin at 21.8%, then dense GEMM at 13.5%, with the GDN pair at 1.7%.
+  The next prefill target is the draft layer's MoE, not another attention
+  kernel. The GDN integration is still a site-local monkeypatch, not a
+  component in this repository.
 - 1Cat NVFP4 dense kernel extraction (#37) for the 27B memory path.
 - Shared expert and router stay BF16 in the FP8 checkpoint; whether to requantize
   them is #33.

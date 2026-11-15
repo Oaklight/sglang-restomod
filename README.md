@@ -8,7 +8,11 @@
 [![CI](https://github.com/Oaklight/sglang-restomod/actions/workflows/restomod-ci.yml/badge.svg)](https://github.com/Oaklight/sglang-restomod/actions/workflows/restomod-ci.yml)
 [![License](https://img.shields.io/badge/License-Apache--2.0-green.svg)](LICENSE)
 
-A **lightweight downstream layer** for [SGLang](https://github.com/sgl-project/sglang).
+A **lightweight downstream layer** for [SGLang](https://github.com/sgl-project/sglang),
+and a mod of it for SM70 rather than a mirror. Where upstream is wrong for
+this hardware, this layer changes it; the patch queue and the component
+interface are the bookkeeping for those changes, not a gate on whether to
+make them.
 
 `main` does not contain the SGLang source tree. It contains only:
 
@@ -159,6 +163,12 @@ How to read it:
   tokens. The run reads that flat curve as an expert-GEMM shape problem and
   records the reading as inference, not a profile:
   [context run](docs/runs/2026-11-15-flash-next-nvfp4-tp4-context-cold-warm.md).
+  A later kernel-level record on the same model and stack puts the GDN prefill
+  pair at 63.6% of prefill kernel time (46.9% of the SPEC=1 wall) and saves
+  1390 ms of kernel time; the cause is upstream, where Triton 3.5.1 has no
+  SM70 MMA lowering and compiles `tl.dot` to scalar FMA. The result is a lab
+  one from a site-local monkeypatch, not a property of this layer:
+  [GDN run](docs/runs/2026-11-15-gdn-tilelang-prefill-ab.md).
 - FP8 rows use 8 cards, NVFP4 rows use 4. Per-card throughput is the
   comparable quantity, not the row total.
 - The `evidence-175a630-e5m2-shift` and `evidence-79aef7a-vec-gather` rows
