@@ -18,8 +18,14 @@ as if measured, and both were caught by someone re-deriving them.
 
 ## Headline
 
-At 4 cards: **1Cat is 1.36x our decode throughput** — 129.6 vs 95.3 output
-tok/s, i.e. we trail by 27%.
+At 4 cards, SPEC=1: **1Cat is 1.36x our decode throughput** — 129.6 vs 95.3
+output tok/s, i.e. we trail by 27%. The 95.3 is one lambda1 arm measured with
+the old bench; a clean-island SPEC=1 run is in flight and will restate the
+absolute value, not the comparison.
+
+At SPEC=0 we measure **58.5-58.8 tok/s** (accept 1 by construction) and have
+nothing to compare it to: 1Cat publishes only its MTP arm. There is no condition
+on which we are ahead today.
 
 **The prefill ratio is withheld from this revision.** The only component-on
 prefill pair this lane holds (3450-3565 tok/s) was measured with a co-tenant on
@@ -172,16 +178,25 @@ The SPEC=0 row is faster per step only because it emits one token per step. The
 comparable pair is the SPEC=1 row; there 1Cat is 1.36x ahead, i.e. we trail by
 27%.
 
+An independent SPEC=0 arm on a clean 4-card island measured **17.09 ms/step =
+58.5 tok/s**. It carried no speculative flags, so there is no `spec_verify_ct`
+to divide by: one step, one token, accept exactly 1. The 17.09 is a measured
+step time and 58.5 is its arithmetic consequence, labelled that way; it agrees
+with the 58.8 above across two boxes.
+
 ### Correction to the first version of this table
 
 It published 33.6 ms/step at accept 3.20. Both numbers came from `bench.py`,
 which reads `spec_verify_ct` from one extra long request taken *after* the timed
 runs: that request took 40 steps (accept 3.20), while the timed long runs
 recorded 48, 36 and 48 steps (accept 2.67, 3.56, 2.67). No single request
-produced "33.6 ms at 3.20". Re-derived from its own three inputs, our accept is
-2.67 on the median run and the marginal step is 28.0 ms. **`tok/s` is
-unaffected**: it is `1 / slope` and never touches `accept`. The defect is in the
-bench's cross-check, not in the timings.
+produced "33.6 ms at 3.20". **28.0 ms is re-derived under the corrected pairing
+from the recorded requests — it is not a number the fixed tool printed**, since
+the tool did not exist when that run was made. The fixed tool can confirm or
+refute the pairing on new data; it cannot re-aggregate an old run. From those
+three inputs, our accept is 2.67 on the median run and the marginal step is
+28.0 ms. **`tok/s` is unaffected**: it is `1 / slope` and never touches
+`accept`. The defect is in the old bench's cross-check, not in the timings.
 
 ### Accept definition
 
