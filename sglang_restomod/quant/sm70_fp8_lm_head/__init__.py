@@ -23,6 +23,8 @@ import logging
 
 import torch
 
+from sglang_restomod import attest
+
 logger = logging.getLogger(__name__)
 
 BLOCK = 128
@@ -71,7 +73,9 @@ def quantize_lm_head(model) -> bool:
     method.process_weights_after_loading(head)
     logger.info(
         "sm70_fp8_lm_head: %s quantized to block FP8 (%d x %d)",
-        getattr(head, "prefix", "lm_head"), q.shape[0], q.shape[1],
+        getattr(head, "prefix", "lm_head"),
+        q.shape[0],
+        q.shape[1],
     )
     return True
 
@@ -85,9 +89,11 @@ def install() -> bool:
 
     if not getattr(Fp8LinearMethod.apply, "_restomod_sm70", False):
         logger.warning("sm70_fp8_lm_head: fp8_dense is not installed, skipped")
+        attest.inactive("fp8_lm_head", "fp8_dense is not installed")
         return False
     if not kernels.can_use_sm70_turbomind_fp8([BLOCK, BLOCK]):
         logger.warning("sm70_fp8_lm_head: the TurboMind FP8 kernel is unavailable, skipped")
+        attest.inactive("fp8_lm_head", "the TurboMind FP8 kernel is unavailable")
         return False
 
     original = ModelRunner.load_model

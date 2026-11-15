@@ -37,6 +37,8 @@ import os
 
 import torch
 
+from sglang_restomod import attest
+
 logger = logging.getLogger(__name__)
 
 BLOCK = 128
@@ -72,9 +74,7 @@ def _admitted(name: str, module) -> bool:
         return False
     if not (_is_linear_base(module) or isinstance(module, torch.nn.Linear)):
         return False
-    if _is_linear_base(module) and "Unquantized" not in type(
-        module.quant_method
-    ).__name__:
+    if _is_linear_base(module) and "Unquantized" not in type(module.quant_method).__name__:
         return False
     n, k = weight.shape
     return n % BLOCK == 0 and k % BLOCK == 0
@@ -101,9 +101,7 @@ def _is_linear_base(module) -> bool:
     if _LINEAR_BASE is not None and isinstance(module, _LINEAR_BASE):
         return True
     # Test doubles and out-of-tree linear classes keep the old duck check.
-    return hasattr(module, "quant_method") and hasattr(
-        module, "output_size_per_partition"
-    )
+    return hasattr(module, "quant_method") and hasattr(module, "output_size_per_partition")
 
 
 def _plain_linear_forward(self, x):
@@ -145,9 +143,7 @@ def quantize_dense_linears(model) -> tuple[int, int]:
             converted += 1
         except Exception as exc:  # noqa: BLE001 - one bad layer must not stop the rest
             refused += 1
-            logger.warning(
-                "sm70_fp8_dense_quant: %s stays on its original path (%s)", name, exc
-            )
+            logger.warning("sm70_fp8_dense_quant: %s stays on its original path (%s)", name, exc)
     return converted, refused
 
 
@@ -192,9 +188,7 @@ def refusal_reason(name: str, module) -> str | None:
         return "already-fp8"
     if not (_is_linear_base(module) or isinstance(module, torch.nn.Linear)):
         return "not-a-linear"
-    if _is_linear_base(module) and "Unquantized" not in type(
-        module.quant_method
-    ).__name__:
+    if _is_linear_base(module) and "Unquantized" not in type(module.quant_method).__name__:
         return "method:" + type(module.quant_method).__name__
     n, k = weight.shape
     if n % BLOCK or k % BLOCK:
@@ -249,9 +243,11 @@ def install() -> bool:
 
     if not getattr(Fp8LinearMethod.apply, "_restomod_sm70", False):
         logger.warning("sm70_fp8_dense_quant: fp8_dense is not installed, skipped")
+        attest.inactive("fp8_dense_quant", "fp8_dense is not installed")
         return False
     if not kernels.can_use_sm70_turbomind_fp8([BLOCK, BLOCK]):
         logger.warning("sm70_fp8_dense_quant: the TurboMind FP8 kernel is unavailable")
+        attest.inactive("fp8_dense_quant", "the TurboMind FP8 kernel is unavailable")
         return False
 
     original = ModelRunner.load_model

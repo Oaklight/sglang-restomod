@@ -44,12 +44,21 @@ _STATE: dict[str, Any] = {
     "components": {},
     "loaded": [],
     "failed": [],
+    "inactive": [],
 }
 
 
 def reset() -> None:
     """Clear the record. For tests."""
-    _STATE.update({"selected": [], "components": {}, "loaded": [], "failed": []})
+    _STATE.update(
+        {
+            "selected": [],
+            "components": {},
+            "loaded": [],
+            "failed": [],
+            "inactive": [],
+        }
+    )
 
 
 def set_selected(names: list[str]) -> None:
@@ -87,6 +96,35 @@ def record(name: str, ok: bool, detail: str = "") -> None:
             _STATE["failed"].append(name)
 
 
+def inactive(name: str, reason: str) -> None:
+    """Record that a component registered but will do nothing.
+
+    Neither of the other two states describes this. ``failed`` is wrong: the
+    component loaded cleanly and the server is healthy. ``loaded`` alone is
+    also wrong: it says the component is being used. On 2026-11-15 three
+    components took this path (the SM70 block-FP8 library was not resolvable),
+    the server served on bf16 dense linears under the same component list, and
+    every gate available at the time reported success.
+
+    Must never raise: this is observability, not control flow.
+    """
+    try:
+        text = str(reason)
+    except Exception:  # noqa: BLE001 - a bad reason must not lose the record
+        text = "<unprintable reason>"
+    try:
+        entry = _STATE["components"].setdefault(name, {"ok": True})
+        entry["detail"] = "registered, inactive: " + text
+        if name not in _STATE["inactive"]:
+            _STATE["inactive"].append(name)
+        if name in _STATE["failed"]:
+            _STATE["failed"].remove(name)
+        if name not in _STATE["loaded"]:
+            _STATE["loaded"].append(name)
+    except Exception:  # noqa: BLE001 - see the module docstring
+        logger.debug("attest.inactive failed for %s", name, exc_info=True)
+
+
 def snapshot() -> dict[str, Any]:
     """Everything recorded so far, plus the engine identity."""
     out = {
@@ -94,6 +132,7 @@ def snapshot() -> dict[str, Any]:
         "selected": list(_STATE["selected"]),
         "loaded": list(_STATE["loaded"]),
         "failed": list(_STATE["failed"]),
+        "inactive": list(_STATE["inactive"]),
         "components": {k: dict(v) for k, v in _STATE["components"].items()},
     }
     # A component selected but never recorded did not get a chance to run, which
