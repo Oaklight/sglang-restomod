@@ -42,6 +42,19 @@ _KERNEL_UNAVAILABLE = False
 MIN_TOKENS_ENV = "SGLANG_V100_GDN_TILELANG_MIN_TOKENS"
 DEFAULT_MIN_TOKENS = 256
 
+# Which substitution this component installs; see the package docstring.
+MODE_ENV = "SGLANG_V100_GDN_TILELANG_IMPL"
+MODES = ("auto", "pair", "whole")
+
+
+def impl_mode() -> str:
+    raw = os.environ.get(MODE_ENV, "auto").strip().lower()
+    if not raw:
+        return "auto"
+    if raw not in MODES:
+        raise ValueError(f"{MODE_ENV} must be one of {MODES}, got {raw!r}.")
+    return raw
+
 _KEY_DIM = 128
 _VALUE_DIM = 128
 _CHUNK_SIZE = 64
