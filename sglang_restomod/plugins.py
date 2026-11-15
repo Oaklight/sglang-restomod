@@ -81,6 +81,14 @@ COMPONENTS: dict[str, Component] = {
         module="sglang_restomod.quant.sm70_fp4_moe",
         description="SM70 NVFP4 expert GEMM through the marlin_v100 extension",
     ),
+    "mtp_fp4_moe": Component(
+        name="mtp_fp4_moe",
+        module="sglang_restomod.quant.sm70_mtp_fp4_moe",
+        description=(
+            "Quantize the speculative draft's unquantized experts to NVFP4 at "
+            "load so they run on the SM70 Marlin expert GEMM"
+        ),
+    ),
     "fp4_dense": Component(
         name="fp4_dense",
         module="sglang_restomod.quant.sm70_fp4_dense",
