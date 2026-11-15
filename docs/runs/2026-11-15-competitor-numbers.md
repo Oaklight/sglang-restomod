@@ -56,11 +56,10 @@ and have nothing to compare it to: 1Cat publishes only its MTP arm.
 
 **Prefill**, our first pair with MTP on both sides: **2971 tok/s**, SPEC=1 on
 lambda6, cold (`cached=0`), against 1Cat's 4825 MTP4 — **1.62x theirs, we trail
-38%**. Like for like in arm; **not established as the same configuration** (see
-below), and on a box that carries about **1.7 GiB per card of someone else's
-resident allocations**, idle but held. A SPEC=0 arm on the same lambda6 box is
-loading; until it and multi-node's diff land, the 38% is **unattributed**. The
-contended-island 3450-3565 stays withheld from the verdict.
+38%**. Like for like in arm, unlike in box: the same arm on the reported clean
+island runs at 4048-4092 tok/s, so about **13-14% of that gap is the lambda6
+host** and the rest is not attributed. The contended-island 3450-3565 stays
+withheld from the verdict.
 
 **Cross-quant caveat that applies to the whole note.** Strata runs IQ2_XS
 (35.5 GB of experts) against our fp8/fp4 (125.9 GiB). That is not a tok/s
@@ -146,9 +145,9 @@ these numbers**.
 |---|---|---|
 | 1 | not runnable | not runnable |
 | 2 | not runnable | not runnable |
-| 4 (single node) | **3450-3565 reported, contended island, components include `gdn_tilelang_sm70` — withheld from the verdict**; **4199 reported, SPEC=0, clean island**; **1549 measured, pair off, SPEC=1** (4121 prompt tokens, 2644 ms median); 1663 in the SPEC=0 arm | **95.3 measured, SPEC=1** (slope 10.50 ms/output-token; 128 completion tokens, 48 verify steps, 1627 ms long run, short 32 tokens in 619 ms) → accept 2.67 → 28.0 ms/step. Accept varied by request: 2.67 / 3.56 / 2.67 at 48 / 36 / 48 steps, so the marginal step is 28.0-37.4 ms. **58.8 measured, SPEC=0** (slope 17.00 ms/token, accept 1); 1Cat ships no SPEC=0 arm, so it has no peer |
+| 4 (single node) | **3450-3565 reported, contended island, components include `gdn_tilelang_sm70` — withheld from the verdict**; **4199 reported, SPEC=0, host unconfirmed**; **1549 measured, pair off, SPEC=1** (4121 prompt tokens, 2644 ms median); 1663 in the SPEC=0 arm | **95.3 measured, SPEC=1** (slope 10.50 ms/output-token; 128 completion tokens, 48 verify steps, 1627 ms long run, short 32 tokens in 619 ms) → accept 2.67 → 28.0 ms/step. Accept varied by request: 2.67 / 3.56 / 2.67 at 48 / 36 / 48 steps, so the marginal step is 28.0-37.4 ms. **58.8 measured, SPEC=0** (slope 17.00 ms/token, accept 1); 1Cat ships no SPEC=0 arm, so it has no peer |
 | 4 (dual node) | comm-bound at 66% (reported), no number held here | — |
-| 4 (single node, lambda6) | **2971 measured, SPEC=1** (4121 prompt tokens, 1387 ms median, cold `cached=0`, spread 5.9%) | **115.5 measured median, SPEC=1** (104-145 across three prompts; per-run triples in the comparability table); SPEC=0 arm in flight |
+| 4 (single node, lambda6) | **3593 measured, SPEC=0** (1147 ms, runs 1-2, run 0 JIT-excluded, spread 5.4%); **2971 measured, SPEC=1** (4121 prompt tokens, 1387 ms median, cold `cached=0`, spread 5.9%) | **115.5 measured median, SPEC=1** (104-145 across three prompts; per-run triples in the comparability table); **59.0 measured, SPEC=0** (16.95 ms/step, accept 1) |
 | 8 | untested | untested |
 
 Why 1 and 2 cards are called *not runnable* rather than empty: Flash-Next
@@ -175,38 +174,40 @@ box, same tree, same prompt, same `LATB=triton`:
 My pair-off numbers on lambda1 — 1549 at SPEC=1, 1663 at SPEC=0, a different
 box — are that same configuration, not a conflicting result.
 
-Neither arm of that A/B has run on a clean island, so its **magnitude** is open.
-A clean 4-card island reports **4199 tok/s** for a pair-on **SPEC=0** arm; a
-SPEC=1 arm there did not complete before those cards were taken, which is why the
-SPEC=1 prefill we hold is the 2971 above, from lambda6. The direction holds in
-every pairing we hold; the size of the win does not, and the contended numbers are
-not quotable as ours.
+Neither arm of that A/B has run on a clean island, so its magnitude is open.
 
-### The two boxes are not established as the same configuration
+**What the prefill pairs now decompose into.** The MTP factor is measured on one
+box; the host factor is only reported:
 
-Counting the known gates in each run's log (counted by the coordinator; I
-re-counted the lambda6 side myself):
+- measured, lambda6: SPEC=0 3593 → SPEC=1 2971 tok/s, factor **1.21**
+- reported, clean 4-card island pair-on SPEC=0 at 1007-1018 ms, i.e. 4048-4092
+  tok/s, against lambda6's 1147 ms: factor **1.13-1.14**
 
-| gate | lambda4 (the 4199 run) | lambda6 (the 2971 run) |
-|---|---:|---:|
-| `Using default MoE kernel config` | 0 | **8** |
-| `Setup Custom allreduce failed` | 0 | 0 |
+Product 1.37-1.38, which is exactly the ratio between the reported 4048-4092 and
+2971 (1.36-1.38). So on the only lambda4 evidence that exists, the gap is **fully
+accounted for by host x MTP with no residual**. The 4199 implies 976 ms, about 3%
+faster than the reported 1007-1018 ms; using it leaves 2-3% unexplained, which is
+one more reason not to build on it.
 
-Same model, same prompt size, same site path — but lambda4 never entered the
-Triton fused-MoE config lookup and lambda6 entered it eight times. Both trees
-carry identical `configs/triton_3_5_1/` contents and neither has a V100 or
-`E=512` entry, so this is **not a missing file: it is a different MoE code path**.
-Expert GEMM tiling is prefill-side, so it is a candidate cause of much of the
-2971-vs-4199 difference, and it is a configuration difference rather than a host
-one.
+### The MoE-path lead is closed, and it closed the other way
 
-My own count is unambiguous on the side I can see: of fourteen
-`launch-11480*.log` files, `Using default MoE kernel config` appears only in
-`launch-11480-l6spec1c.log` — the launch that produced 2971 — eight times, and
-zero in every other, including the lambda4 SPEC=1 attempt.
+`Using default MoE kernel config` is entered **only under SPEC=1**: eight times on
+lambda6 SPEC=1, zero on lambda6 SPEC=0 on the same box (`fused_moe_kernel took`
+also 0; `GDN prefill tracking guard installed` 4 in both). So the Triton fused-MoE
+runner is the **draft model's** experts, not the target's and not a host property.
+lambda4's log showing zero was never evidence of a better path — that server never
+served a request, so it never reached the first forward where the lookup happens.
+Dropped from the candidate list; the remaining cause is the box.
 
-Until multi-node's diff lands the prefill gap has three candidate causes — MTP
-cost, box, MoE path — and this note adopts none of them.
+### The 4199 is reported, host unconfirmed
+
+No lambda4 log in the shared log directory contains a served request; every
+`launch-11480*.log` carrying `Prefill batch` lines is lambda6 or lambda1. The 4199
+quoted earlier as "lambda4 0-3, clean island" therefore has **no log I can
+produce**. It is corroborated only by the reported 1007-1018 ms and cannot be
+attributed to a host from the record. It stays in the table as **reported, host
+unconfirmed**; no row's verdict depends on it, and every decomposition that uses
+it says so.
 
 Rule: **never cite a prefill number without the component list.** The
 difference is invisible at `register()` time and does not appear as a log
@@ -298,15 +299,24 @@ here explicitly, with the arm each project actually publishes.
 
 ### Our own two arms, one box
 
-Same box (lambda1), same protocol, GDN pair off, one variable:
+lambda6 GPUs 0-3, one tree, one prompt set, one variable:
 
-- prefill: SPEC=0 1663 → SPEC=1 1549 tok/s, so MTP **costs 6.9%** of prefill
-- decode: SPEC=0 58.8 → SPEC=1 95.3 tok/s, so MTP **buys 1.62x**
+| arm | prefill | decode |
+|---|---:|---:|
+| SPEC=0 | **3593 tok/s** (1147 ms, runs 1-2; run 0 excluded) | 59.0 tok/s (16.95 ms/step, accept 1) |
+| SPEC=1 | **2971 tok/s** (1387 ms) | 115.5 tok/s (26.8 ms/step, accept ~3.0 marginal) |
+| MTP cost / benefit | **-17.3%** | **x1.96** |
 
-That is the local answer to "what does MTP cost and buy here", and it is the only
-pair in this note whose arms share a box, a protocol and a run series. A SPEC=0
-arm on lambda6 is in flight and will give a second pair on a different box; it is
-not folded into this one.
+That is the answer to "what does MTP cost and buy here". It replaces an earlier
+lambda1-derived pair (prefill 1663 → 1549, -6.9%; decode 58.8 → 95.3, x1.62),
+which is kept as a second observation from a different box and never presented as
+a range spanning both. The two MTP costs, 6.9% and 17.3%, disagree and the
+difference is itself unexplained.
+
+SPEC=0 prefill runs were 1487 / 1178 / 1116 ms. Run 0 is the JIT run and is
+**excluded**; runs 1-2 give 1147 ms median and a 5.4% spread. Printed with run 0
+the median is 1178 ms and the spread 31.4%, which is a warm/cold artifact and not
+the arm.
 
 ### Against 1Cat — SPEC=1 to SPEC=1
 
@@ -321,10 +331,9 @@ does not exist.
 
 The decode row is like for like in arm. The prefill row now is too, for the first
 time: 2971 is our SPEC=1 arm on lambda6 and 4825 is 1Cat's MTP4. That is like for
-like in arm, unlike in box, and **not established as the same configuration** —
-the lambda6 log enters the default MoE kernel path eight times where the lambda4
-log does not. It is a better claim and a worse number than the 4199 comparison it
-replaces, and the 38% is **unattributed** until multi-node's diff lands. 4199
+like in arm and unlike in box: the same arm on the reported clean island runs at
+4048-4092 tok/s, so roughly 13-14% of the 38% is the lambda6 host rather than
+anything we do differently. The rest is not attributed. 4199
 stays in the table only because it is the one clean-island prefill we hold; it is
 a SPEC=0 arm against their MTP4, so it is recorded and not quoted as a ratio.
 
@@ -378,6 +387,9 @@ has no Strata peer; 1Cat ships no 1/2/8-card recipe.
   (MTP in FP8); we served model-sm70 (`mtp.*` unquantized).
 - 1Cat's attention block size is 816 (mamba page alignment); ours is page 64.
   Attention tiles are not like-for-like.
+- The SPEC=0 decode long run 2 returned **121 completion tokens, not 128** — a
+  truncated generation. It is excluded from per-run accept arithmetic; the
+  16.95 ms step is unaffected because the three runs agree to 4%.
 - Prefill throughput moves with cache hits. Any number quoted without
   unique-prompt / cold-cache and prompt length is not comparable.
 - Rate numerator: `bench.py` prints `requested_tokens / elapsed` (4096 / 2644 ms
