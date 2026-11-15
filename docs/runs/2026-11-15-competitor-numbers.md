@@ -18,22 +18,41 @@ as if measured, and both were caught by someone re-deriving them.
 
 ## Headline
 
-At 4 cards, SPEC=1: **1Cat is 1.36x our decode throughput** — 129.6 vs 95.3
-output tok/s, i.e. we trail by 27%. The 95.3 is one lambda1 arm measured with
-the old bench; a clean-island SPEC=1 run is in flight and will restate the
-absolute value, not the comparison.
+At 4 cards, SPEC=1: **decode is not distinguishable from parity with 1Cat.** Our
+median is **115.5 tok/s** on lambda6 against their 129.6 — a 12% gap — while our
+own three-prompt spread is **104-145 tok/s**, about four times that gap. Any
+claim finer than "roughly level" sits inside our own variance, and 1Cat's side is
+a single measurement.
 
-At SPEC=0 we measure **58.5-58.8 tok/s** (accept 1 by construction) and have
-nothing to compare it to: 1Cat publishes only its MTP arm. There is no condition
-on which we are ahead today.
+The decomposition survives the variance, so it is the useful statement:
 
-**The prefill ratio is withheld from this revision.** The only component-on
-prefill pair this lane holds (3450-3565 tok/s) was measured with a co-tenant on
-the island, and the clean-island number is materially different. Publishing the
-contended figure as ours would overstate our deficit roughly twofold (26-29%
-against about 13% on a clean island). The SPEC=1 arm that matches 1Cat's MTP4
-is being run on that clean island now; both prefill ratios are finalised from
-one box, not stitched from two.
+| arm | ms per verify step | tokens per step | tok/s |
+|---|---:|---:|---:|
+| 1Cat TP4, MTP4 | 19.4 | 2.51 | 129.6 |
+| ours TP4, SPEC=1, lambda6 median | 26.8 | 3.10 marginal | 115.5 |
+| ratio | **1.38x slower per step** | **1.23x better accept** | 1.12x behind |
+
+Our per-step kernel time is **38% worse** and our draft acceptance **23% better**;
+the two nearly cancel. The kernel deficit is real and larger than the old "27%"
+framing suggested, and it is currently paid for by draft quality rather than
+hidden. `1.38 / 1.23 = 1.12` is an identity on these cells, so a reader can check
+it. It also predicts that better accept buys less than fixing the step, which is
+the opposite of what the 27% framing implied.
+
+Two arms, two boxes, not averaged: **lambda1 95.3** (one arm, old bench) and
+**lambda6 115.5** median (range 104-145). Same tree and NEXTN on both; accept is
+what moves (2.67 on lambda1, 2.84-3.56 on lambda6).
+
+At SPEC=0 we measure **58.5-58.8 tok/s** (accept 1 by construction) on two boxes
+and have nothing to compare it to: 1Cat publishes only its MTP arm.
+
+**Prefill**, our first pair with MTP on both sides: **2971 tok/s**, SPEC=1 on
+lambda6, cold (`cached=0`), against 1Cat's 4825 MTP4 — **1.62x theirs, we trail
+38%**. Like for like in arm, unlike in box; lambda6 also carries about **1.7 GiB
+per card of someone else's resident allocations**, idle but held. A SPEC=0 arm on
+the same lambda6 box decides whether what remains is the MTP cost or the box; it
+is in flight and I will not guess. The contended-island 3450-3565 stays withheld
+from the verdict.
 
 **Cross-quant caveat that applies to the whole note.** Strata runs IQ2_XS
 (35.5 GB of experts) against our fp8/fp4 (125.9 GiB). That is not a tok/s
@@ -119,8 +138,9 @@ these numbers**.
 |---|---|---|
 | 1 | not runnable | not runnable |
 | 2 | not runnable | not runnable |
-| 4 (single node) | **3450-3565 reported, contended island, components include `gdn_tilelang_sm70` — withheld from the verdict**; **4199 reported, SPEC=0, clean island**; **1549 measured, pair off, SPEC=1** (4121 prompt tokens, 2644 ms median); 1663 in the SPEC=0 arm | **95.3 measured, SPEC=1** (slope 10.50 ms/output-token; 128 completion tokens, 48 verify steps, 1627 ms long run, short 32 tokens in 619 ms) → accept 2.67 → 28.0 ms/step. Accept varied by request: 2.67 / 3.56 / 2.67 at 48 / 36 / 48 steps, so the marginal step is 28.0-37.4 ms. **58.8 measured, SPEC=0** (slope 17.00 ms/token, accept 1) — not comparable to 1Cat |
+| 4 (single node) | **3450-3565 reported, contended island, components include `gdn_tilelang_sm70` — withheld from the verdict**; **4199 reported, SPEC=0, clean island**; **1549 measured, pair off, SPEC=1** (4121 prompt tokens, 2644 ms median); 1663 in the SPEC=0 arm | **95.3 measured, SPEC=1** (slope 10.50 ms/output-token; 128 completion tokens, 48 verify steps, 1627 ms long run, short 32 tokens in 619 ms) → accept 2.67 → 28.0 ms/step. Accept varied by request: 2.67 / 3.56 / 2.67 at 48 / 36 / 48 steps, so the marginal step is 28.0-37.4 ms. **58.8 measured, SPEC=0** (slope 17.00 ms/token, accept 1); 1Cat ships no SPEC=0 arm, so it has no peer |
 | 4 (dual node) | comm-bound at 66% (reported), no number held here | — |
+| 4 (single node, lambda6) | **2971 measured, SPEC=1** (4121 prompt tokens, 1387 ms median, cold `cached=0`, spread 5.9%) | **115.5 measured median, SPEC=1** (104-145 across three prompts; per-run triples in the comparability table); SPEC=0 arm in flight |
 | 8 | untested | untested |
 
 Why 1 and 2 cards are called *not runnable* rather than empty: Flash-Next
@@ -148,10 +168,11 @@ My pair-off numbers on lambda1 — 1549 at SPEC=1, 1663 at SPEC=0, a different
 box — are that same configuration, not a conflicting result.
 
 Neither arm of that A/B has run on a clean island, so its **magnitude** is open.
-A clean 4-card island reports **4199 tok/s** for a pair-on **SPEC=0** arm (the
-SPEC=1 arm on that island is in flight) against 3450-3565 on the contended one.
-The direction holds in every pairing we hold; the size of the win does not, and
-the contended numbers are not quotable as ours.
+A clean 4-card island reports **4199 tok/s** for a pair-on **SPEC=0** arm; a
+SPEC=1 arm there did not complete before those cards were taken, which is why the
+SPEC=1 prefill we hold is the 2971 above, from lambda6. The direction holds in
+every pairing we hold; the size of the win does not, and the contended numbers are
+not quotable as ours.
 
 Rule: **never cite a prefill number without the component list.** The
 difference is invisible at `register()` time and does not appear as a log
@@ -162,21 +183,32 @@ line, so the component list is the only record of which arm ran.
 A per-step time means nothing without its accept length, and neither can be
 re-derived without the three inputs:
 
-| arm | completion tokens | verify steps | long run | short run | slope | accept | step | tok/s |
+| arm | completion tokens | verify steps | long run | short run | slope | tokens/step | step | tok/s |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| 1Cat TP4, MTP4 | 128 | 51 | 1317 ms | 576 ms / 32 tok | 7.72 ms/token | 2.51 | 19.4 ms | 129.6 |
-| ours TP4, SPEC=1 | 128 | 48 | 1627 ms | 619 ms / 32 tok | 10.50 ms/token | 2.67 | 28.0 ms | 95.3 |
-| ours TP4, SPEC=0 | 128 | none | 2377 ms | 745 ms / 32 tok | 17.00 ms/token | 1 | 17.0 ms | 58.8 |
+| 1Cat TP4, MTP4 | 128 | 51 | 1317 ms | 576 ms / 32 tok | 7.72 ms/token | 2.51 (request average) | 19.4 ms | 129.6 |
+| ours SPEC=1, lambda1 | 128 | 48 | 1627 ms | 619 ms / 12 steps | 10.50 ms/token | 2.67 | 28.0 ms | 95.3 |
+| ours SPEC=1, lambda6 run 0 | 128 | 45 | 1647 ms | 723 ms / 12 steps | 9.63 ms/token | 2.91 marginal | 28.0 ms | 103.9 |
+| ours SPEC=1, lambda6 run 1 | 128 | 36 | 1384 ms | 723 ms / 12 steps | 6.89 ms/token | 4.00 marginal | 27.5 ms | 145.2 |
+| ours SPEC=1, lambda6 run 2 | 128 | 43 | 1554 ms | 723 ms / 12 steps | 8.66 ms/token | 3.10 marginal | 26.8 ms | 115.5 |
+| ours SPEC=0, lambda1 | 128 | none | 2377 ms | 745 ms / 32 tok | 17.00 ms/token | 1 | 17.0 ms | 58.8 |
 
-How the columns follow: `slope = (long - short) / 96`; `accept = completion /
-verify steps`; `step = slope x accept`; `tok/s = 1 / slope`. The short run's
-fixed cost cancels in the slope. `elapsed / verify steps` is **not** the step
-time, because that fixed cost is still in it: ours is 1627 / 48 = 33.9 ms
-against a 28.0 ms marginal step.
+How the columns follow: `slope = (long - short) / 96`, which is milliseconds per
+output token, so `tok/s = 1000 / slope`; `step = slope x tokens per step`; and
+`tokens per step` is the **marginal** `96 / (steps_long - steps_short)`. The
+marginal and the request average coincide where accept is uniform (lambda1: 2.67
+at both 12 steps and 48 steps). The short run's fixed cost cancels in the slope.
+`elapsed / verify steps` is **not** the step time, because that fixed cost is
+still in it: 1627 / 48 = 33.9 ms against a 28.0 ms marginal step.
+
+1Cat's 2.51 is its **request average** (128 / 51), not a marginal figure, and its
+19.4 ms step is `slope x average accept`. That is exact only if its average accept
+also held over the 32-to-128 window, which we cannot show; it is the one cell in
+this table whose two factors are not measured the same way. Our rows use marginal
+counts where the arms differ.
 
 The SPEC=0 row is faster per step only because it emits one token per step. The
-comparable pair is the SPEC=1 row; there 1Cat is 1.36x ahead, i.e. we trail by
-27%.
+comparable pair is the SPEC=1 rows: against lambda6 the median gap is 12%, against
+lambda1 36%.
 
 An independent SPEC=0 arm on a clean 4-card island measured **17.09 ms/step =
 58.5 tok/s**. It carried no speculative flags, so there is no `spec_verify_ct`
@@ -197,6 +229,18 @@ refute the pairing on new data; it cannot re-aggregate an old run. From those
 three inputs, our accept is 2.67 on the median run and the marginal step is
 28.0 ms. **`tok/s` is unaffected**: it is `1 / slope` and never touches
 `accept`. The defect is in the old bench's cross-check, not in the timings.
+
+### Second defect: a differential step paired with a point accept
+
+Not yet fixed; the one-line fix waits on the code freeze. `bench.py` computes
+`step` as a differential, `(t_long - t_short) / (steps_long - steps_short)`, and
+`accept` as a point, `completion_long / steps_long`. On lambda6 those differ: the
+marginal pair adds 31 steps for 96 tokens, **3.097 per step**, while the long
+run's own average is 2.977. The printed rate is therefore **111.0** tok/s where
+`Δcompletion / Δt` gives **115.5**. The printed identity `accept/step == 1/(ms per
+output token)` cannot catch it, because both of its sides are built from the same
+accept. Every rate in this note is derived from `Δcompletion / Δt`, not read off
+the tool.
 
 ### Accept definition
 
@@ -226,7 +270,9 @@ Same box (lambda1), same protocol, GDN pair off, one variable:
 - decode: SPEC=0 58.8 → SPEC=1 95.3 tok/s, so MTP **buys 1.62x**
 
 That is the local answer to "what does MTP cost and buy here", and it is the only
-pair in this note whose arms share a box, a protocol and a run series.
+pair in this note whose arms share a box, a protocol and a run series. A SPEC=0
+arm on lambda6 is in flight and will give a second pair on a different box; it is
+not folded into this one.
 
 ### Against 1Cat — SPEC=1 to SPEC=1
 
@@ -235,13 +281,16 @@ does not exist.
 
 | | our arm | 1Cat arm | our tok/s | 1Cat tok/s | ratio |
 |---|---|---|---:|---:|---|
-| decode | SPEC=1 | MTP4 | 95.3 | 129.6 | 1.36x theirs; we trail 27% |
-| prefill | **SPEC=0** | **MTP4** | **4199** | **4825** | **not like-for-like** |
+| decode | SPEC=1 | MTP4 | 115.5 (104-145) | 129.6 | 12% behind, inside our own spread |
+| prefill | **SPEC=1** | **MTP4** | **2971** | **4825** | 1.62x theirs; we trail 38% |
+| prefill, other box | SPEC=0 | MTP4 | 4199 | 4825 | arm mismatch, not quoted |
 
-The prefill row is the one arm mismatch in this note: 4199 is our SPEC=0 arm on a
-clean island, 4825 is 1Cat's MTP4 arm. Side by side they look comparable and are
-not. Our SPEC=1 prefill is withheld pending the clean-island run, so **no prefill
-ratio is published**.
+The decode row is like for like in arm. The prefill row now is too, for the first
+time: 2971 is our SPEC=1 arm on lambda6 and 4825 is 1Cat's MTP4. That is like for
+like in arm and unlike in box — a better claim and a worse number than the 4199
+comparison it replaces. 4199 stays in the table only because it is the one
+clean-island prefill we hold; it is a SPEC=0 arm against their MTP4, so it is
+recorded and not quoted as a ratio.
 
 ### Against Strata — SPEC=1 to `--spec 2`
 
@@ -254,20 +303,21 @@ per-card rate**:
 |---|---|---:|---:|---:|
 | Strata | `--spec 2` | 1 | 66.6 reported | 66.6 |
 | Strata | `--spec 2` | 2 | 80.1 reported | 40.1 |
-| ours | SPEC=1 | 4 | 95.3 measured | 23.8 |
+| ours | SPEC=1, lambda1 | 4 | 95.3 measured | 23.8 |
+| ours | SPEC=1, lambda6 | 4 | 115.5 measured | 28.9 |
 | ours | SPEC=0 | 4 | 58.8 measured | no Strata peer |
 | Strata | no-spec | — | — | no such arm |
 | 1Cat | MTP4 | 1, 2, 8 | — | no such recipe |
 
 **This is the most important number in the note and it is not flattering.** We
 need four cards to beat Strata's one card by 1.43x. Per card we are **2.80x**
-behind its single-card point and **1.68x** behind its two-card per-card point.
-The honest reading is that our four-card win is **capacity, not efficiency**, and
-the per-card deficit is the kernel gap — consistent with the traces, which put
-62% of prefill in GDN chunk kernels, and a better argument for the TileLang work
-than any single figure we have published. This table is decode only; the prefill
-verdict stays withheld, because the only clean-island prefill we hold is a SPEC=0
-arm.
+behind its single-card point on lambda1 and **2.31x** on lambda6; against its
+two-card per-card point, **1.68x** and **1.39x**. Even the better box is more than
+twice behind per card. The honest reading is that our four-card win is
+**capacity, not efficiency**, and the per-card deficit is the kernel gap —
+consistent with the traces, which put 62% of prefill in GDN chunk kernels, and a
+better argument for the TileLang work than any single figure we have published.
+This table is decode only.
 
 **Cross-quant caveat, attached to this row.** Strata runs IQ2_XS (35.5 GB of
 experts) against our fp8/fp4 (125.9 GiB), so it does less work per token. Part of
