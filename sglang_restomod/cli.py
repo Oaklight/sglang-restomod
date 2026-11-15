@@ -130,6 +130,14 @@ def doctor(args: argparse.Namespace) -> int:
     if site.get("components", {}).get("attest") and "SGLANG_RESTOMOD_ATTEST" not in os.environ:
         os.environ["SGLANG_RESTOMOD_ATTEST"] = site["components"]["attest"]
 
+    paths = site.get("paths", {})
+    turbomind = paths.get("turbomind_so")
+    if turbomind and "SGLANG_SM70_TURBOMIND_SO" not in os.environ:
+        # The component's discovery accepts a file-naming variable first. The
+        # site config is that declaration, so a host does not depend on a
+        # shell export that nothing announces.
+        os.environ["SGLANG_SM70_TURBOMIND_SO"] = turbomind
+
     print("restomod doctor")
     print(f"  python: {sys.executable}")
     print(f"  selected components: {','.join(selected) if selected else '<none>'}")
@@ -192,6 +200,9 @@ def doctor(args: argparse.Namespace) -> int:
     paths = site.get("paths", {})
     for artefact in manifest.get("artefact", []):
         name = artefact.get("name", "<unnamed>")
+        if artefact.get("kind") == "image":
+            # The image is checked below, once, with its size and optional hash.
+            continue
         consumers = set(artefact.get("consumers", []))
         required = bool(consumers & set(selected))
         expected = artefact.get("sha256")
