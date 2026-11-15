@@ -68,17 +68,40 @@ def _note(key: str, level: int, message: str, *args) -> None:
 
 
 def _load_kernels():
+    """Import the two vendored kernel modules on first use; ``None`` without TileLang.
+
+    ``tilelang`` is an engine dependency, not a declared one of this package, so a
+    host can enable the component without it. The kernels live in the source
+    modules synced by ``scripts/sync_kernels.py``, so nothing is re-exported here.
+    """
     global _KERNELS, _KERNEL_IMPORT_FAILED
     if _KERNELS is not None or _KERNEL_IMPORT_FAILED:
         return _KERNELS
     try:
-        from . import gdn_pair_tilelang
+        from ._gdn_chunk_h import chunk_h_kernel
+        from ._gdn_chunk_o import chunk_o_kernel
     except Exception as exc:  # noqa: BLE001 - no kernel means Triton is correct
         _KERNEL_IMPORT_FAILED = True
         logger.warning("sglang-restomod: TileLang GDN pair unavailable, staying on Triton: %s", exc)
         return None
-    _KERNELS = gdn_pair_tilelang
+    _KERNELS = (chunk_o_kernel, chunk_h_kernel)
     return _KERNELS
+
+
+@lru_cache(maxsize=8)
+def _chunk_o_for(b, t_len, h, hg, k, v):
+    kernels = _load_kernels()
+    if kernels is None:
+        return None
+    return kernels[0](b, t_len, h, hg, k, v, BT, _BV_O, 128)
+
+
+@lru_cache(maxsize=8)
+def _chunk_h_for(b, t_len, h, hg, k, v):
+    kernels = _load_kernels()
+    if kernels is None:
+        return None
+    return kernels[1](b, t_len, h, hg, k, v, BT, _BV_H, 128)
 
 
 def _cuda_device_id(tensor) -> int:
@@ -168,10 +191,11 @@ def _gate_chunk_o(q, k, v, h, g, scale, cu_seqlens, chunk_size) -> str:
 
 
 def _run_chunk_o(q, k, v, h, g):
-    kernels = _load_kernels()
     B, T, Hg, K = q.shape
     H, V = v.shape[2], v.shape[3]
-    kernel = kernels.chunk_o(B, T, H, Hg, K, V)
+    kernel = _chunk_o_for(B, T, H, Hg, K, V)
+    if kernel is None:
+        return None
     return kernel(
         q.contiguous(),
         k.contiguous(),
@@ -191,7 +215,7 @@ def chunk_fwd_o(q, k, v, h, g=None, scale=None, cu_seqlens=None, chunk_size=64):
         _note(_refusal_key(reason), logging.INFO, "%s; using Triton", reason)
         return original(q, k, v, h, g=g, scale=scale, cu_seqlens=cu_seqlens, chunk_size=chunk_size)
     try:
-        return _run_chunk_o(q, k, v, h, g)
+        result = _run_chunk_o(q, k, v, h, g)
     except Exception as exc:  # noqa: BLE001 - serving keeps a correct fallback
         _note(
             f"chunk_o fault {type(exc).__name__}",
@@ -200,7 +224,10 @@ def chunk_fwd_o(q, k, v, h, g=None, scale=None, cu_seqlens=None, chunk_size=64):
             type(exc).__name__,
             exc,
         )
-        return original(q, k, v, h, g=g, scale=scale, cu_seqlens=cu_seqlens, chunk_size=chunk_size)
+        result = None
+    if result is not None:
+        return result
+    return original(q, k, v, h, g=g, scale=scale, cu_seqlens=cu_seqlens, chunk_size=chunk_size)
 
 
 # --------------------------------------------------------------------------
@@ -282,10 +309,11 @@ def _gate_fwd_h(
 def _run_fwd_h(k, w, u, g, initial_state, initial_state_indices, inplace_update):
     import torch
 
-    kernels = _load_kernels()
     B, T, Hg, K = k.shape
     H, V = u.shape[2], u.shape[3]
-    kernel = kernels.chunk_h(B, T, H, Hg, K, V)
+    kernel = _chunk_h_for(B, T, H, Hg, K, V)
+    if kernel is None:
+        return None
 
     valid = None
     if initial_state is None:
@@ -372,7 +400,7 @@ def chunk_gated_delta_rule_fwd_h(
             chunk_offsets=chunk_offsets,
         )
     try:
-        return _run_fwd_h(k, w, u, g, initial_state, initial_state_indices, inplace_update)
+        result = _run_fwd_h(k, w, u, g, initial_state, initial_state_indices, inplace_update)
     except Exception as exc:  # noqa: BLE001 - serving keeps a correct fallback
         _note(
             f"chunk_h fault {type(exc).__name__}",
@@ -381,23 +409,26 @@ def chunk_gated_delta_rule_fwd_h(
             type(exc).__name__,
             exc,
         )
-        return original(
-            k=k,
-            w=w,
-            u=u,
-            g=g,
-            gk=gk,
-            initial_state=initial_state,
-            initial_state_indices=initial_state_indices,
-            save_new_value=save_new_value,
-            cu_seqlens=cu_seqlens,
-            chunk_indices=chunk_indices,
-            use_exp2=use_exp2,
-            inplace_update=inplace_update,
-            track_state=track_state,
-            track_chunk_idx=track_chunk_idx,
-            chunk_offsets=chunk_offsets,
-        )
+        result = None
+    if result is not None:
+        return result
+    return original(
+        k=k,
+        w=w,
+        u=u,
+        g=g,
+        gk=gk,
+        initial_state=initial_state,
+        initial_state_indices=initial_state_indices,
+        save_new_value=save_new_value,
+        cu_seqlens=cu_seqlens,
+        chunk_indices=chunk_indices,
+        use_exp2=use_exp2,
+        inplace_update=inplace_update,
+        track_state=track_state,
+        track_chunk_idx=track_chunk_idx,
+        chunk_offsets=chunk_offsets,
+    )
 
 
 # --------------------------------------------------------------------------

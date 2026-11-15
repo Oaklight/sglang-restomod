@@ -88,13 +88,14 @@ Triton.
 | Commit | `d75987a` (merge of PR #13) |
 | Files | `sm70_kernels/gdn_chunk_o/_chunk_o.py`, `sm70_kernels/gdn_chunk_h/_chunk_h.py` |
 | License | Authored in `sm70-kernels`; the repository has no `LICENSE` file at this commit and records Apache-2.0 for its other components. Flagged, not resolved. |
-| Vendored as | `gdn_pair_tilelang.py` (both kernels, bodies unchanged) |
+| Vendored as | `_gdn_chunk_o.py`, `_gdn_chunk_h.py` -- byte copies, synced by `scripts/sync_kernels.py` from the `[[kernels.files]]` pin entries |
 
 ### What is selected
 
 The two kernels only: the chunk output `chunk_o` and the sequential state pass
 `chunk_h`. The package's `__init__.py` getters, benchmarks and tests are not
-vendored.
+vendored. `scripts/sync_kernels.py --check` fails on any drift between the pin,
+the submodule and these copies.
 
 ### Integration
 

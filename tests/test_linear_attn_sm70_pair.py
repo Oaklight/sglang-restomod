@@ -28,6 +28,8 @@ def pair(monkeypatch):
     monkeypatch.setattr(gdn_pair, "_INSTALLED", False)
     monkeypatch.setattr(gdn_pair, "_KERNELS", None)
     monkeypatch.setattr(gdn_pair, "_KERNEL_IMPORT_FAILED", False)
+    gdn_pair._chunk_o_for.cache_clear()
+    gdn_pair._chunk_h_for.cache_clear()
     return gdn_pair
 
 
@@ -218,7 +220,7 @@ class _StateKernels:
     def __init__(self):
         self.states = []
 
-    def chunk_h(self, b, t, h, hg, k, v):
+    def chunk_h(self, b, t, h, hg, k, v, bt=64, bv=32, threads=128):
         def kernel(kt, wt, ut, gt, s0):
             self.states.append(s0.clone())
             s0.add_(1.0)
@@ -229,7 +231,7 @@ class _StateKernels:
 
         return kernel
 
-    def chunk_o(self, b, t, h, hg, k, v):
+    def chunk_o(self, b, t, h, hg, k, v, bt=64, bv=64, threads=128):
         def kernel(qt, kt, vt, ht, gt):
             return torch.zeros(b, t, h, v, dtype=torch.float16)
 
@@ -238,7 +240,7 @@ class _StateKernels:
 
 def test_chunk_h_writes_the_state_back_to_its_own_slot(pair, monkeypatch):
     kernels = _StateKernels()
-    monkeypatch.setattr(pair, "_KERNELS", kernels)
+    monkeypatch.setattr(pair, "_KERNELS", (kernels.chunk_o, kernels.chunk_h))
     pool = torch.zeros(4, H, V, K, dtype=torch.float16)
     pool[2] = 5.0
     idx = torch.tensor([2], dtype=torch.int64)
@@ -256,7 +258,7 @@ def test_chunk_h_writes_the_state_back_to_its_own_slot(pair, monkeypatch):
 
 def test_chunk_h_leaves_a_negative_slot_untouched_and_starts_at_zero(pair, monkeypatch):
     kernels = _StateKernels()
-    monkeypatch.setattr(pair, "_KERNELS", kernels)
+    monkeypatch.setattr(pair, "_KERNELS", (kernels.chunk_o, kernels.chunk_h))
     pool = torch.zeros(4, H, V, K, dtype=torch.float16)
     pool[0] = 9.0
     idx = torch.tensor([-1], dtype=torch.int64)
@@ -270,7 +272,7 @@ def test_chunk_h_leaves_a_negative_slot_untouched_and_starts_at_zero(pair, monke
 
 def test_chunk_h_honours_inplace_update_false(pair, monkeypatch):
     kernels = _StateKernels()
-    monkeypatch.setattr(pair, "_KERNELS", kernels)
+    monkeypatch.setattr(pair, "_KERNELS", (kernels.chunk_o, kernels.chunk_h))
     pool = torch.zeros(4, H, V, K, dtype=torch.float16)
     pool[1] = 3.0
     idx = torch.tensor([1], dtype=torch.int64)
