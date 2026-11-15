@@ -10,7 +10,9 @@ having selected nothing.
 from __future__ import annotations
 
 import json
+import logging
 import sys
+import threading
 import types
 
 import pytest
@@ -106,3 +108,49 @@ def test_unwritable_path_does_not_raise(monkeypatch):
     monkeypatch.setenv(attest.ENV_ATTEST, "/proc/definitely/not/writable/attest.json")
     attest.set_selected([])
     assert attest.write() is None
+
+
+def test_concurrent_writes_do_not_share_one_temporary_file(tmp_path, monkeypatch, caplog):
+    """Every rank writes its own snapshot, and there is one rank per process.
+
+    A TP4 launch has four processes registering at once. They used to share
+    ``<target>.tmp``: the first ``os.replace`` consumed the file and the other
+    three logged ``FileNotFoundError`` and recorded nothing, so the attestation
+    could be written by one rank out of four. Observability that fails silently
+    at the moment it matters reads as a complete answer when it is not one.
+    """
+    target = tmp_path / "attest.json"
+    monkeypatch.setenv(attest.ENV_ATTEST, str(target))
+    attest.set_selected(["attention_v100"])
+    attest.record("attention_v100", True)
+
+    ranks = 4
+    barrier = threading.Barrier(ranks, timeout=10)
+    real_dump = json.dump
+
+    def synchronized_dump(*args, **kwargs):
+        # Hold every writer at the same point, so they interleave the way four
+        # ranks do when they register together rather than one after another.
+        try:
+            barrier.wait()
+        except threading.BrokenBarrierError:
+            pass
+        return real_dump(*args, **kwargs)
+
+    monkeypatch.setattr(attest.json, "dump", synchronized_dump)
+
+    results: list = []
+
+    def worker():
+        results.append(attest.write())
+
+    with caplog.at_level(logging.WARNING, logger=attest.__name__):
+        threads = [threading.Thread(target=worker) for _ in range(ranks)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=30)
+
+    assert results.count(str(target)) == ranks, "every rank must record a write"
+    assert "could not write attestation" not in caplog.text
+    assert json.loads(target.read_text())["loaded"] == ["attention_v100"]

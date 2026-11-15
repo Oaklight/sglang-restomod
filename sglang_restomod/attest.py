@@ -32,6 +32,7 @@ import json
 import logging
 import os
 import sys
+import tempfile
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -110,15 +111,29 @@ def write(path: str | None = None) -> str | None:
     target = path or os.environ.get(ENV_ATTEST)
     if not target:
         return None
+    # A temporary file of its own per write, not one per target. A TP4 launch
+    # registers from four processes at once, and a shared ``<target>.tmp`` is
+    # consumed by the first ``os.replace``; the rest then log FileNotFoundError
+    # and record nothing. That is what four ranks did on 2026-11-15.
+    tmp: str | None = None
     try:
         payload = snapshot()
-        tmp = f"{target}.tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
+        directory = os.path.dirname(target) or "."
+        fd, tmp = tempfile.mkstemp(
+            dir=directory, prefix=f"{os.path.basename(target)}.", suffix=".tmp"
+        )
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(payload, fh, indent=1, sort_keys=True)
             fh.write("\n")
         os.replace(tmp, target)
-    except Exception:  # pragma: no cover - never fail a launch for a log file
+        tmp = None
+    except Exception:  # never fail a launch for a log file
         logger.warning("sglang-restomod: could not write attestation to %s", target, exc_info=True)
+        if tmp is not None:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
         return None
     logger.info(
         "sglang-restomod: attested %d loaded, %d failed, %d missing -> %s",
