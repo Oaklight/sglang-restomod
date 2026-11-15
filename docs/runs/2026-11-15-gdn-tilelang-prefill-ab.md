@@ -48,6 +48,41 @@ MoE at 42.4%, then routed Marlin at 21.8%, then dense GEMM at 13.5%; the GDN
 pair is down to 1.7%. That ordering is why the next work is the draft layer's
 MoE and the decode dense kernels, not another attention kernel.
 
+> **Withdrawn 2026-11-15: the 42.4% and the priority sentence above.** Both
+> came from a window collected on a shared box, and neither survives a quiet
+> re-measurement. See the correction below before quoting either.
+
+### Correction: the draft's MoE is 4.0% of prefill kernel time
+
+Measured on an isolated lambda6 (4x V100-SXM2, TP4, co-tenants holding
+~1.7 GiB per card, no concurrent load), one cold 4096-token prefill under
+`/start_profile`, rank 0: **7139 kernels, 994.1 ms of kernel time**. The
+draft's `fused_moe_kernel` is **40.2 ms, 4.0%**, in four calls — 25.9 ms of
+gate_up over the full 4096 tokens and 13.7 ms of down, inside a
+`step[DRAFT bs=1 toks=4096]` window of 27.5 ms.
+
+The 1256.0 ms window this note previously quoted is 26% larger than the quiet
+measurement on the same model and protocol; treat it as stale.
+
+The draft's **total** prefill cost is real but it is not its MoE. On the same
+box, SPEC=1 prefill is 3439 tok/s (median of three, 4121 prompt tokens,
+`cached_tokens=0`) against 3593-3639 at SPEC=0, so the whole draft pass —
+attention, dense projections and the extend over the prompt included — is
+about **15% of the wall**. Its MoE is 4 points of *kernel* time inside that.
+
+Two independent checks say the withdrawn 304 ms gate_up / 226 ms down pair was
+not one request:
+
+- gate_up to down is 2:1 in FLOPs and measures 1.89 here (25.9 / 13.7), while
+  304 / 226 = 1.35;
+- ~268 GFLOP in 25.9 ms is **10.4 TFLOPS**, which is what an fp16 kernel
+  without tensor cores reaches on V100 (FMA peak ~15.7); 304 ms would be
+  0.9 TFLOPS, which is a broken measurement rather than a slow kernel.
+
+Consequence: quantising the draft's experts to NVFP4 caps out at **~3% of
+prefill**, not a third. The component (`mtp_fp4_moe`) was built and is left
+off by default for that reason; its PROVENANCE records the same ceiling.
+
 Root cause, verified in the emitted code rather than inferred from timings:
 Triton 3.5.1 has no sm70 MMA lowering, so `chunk_fwd_kernel_o.ptx` contains
 **0 `mma.sync` and 10,272 `fma.rn.f32`**, and the kernel reports
