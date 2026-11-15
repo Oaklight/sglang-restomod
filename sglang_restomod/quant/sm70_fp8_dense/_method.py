@@ -328,7 +328,16 @@ def _load_sm70_turbomind_fp8_ops() -> bool:
         return _OPS_AVAILABLE
     _OPS_LOAD_ATTEMPTED = True
 
-    ops_path = Path(os.environ.get("SGLANG_SM70_TURBOMIND_OPS_PATH", _DEFAULT_OPS_PATH))
+    ops_path = os.environ.get("SGLANG_SM70_TURBOMIND_OPS_PATH") or _DEFAULT_OPS_PATH
+    if not ops_path:
+        # Neither the environment nor the fork's path helper names the library.
+        # That is a provisioning gap, not a load failure: report it the same way
+        # a failed load is reported, so every caller can keep its fallback.
+        logger.warning(
+            "SM70 TurboMind FP8 operators unavailable: no library path "
+            "(set SGLANG_SM70_TURBOMIND_OPS_PATH)"
+        )
+        return _OPS_AVAILABLE
     try:
         torch.ops.load_library(str(ops_path))
         _OPS_AVAILABLE = hasattr(
