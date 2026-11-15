@@ -77,7 +77,8 @@ def test_a_real_nn_linear_is_admitted():
 
 
 def test_a_plain_linear_is_not_admitted_when_unaligned():
-    assert not comp._admitted("model.layers.0.mlp.dense", torch.nn.Linear(320, 256).to(torch.bfloat16))
+    layer = torch.nn.Linear(320, 256).to(torch.bfloat16)
+    assert not comp._admitted("model.layers.0.mlp.dense", layer)
 
 
 def test_a_non_2d_weight_is_refused():
@@ -88,3 +89,31 @@ def test_a_non_2d_weight_is_refused():
 def test_fp32_weight_is_refused():
     layer = _layer(dtype=torch.float32)
     assert not comp._admitted("model.layers.0.self_attn.q_proj", layer)
+
+
+def _linear_base_instance(class_name):
+    """An uninitialized engine module carrying only weight and quant_method."""
+    linear = pytest.importorskip("sglang.srt.layers.linear")
+    module = object.__new__(getattr(linear, class_name))
+    torch.nn.Module.__init__(module)
+    module.quant_method = _UnquantizedLinearMethod()
+    return module
+
+
+def test_a_row_parallel_linear_is_admitted_without_the_column_attribute():
+    # RowParallelLinear is a LinearBase but never sets
+    # output_size_per_partition; the old attribute check refused all 151 of
+    # them on Flash-Next.
+    layer = _linear_base_instance("RowParallelLinear")
+    layer.weight = torch.nn.Parameter(torch.zeros(256, 256, dtype=torch.bfloat16))
+    assert not hasattr(layer, "output_size_per_partition")
+    assert comp._admitted("model.layers.0.self_attn.o_proj", layer)
+    assert comp.refusal_reason("model.layers.0.self_attn.o_proj", layer) is None
+
+
+def test_a_replicated_linear_stays_out_until_its_router_ab():
+    # The router's forward is a fused kernel; the class is excluded on purpose.
+    layer = _linear_base_instance("ReplicatedLinear")
+    layer.weight = torch.nn.Parameter(torch.zeros(512, 2560, dtype=torch.bfloat16))
+    assert not comp._admitted("model.layers.0.mlp.gate", layer)
+    assert comp.refusal_reason("model.layers.0.mlp.gate", layer) == "replicated"

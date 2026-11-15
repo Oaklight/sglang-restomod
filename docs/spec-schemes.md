@@ -25,7 +25,8 @@ about twice that.
 checkpoint, so there is no separate artifact to obtain. On the 27B it is worth
 keeping below 64k and turning off above it: the draft decode grows with the
 prefix and overtakes the accept gain between 32k and 64k
-(`mtp-crossover-2026-11-04.md`, and the recipe's measured table).
+(the private lab repository's `notes/mtp-crossover-2026-11-04.md`, and the
+recipe's measured table).
 
 **A separately trained draft has to beat the one in the checkpoint.** DFlash2
 is the only one obtainable for these models, and on the 27B it lands 14-17%
@@ -40,12 +41,15 @@ of the model, so a single number would not generalize.
 ## What is shared, and therefore what a new scheme costs
 
 Every scheme reuses the target's verify pass and the draft-decode container.
-For MTP/NEXTN the draft decode is the Triton multi-step backend
-(`TritonMultiStepDraftBackend`). At 130k on the 27B it costs 80.3 ms per step at
-the default 8 KV splits and 38.2 ms at 80 splits, against 1.3 ms for one layer
-of the native verify kernel over the same KV (`decode-at-130k-splits.md`). That
-cost is shared by every scheme that drafts autoregressively, which is why #76
-item 2 is ahead of any new scheme in this list.
+For MTP/NEXTN the container is `NativeMultiStepDraftBackend` (#205): it keeps
+the pin's per-step `kv_indptr`/`kv_indices` production and converts each step
+into the page table the `attention_v100` split-KV kernel takes, so the draft
+chain runs the same native kernel as the target. On the 27B at 125,938 prompt
+tokens it measures 63.58 tok/s with MTP against 32.01 with MTP off (5 reps
+each, sd < 0.2%; receipt `evidence-2086790`). The Triton container it replaced
+cost 80.3 ms per step at 8 splits and 38.2 ms at 80 on the same model and
+context (the private lab repository's `notes/decode-at-130k-splits.md`). A scheme that drafts autoregressively
+shares this container; a scheme that does not (n-gram) does not pay it.
 
 ## Not confirmed
 

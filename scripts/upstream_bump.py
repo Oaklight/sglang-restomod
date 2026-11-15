@@ -20,6 +20,26 @@ def resolve(ref: str) -> str:
     ).strip()
 
 
+def tail_after_upstream(text: str) -> str:
+    """Return the part of the pin file that belongs after ``[upstream]``.
+
+    The pin also carries ``[kernels]`` and ``[lsa]``. A bump rewrites the
+    ``[upstream]`` table only; keeping the rest verbatim is what stops a bump
+    from silently dropping the kernel or LSA pin.
+    """
+    lines = text.splitlines(keepends=True)
+    start = next(
+        (i for i, line in enumerate(lines) if line.startswith("[kernels]")), None
+    )
+    if start is None:
+        return ""
+    while start > 0 and (
+        lines[start - 1].lstrip().startswith("#") or not lines[start - 1].strip()
+    ):
+        start -= 1
+    return "".join(lines[start:])
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--ref", required=True, help="upstream tag, e.g. v0.5.22")
@@ -28,6 +48,7 @@ def main() -> int:
 
     commit = args.commit or resolve(args.ref)
     version = args.ref.removeprefix("v")
+    previous = PIN.read_text()
 
     PIN.write_text(
         "# The upstream baseline this layer targets.\n"
@@ -45,6 +66,7 @@ def main() -> int:
         f'commit = "{commit}"\n'
         f'pypi_version = "{version}"\n'
         f'pinned_at = "{datetime.date.today().isoformat()}"\n'
+        "\n" + tail_after_upstream(previous)
     )
 
     manifest = json.loads(MANIFEST.read_text())

@@ -11,9 +11,10 @@ This module makes the name resolve for the draft:
 
 * draft **extend** gets the component backend. That is the pass over the
   accepted tokens, and it is the expensive one.
-* draft **decode** stays on Triton. It runs once per draft step over a single
-  token, and the pin's multi-step container carries per-step state a plain
-  backend does not.
+* draft **decode** gets the component's native multi-step container
+  (``draft_decode``) when the model, KV dtype and page layout fit it; otherwise
+  it stays on Triton. The native container keeps the pin's per-step state and
+  hands the split-KV kernel a page table per step.
 
 Installing changes nothing unless the launch asks for
 ``--speculative-draft-attention-backend tilelang_fa_v100``.
@@ -29,12 +30,13 @@ FLAG = "_restomod_v100_draft"
 DRAFT_DECODE_FALLBACK = "triton"
 
 
-def install_on(factory, build, wrap) -> bool:
+def install_on(factory, build, wrap, build_native=None) -> bool:
     """Patch ``DraftBackendFactory``. Returns True if anything changed.
 
     ``build(runner)`` returns the component backend, ``wrap(runner, backend)``
-    is the engine's draft-extend wrapper. Both are injected so the patch can be
-    tested without importing sglang.
+    is the engine's draft-extend wrapper, and ``build_native(runner, topk,
+    steps, stamp)`` returns the native draft-decode container or None. The
+    last is injected so the patch can be tested without importing sglang.
     """
     from .backend_registry import FLASH_ATTN_V100
 
@@ -57,8 +59,20 @@ def install_on(factory, build, wrap) -> bool:
         return wrapped
 
     def create_decode_backend(self):
-        if self.draft_attn_backend != FLASH_ATTN_V100:
+        if self.draft_attn_backend != FLASH_ATTN_V100 or self.qsa_profile is not None:
             return original_decode(self)
+        if self.speculative_num_steps > 1:
+            builder = build_native
+            if builder is None:
+                from .draft_decode import build_native as builder
+            native = builder(
+                self.draft_model_runner,
+                self.topk,
+                self.speculative_num_steps,
+                FLASH_ATTN_V100,
+            )
+            if native is not None:
+                return native
         saved = self.draft_attn_backend
         self.draft_attn_backend = DRAFT_DECODE_FALLBACK
         try:

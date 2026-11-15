@@ -16,7 +16,7 @@ not only the quant method name.
 | Checkpoint format | Dense kernel | MoE kernel | Status |
 |---|---|---|---|
 | `fp8`, `weight_block_size=[128,128]`, dynamic activations | `sm70_turbomind_fp8` (W8A16) | `SM70Fp8MoEMethod` (TurboMind block-FP8 expert GEMM) | Dense validated on 27B-FP8 (#17); experts bound and wired (#20) |
-| `modelopt_fp4` (NVFP4) | Marlin v100 (W4A16) | SM70 NVFP4 MoE decode | Flash-Next NVFP4 measured 85-100 tok/s |
+| `modelopt_fp4` (NVFP4) | Marlin v100 (W4A16), component `fp4_dense` | SM70 NVFP4 MoE decode | MoE measured 85-100 tok/s on Flash-Next. Dense is correct but not enabled: at N=17408/K=5120, m=6 the best of 18 launch geometries is 199.7 us against TurboMind FP8's 118.7 us, 251-273 GB/s against 751, and break-even needs 422. `SPLIT_K=2` recovers 20% of the gap, so no selector closes it -- the 4-bit dense kernel needs work in `marlin.cu` before this shape pays off (#37) |
 | `compressed-tensors` WNA16 (INT4 W4A16) | Marlin v100 after the capability patch | `moe_wna16` / Marlin MoE | 27B W4A16 measured 8.6 tok/s |
 | unquantized FP16 | cuBLAS | `SM70FP16MoEMethod` | Baseline fallback |
 
@@ -46,13 +46,39 @@ KV dtype is orthogonal to the weight format, and the state differs by engine:
    gets the unquantized method. `SGLANG_SM70_FP8_MOE=auto|on|off` selects the
    behaviour; see the FP8 section below.
 3. **NVFP4.** `modelopt_fp4` selects Marlin v100 for dense layers on SM70
-   (`--fp4-gemm-backend marlin`). The SM70 NVFP4 MoE decode kernel is used when
-   the checkpoint layout matches; otherwise the Marlin MoE path applies.
+   (`--fp4-gemm-backend marlin`). The SM70 NVFP4 MoE decode GEMV is used when
+   the checkpoint layout and the shape both match; otherwise the Marlin MoE
+   path applies. See "NVFP4 decode GEMV eligibility" below.
 4. **INT4 W4A16.** `compressed-tensors` WNA16 is admitted at capability 7.0
    only when the Marlin v100 backend is available; the stock floor of 8.0 is a
    portability bug, not a hardware limit.
 5. **Unquantized.** On SM70, `FusedMoE` swaps in `SM70FP16MoEMethod` when
    `params_dtype` is fp16 and no quant method was selected.
+
+## NVFP4 decode GEMV eligibility
+
+`fp4_moe` carries a decode-shaped GEMV (`decode_gemv.py`) that has no M tile, so
+one expert's route rows are read once instead of padded to the Marlin 64-row
+tile. It declines every shape it cannot read exactly, and the call falls back to
+Marlin unchanged. It is not dead code: a decode-only torch-profiler trace of the
+TP4 launch (2026-11-15) shows it at 48 calls per step, 62 us each, at M=4.
+
+- **Layout.** The Marlin-layout bank. `SGLANG_SM70_FP4_MOE_LAYOUT=qpn2` selects
+  the separate QPN2 bank and `decode_qpn2.py`; that is not the shipping default,
+  because the QPN2 prefill reader is not integrated yet (see `qpn2-layout.md`).
+- **N.** `N % 64 == 0` and `N / 64` odd. The down projection is `N = 2560`,
+  `N / 64 = 40`, so it is refused on purpose: at that shape the kernel measured
+  49.3 us against Marlin's 48.3 us.
+- **K.** `K % 16 == 0` and the K groups divisible by the split-K factor.
+- **M.** `size_m <= 8`. With NEXTN 3/4 at one request the `gate_up` call is 4
+  rows, which passes. From three concurrent requests it is 12 rows and Marlin
+  takes the call; the down call counts `tokens * top_k` and is already refused
+  on N.
+
+Read the path a launch took from its log. `decode gemv: rows=...` means the
+kernel ran; `decode gemv skipped: unsupported m=... n=... k=... topk=... block=...`
+names the shape that fell back. Do not diagnose it from a single line: one
+skipped shape (the down projection) is expected at every step.
 
 ## Fallback policy
 
@@ -127,13 +153,32 @@ Every cell below needs a run and a receipt before it is called validated.
 | Model | FP8 | NVFP4 | INT4 W4A16 |
 |---|---|---|---|
 | Qwen3.8-27B | validated (#17); 30-35 tok/s with the graph fix (#31) | open (#24) | measured, not competitive |
-| Qwen3.8-Flash-Next | expert GEMM validated (#20); end-to-end blocked on the QSA decode head layout | measured (85-100 tok/s) | n/a |
+| Qwen3.8-Flash-Next | expert GEMM validated (#20); end to end validated on 8x and 4x, with the QSA decode head layout resolved | measured (85-100 tok/s) | n/a |
 
 ## Open gaps
 
 - Block-FP8 W8A16 MoE kernel and its binding (#19): bound and wired into
-  `SM70Fp8MoEMethod` (#20), validated numerically. The remaining Flash-Next
-  blocker is the QSA decode head layout, not the expert GEMM.
+  `SM70Fp8MoEMethod` (#20), validated numerically. The QSA decode head layout
+  blocker is resolved: the SM70 kernels are templated over the query-head group
+  (see `COMPATIBILITY.md`).
+- NVFP4 prefill is flat in context: cold prefill holds at roughly 900 tok/s
+  from 8k to 64k prompt tokens on Flash-Next
+  (`docs/runs/2026-11-15-flash-next-nvfp4-tp4-context-cold-warm.md`). That run
+  attributed the flat curve to the expert GEMM shape as inference. A later
+  kernel-level record on the same model and stack (Flash-Next NVFP4, TP4,
+  v0.5.23, 4,096-token prompts) places the two GDN Triton prefill kernels at
+  1436.9 ms and 63.6% of prefill kernel time in a no-draft trace, or 46.9% of
+  the SPEC=1 wall; the denominators differ, so quote one at a time. The
+  TileLang replacement saved 1390 ms of kernel time (1.84x patch-attributable;
+  1.96x is what the shared box produced). The cause is upstream: Triton 3.5.1
+  has no SM70 MMA lowering, so `chunk_fwd_kernel_o` compiles to scalar FMA with
+  5,258 register spills, while TileLang emits `mma.sync`.
+- After that replacement the prefill ceiling moves rather than disappears: the
+  largest remaining item is the MTP/draft MoE at 42.4% of kernel time, then
+  routed Marlin at 21.8%, then dense GEMM at 13.5%, with the GDN pair at 1.7%.
+  The next prefill target is the draft layer's MoE, not another attention
+  kernel. The GDN integration is still a site-local monkeypatch, not a
+  component in this repository.
 - 1Cat NVFP4 dense kernel extraction (#37) for the 27B memory path.
 - Shared expert and router stay BF16 in the FP8 checkpoint; whether to requantize
   them is #33.

@@ -70,3 +70,47 @@ def test_uname_keeps_the_kernel_release(tmp_path):
     lines = (tmp_path / "commit.txt").read_text().splitlines()
     assert lines[0] == "Linux 5.15.0-177-generic x86_64"
     assert lines[1] == "Linux <redacted> 5.15.0-177-generic #187-Ubuntu SMP x86_64"
+
+
+def _relative_path(*parts: str) -> str:
+    """Assemble a relative path with leading ../ segments.
+
+    The identity check forbids home-shaped paths in the source, so the
+    fixtures below build one instead of spelling it. Do not "simplify" this
+    into a literal: that re-breaks the identity check for a reason that will
+    look unrelated.
+    """
+    return "../../..//" + "/".join(parts)
+
+
+def test_a_relative_traversal_path_is_scrubbed(tmp_path):
+    # Traversal names the mount and the account without ever starting at a
+    # known absolute root, which is what the old path rule keyed on.
+    mount = "weirdmount"
+    account = "zoe"
+    line = _relative_path(mount, "homes", account, "logs", "run.txt")
+    (tmp_path / "trace.txt").write_text(f"opened {line}\n")
+
+    counts = redact_evidence.run(tmp_path, [])
+
+    text = (tmp_path / "trace.txt").read_text()
+    assert text.strip() == "opened <path>/run.txt"
+    assert mount not in text
+    assert account not in text
+    assert redact_evidence.verify(tmp_path, []) == []
+    assert counts["path"] >= 1
+
+
+def test_a_leaky_bundle_fails_the_step(tmp_path, capsys):
+    # A relative path with no .. is not something the rewrite can fix; the
+    # step must fail loudly rather than pack it. Built from parts for the
+    # same reason as _relative_path.
+    account = "zoe"
+    leak = "cache=" + "/".join(("data", "homes", account, "run.txt"))
+    (tmp_path / "leak.txt").write_text(leak + "\n")
+
+    assert redact_evidence.main([str(tmp_path), "--denylist", ""]) == 1
+
+    stderr = capsys.readouterr().err
+    assert "residual identity" in stderr
+    assert "leak.txt" in stderr

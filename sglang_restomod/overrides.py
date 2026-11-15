@@ -447,7 +447,7 @@ def _install_qsa_indexer_fp16() -> bool:
 def _install_qsa_mqa_head_alignment() -> bool:
     """Pad the QSA decode head count to 16 on sm70.
 
-    ``qsa/mqa.py:420`` picks a head alignment of 8 on CUDA and 16 on ROCm. The
+    ``qsa/mqa.py:599`` picks a head alignment of 8 on CUDA and 16 on ROCm. The
     TileLang GEMM warp partition on sm70 rejects N=8 (``N must be divisible by
     16``), so the CUDA choice cannot compile here. The padding is a zero-filled
     head slice, and the kernel's head sum is weight-free, so 16 changes no

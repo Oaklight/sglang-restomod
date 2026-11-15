@@ -54,6 +54,34 @@ def clone_at(repo: str, commit: str, dest: pathlib.Path) -> None:
             )
 
 
+def find_patch_dirs(root: pathlib.Path) -> list[pathlib.Path]:
+    """Return one entry per directory holding component patches, sorted.
+
+    A directory can hold several .patch files, so globbing the files and
+    taking their parents must dedupe: the directory, not the file, is the
+    unit of work (one clone, then every patch the manifest lists).
+    """
+    return sorted({p.parent for p in root.glob("sglang_restomod/**/patches/*.patch")})
+
+
+def check_patch(patch: pathlib.Path, dest: pathlib.Path, repo: str, commit: str) -> list[str]:
+    """Apply one patch to dest, then require it to reverse-apply."""
+    if not patch.is_file():
+        return [f"{patch}: missing"]
+    check = run(["git", "apply", "--check", str(patch)], cwd=dest)
+    if check.returncode != 0:
+        return [f"{patch}: does not apply to {repo}@{commit[:12]}: "
+                f"{check.stderr.strip()}"]
+    applied = run(["git", "apply", str(patch)], cwd=dest)
+    if applied.returncode != 0:
+        return [f"{patch}: apply failed: {applied.stderr.strip()}"]
+    reverse = run(["git", "apply", "--check", "--reverse", str(patch)], cwd=dest)
+    if reverse.returncode != 0:
+        return [f"{patch}: does not reverse-apply after apply: "
+                f"{reverse.stderr.strip()}"]
+    return []
+
+
 def check_dir(patch_dir: pathlib.Path, workdir: pathlib.Path) -> list[str]:
     manifest_path = patch_dir / MANIFEST_NAME
     if not manifest_path.is_file():
@@ -71,23 +99,7 @@ def check_dir(patch_dir: pathlib.Path, workdir: pathlib.Path) -> list[str]:
 
     problems: list[str] = []
     for name in patches:
-        patch = patch_dir / name
-        if not patch.is_file():
-            problems.append(f"{patch}: missing")
-            continue
-        check = run(["git", "apply", "--check", str(patch)], cwd=dest)
-        if check.returncode != 0:
-            problems.append(f"{patch}: does not apply to {repo}@{commit[:12]}: "
-                            f"{check.stderr.strip()}")
-            continue
-        applied = run(["git", "apply", str(patch)], cwd=dest)
-        if applied.returncode != 0:
-            problems.append(f"{patch}: apply failed: {applied.stderr.strip()}")
-            continue
-        reverse = run(["git", "apply", "--check", "--reverse", str(patch)], cwd=dest)
-        if reverse.returncode != 0:
-            problems.append(f"{patch}: does not reverse-apply after apply: "
-                            f"{reverse.stderr.strip()}")
+        problems.extend(check_patch(patch_dir / name, dest, repo, commit))
     return problems
 
 
@@ -101,9 +113,7 @@ def main() -> int:
     args = parser.parse_args()
 
     root = pathlib.Path(args.root).resolve()
-    patch_dirs = sorted(
-        p.parent for p in root.glob("sglang_restomod/**/patches/*.patch")
-    )
+    patch_dirs = find_patch_dirs(root)
     if not patch_dirs:
         print("no component patch directories; nothing to check")
         return 0

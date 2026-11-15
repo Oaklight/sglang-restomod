@@ -10,6 +10,12 @@ output ABI matches ``_decode_partial_kernel`` exactly so downstream code can
 reuse the unchanged TileLang combine kernel.
 
 Gated by ``SGLANG_V100_DECODE_CUDA=1``; falls back to TileLang otherwise.
+
+The first call builds the extension with ``torch.utils.cpp_extension`` when
+``SGLANG_V100_DECODE_CUDA_BUILD_DIR`` holds no up-to-date ``.so``. nvcc writes
+intermediates to ``TMPDIR`` and objects to that directory, so both must have
+space (1 GiB by default) and be writable; the loader checks this before
+invoking the compiler.
 """
 
 from __future__ import annotations
@@ -32,6 +38,68 @@ _OPS_LOAD_ATTEMPTED = False
 PAGE_SIZE = 16  # fixed page granularity supported by the CUDA kernel
 QSA_DECODE_TARGET_CTAS = 160
 QSA_DECODE_TOKENS_PER_SPLIT = 32
+
+# Room nvcc needs for this kernel's objects and ninja's temporaries. Below it
+# the build fails inside the compiler ("catastrophic error: error while writing
+# generated C file") or, on the older path, as a signal.
+_BUILD_HEADROOM_BYTES = 1 << 30
+
+
+def _info_once(message, *args):
+    """Log once when SGLang has installed ``info_once``, else log.
+
+    SGLang adds ``info_once`` to ``logging.Logger`` at import, and this module
+    is documented as importable without SGLang (tests, tools, a bare
+    interpreter). Resolving the method per call means a process that imports
+    SGLang later still gets the deduplicated line, and one that never does
+    still logs instead of raising ``AttributeError``.
+    """
+    once = getattr(logger, "info_once", None)
+    if once is None:
+        logger.info(message, *args)
+    else:
+        once(message, *args)
+
+
+def _preflight_build_space(build_directory):
+    """Fail fast when the build cannot fit, instead of nvcc dying on ENOSPC.
+
+    nvcc writes its intermediates to ``TMPDIR`` and the object files to the
+    build directory. On a full filesystem the first dies as signal 139 and the
+    second as a "catastrophic error" from nvcc; neither names the real problem.
+    """
+    import shutil
+    import tempfile
+
+    tmpdir = os.environ.get("TMPDIR") or "/tmp"
+    targets = [("TMPDIR", tmpdir)]
+    if os.path.abspath(str(build_directory)) != os.path.abspath(tmpdir):
+        targets.append(("SGLANG_V100_DECODE_CUDA_BUILD_DIR", str(build_directory)))
+    problems = []
+    for name, path in targets:
+        try:
+            free = shutil.disk_usage(path).free
+        except OSError as exc:
+            problems.append(f"{name}={path} is not usable ({exc.strerror})")
+            continue
+        if free < _BUILD_HEADROOM_BYTES:
+            problems.append(f"{name}={path} has {free / 2**30:.2f} GiB free")
+            continue
+        try:
+            with tempfile.NamedTemporaryFile(dir=path, prefix=".sm70-preflight-"):
+                pass
+        except OSError as exc:
+            problems.append(f"{name}={path} is not writable ({exc.strerror})")
+    if problems:
+        headroom = _BUILD_HEADROOM_BYTES / 2**30
+        raise RuntimeError(
+            "SM70 CUDA decode: the JIT build needs at least "
+            f"{headroom:.1f} GiB free and a writable directory for TMPDIR and "
+            "SGLANG_V100_DECODE_CUDA_BUILD_DIR, because nvcc writes "
+            "intermediates to the first and objects to the second: "
+            + "; ".join(problems)
+            + ". Point both at a filesystem with space before retrying."
+        )
 
 
 def sm70_cuda_decode_enabled() -> bool:
@@ -118,8 +186,12 @@ def _load_sm70_cuda_decode_ops():
     built = _load_built_extension(build_directory)
     if built is not None:
         _EXT = built
-        logger.info_once("SM70 (V100): CUDA long-context decode partial loaded.")
+        _info_once("SM70 (V100): CUDA long-context decode partial loaded.")
         return _EXT
+
+    # Outside the try below: a full or read-only filesystem is an environment
+    # error the caller must see, not a build failure to swallow.
+    _preflight_build_space(build_directory)
 
     from torch.utils.cpp_extension import load_inline
 
@@ -137,7 +209,7 @@ def _load_sm70_cuda_decode_ops():
     except Exception:  # pragma: no cover - build/environment failures
         logger.exception("SM70 CUDA decode partial failed to build")
         return None
-    logger.info_once("SM70 (V100): CUDA long-context decode partial loaded.")
+    _info_once("SM70 (V100): CUDA long-context decode partial loaded.")
     return _EXT
 
 

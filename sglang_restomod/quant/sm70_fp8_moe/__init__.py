@@ -37,6 +37,41 @@ _LOCK = threading.Lock()
 _LOADED = False
 _SO_PATH: str | None = None
 
+# The packed E4M3 epilogue spans complete K quantization groups and writes N
+# in 32-column HMMA-884 tiles. A partial group corrupts the packing and a
+# partial K group can wedge split-K completion, so both are refused here: the
+# kernel's own failure is a stall or a silently wrong result.
+_GROUP_SIZE = 128
+_N_PACK = 32
+
+
+def _check_gemm_shape(k: int, n: int, group_size: int = _GROUP_SIZE) -> None:
+    """Reject an expert GEMM the packed E4M3 kernel cannot represent."""
+    if k <= 0 or n <= 0:
+        raise RuntimeError(f"SM70 FP8 MoE needs positive K and N, got K={k} N={n}.")
+    if k % group_size:
+        raise RuntimeError(
+            f"SM70 FP8 MoE needs K a multiple of the {group_size}-wide "
+            f"quantization group, got K={k}."
+        )
+    if n % _N_PACK:
+        raise RuntimeError(
+            f"SM70 FP8 MoE needs N a multiple of {_N_PACK}, got N={n}."
+        )
+
+
+def _check_call_matches_prepared(k: int, n: int, experts: Experts) -> None:
+    """Reject a call whose K/N disagree with the prepared weights.
+
+    The packed weight and scale arrays have the prepared shape baked in. A
+    different K or N indexes them out of bounds instead of failing.
+    """
+    if k != experts.k or n != experts.n:
+        raise RuntimeError(
+            "SM70 FP8 MoE: gemm K/N disagree with the prepared experts "
+            f"(prepared K={experts.k} N={experts.n}, got K={k} N={n})."
+        )
+
 
 @dataclass(frozen=True)
 class Experts:
@@ -49,26 +84,30 @@ class Experts:
     k_ld: int
     q_ld: int
     num_experts: int
+    k: int
+    n: int
+    group_size: int
 
 
 def _default_so_path() -> str:
     """Resolve the TurboMind library the engine ships.
 
-    The pinned upstream has no ``sglang.kernels.sm70_paths`` module; that path
-    belongs to the fork. When it is absent the caller must point
-    ``SM70_TURBOMIND_SO`` (or ``SGLANG_SM70_TURBOMIND_SO``) at the library, so
-    fail with an actionable message instead of a bare ImportError.
+    Resolution goes through :mod:`sglang_restomod._sm70_paths`, which checks the
+    environment, the fork's ``sm70_prebuilt`` helper, and a list of standard
+    directories. A stock upstream engine has no ``sglang.kernels.sm70_paths``,
+    which is the case this project exists for, so that must not be a hard
+    failure: only an exhausted search is.
     """
-    try:
-        from sglang.kernels.sm70_paths import sm70_prebuilt
-    except ImportError as exc:
-        raise FileNotFoundError(
-            "SM70 TurboMind library path cannot be resolved: this engine has no "
-            "sglang.kernels.sm70_paths module. Set SM70_TURBOMIND_SO (or "
-            "SGLANG_SM70_TURBOMIND_SO) to the _sm70_turbomind_v100.so path."
-        ) from exc
+    from sglang_restomod._sm70_paths import describe_search, find_prebuilt
 
-    return str(sm70_prebuilt("_sm70_turbomind_v100.so"))
+    name = "_sm70_turbomind_v100.so"
+    found = find_prebuilt(name, env_names=(_SO_ENV, _SO_ENV_ALIAS))
+    if found is None:
+        raise FileNotFoundError(
+            "SM70 TurboMind library path cannot be resolved: "
+            + describe_search(name, env_names=(_SO_ENV, _SO_ENV_ALIAS))
+        )
+    return str(found)
 
 
 def ensure_loaded(so_path: str | None = None) -> str:
@@ -131,10 +170,12 @@ def prepare_experts(
     ``weights`` is ``[experts, N, K]`` e4m3, ``scales`` is
     ``[experts, N/group_size, K/group_size]`` fp32.
     """
+    experts = int(weights.shape[0])
+    n, k = int(weights.shape[1]), int(weights.shape[2])
+    _check_gemm_shape(k, n, group_size)
     ensure_loaded()
     import torch
 
-    experts = int(weights.shape[0])
     prepared = [
         torch.ops.sglang_sm70_turbomind.fp8_prepare(
             weights[e].contiguous(),
@@ -158,11 +199,17 @@ def prepare_experts(
         k_ld=k_ld,
         q_ld=q_ld,
         num_experts=experts,
+        k=k,
+        n=n,
+        group_size=group_size,
     )
 
 
 def gemm(out, sorted_input, expert_offsets, experts: Experts, *, k, n, gated_silu=True):
     """Run the expert GEMM into ``out`` (sorted order)."""
+    k, n = int(k), int(n)
+    _check_gemm_shape(k, n, experts.group_size)
+    _check_call_matches_prepared(k, n, experts)
     ensure_loaded()
     import torch
 
@@ -173,9 +220,9 @@ def gemm(out, sorted_input, expert_offsets, experts: Experts, *, k, n, gated_sil
         experts.ptr_w,
         experts.ptr_s,
         experts.num_experts,
-        int(k),
-        int(n),
-        128,
+        k,
+        n,
+        experts.group_size,
         bool(gated_silu),
     )
 

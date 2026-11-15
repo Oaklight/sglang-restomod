@@ -5,8 +5,11 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Read-only: this job verifies the reference branch, it does not move it. The
+# move needs a credential that may push workflow files, which a GITHUB_TOKEN
+# cannot be granted; see scripts/move_upstream.sh.
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: restomod-pin-sync
@@ -15,42 +18,9 @@ concurrency:
 jobs:
   restomod-pin-sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Move the reference upstream branch to the pin
-        run: |
-          set -euo pipefail
-          git config user.name "restomod-bot"
-          git config user.email "restomod-bot@users.noreply.github.com"
-
-          python - <<'PY' > /tmp/pin
-          import pathlib, tomllib
-          pin = tomllib.loads(pathlib.Path("UPSTREAM_PIN.toml").read_text())["upstream"]
-          print(pin["kind"])
-          print(pin["ref"])
-          print(pin["commit"])
-          PY
-          kind=$(sed -n '1p' /tmp/pin)
-          ref=$(sed -n '2p' /tmp/pin)
-          commit=$(sed -n '3p' /tmp/pin)
-
-          if [ "$kind" = "tag" ]; then
-            git fetch --depth 1 --force \
-              https://github.com/sgl-project/sglang.git \
-              "refs/tags/${ref}:refs/tags/${ref}"
-          else
-            git fetch --depth 1 --force \
-              https://github.com/sgl-project/sglang.git \
-              "$commit"
-          fi
-
-          git cat-file -e "${commit}^{commit}"
-          git push origin "${commit}:refs/heads/upstream" --force
-
-          label="${ref:-${commit:0:12}}"
-          git tag -f "upstream-${label}" "$commit"
-          git push origin "refs/tags/upstream-${label}" --force
+      - name: Check the reference upstream branch against the pin
+        run: scripts/move_upstream.sh --check

@@ -41,7 +41,18 @@ def test_load_enabled_registers_once(monkeypatch):
     assert calls == ["ok"]
 
 
-def test_component_without_register_is_an_error(monkeypatch):
+def test_component_without_register_is_recorded_not_raised(monkeypatch):
+    """A broken component definition must not take the whole plugin down.
+
+    This used to raise ``AttributeError``, which reads as fail-fast and is not:
+    ``sglang.srt.plugins`` wraps the plugin call in ``except Exception``, so the
+    raise dropped *every* component and the server started normally on the
+    pinned kernels. The failure is now recorded with the same message and the
+    neighbouring components still load.
+    """
+    from sglang_restomod import attest
+
+    attest.reset()
     module = types.ModuleType("restomod_broken_component")
     monkeypatch.setitem(sys.modules, "restomod_broken_component", module)
     monkeypatch.setitem(
@@ -49,5 +60,7 @@ def test_component_without_register_is_an_error(monkeypatch):
         "broken",
         plugins.Component("broken", "restomod_broken_component", "no register"),
     )
-    with pytest.raises(AttributeError, match="has no register"):
-        plugins.load_enabled({plugins.ENV_COMPONENTS: "broken"})
+    assert plugins.load_enabled({plugins.ENV_COMPONENTS: "broken"}) == []
+    detail = attest.snapshot()["components"]["broken"]["detail"]
+    assert "has no register" in detail
+    attest.reset()

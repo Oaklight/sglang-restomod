@@ -112,6 +112,11 @@ jobs:
 
           A non-zero patch check means a patch needs rebasing before this PR can
           merge. Accepted patches that already reverse-apply were removed.
+
+          After merging, move the reference branch from a maintainer checkout:
+          \`scripts/move_upstream.sh\`. CI cannot move it, because the token may
+          not push workflow files, and \`restomod-pin-sync\` fails until the move
+          runs.
           EOF
           )"
 

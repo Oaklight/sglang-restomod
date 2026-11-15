@@ -20,8 +20,9 @@ source .venv/bin/activate
 pip install -e . --no-deps
 ```
 
-`--no-deps` keeps SGLang out of the development environment. Install
-`sglang==0.5.22` separately if you need to run the server.
+`--no-deps` keeps SGLang out of the development environment. Install the
+SGLang version named by `UPSTREAM_PIN.toml` (`pypi_version`) separately if you
+need to run the server.
 
 ## Checks
 
@@ -68,6 +69,20 @@ Statuses: `pending`, `accepted`, `local-only`, `rejected`.
   `git apply --check --reverse`; it deletes only patches that reverse-apply.
 - `restomod-patch-guard` fails on an accepted patch that is still present and
   already reverse-applies.
+
+## Pin bump
+
+1. Re-pin `UPSTREAM_PIN.toml`, run `scripts/fetch_upstream.sh`, then
+   `scripts/apply_patches.sh`. `bump/upstream-*` is opened by CI, not by hand.
+2. Run `scripts/retire_patches.py` for accepted patches, and
+   `scripts/sync_kernels.py --check` after re-pinning `[kernels].commit`.
+3. Re-check the vendored QSA backend against the pin's own file and re-apply
+   the SM70 routes on top of it. It has been pin-based rather than fork-based
+   since #243. The step recurs because a bump adopts upstream QSA commits
+   (#45752 and #45791 were two) whose effect on our routes is not visible in
+   the bump's own diff: the file we re-apply onto changes, and nothing fails
+   until a route reads text that moved. Details:
+   [docs/qsa-sm70-audit.md](docs/qsa-sm70-audit.md).
 
 ## Branches and commits
 

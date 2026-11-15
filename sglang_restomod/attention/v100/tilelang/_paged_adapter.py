@@ -511,7 +511,10 @@ def _use_cuda_decode(*, batch, heads, heads_kv, dim, page_size, fp8_kv, e5m2_kv)
         reason = f"kv_dtype(fp8={fp8_kv},e5m2={e5m2_kv})"
     elif heads != 6 * heads_kv or dim != 256 or page_size != PAGE_SIZE:
         reason = f"shape(h={heads},hkv={heads_kv},d={dim},ps={page_size})"
-    elif batch <= 0:
+    elif batch != 1:
+        # The CUDA partial reads Q as q[(kv_head * group + row) * dim + d],
+        # with no batch offset, so only row 0 is correct. The TileLang partial
+        # indexes Q by batch and serves the rest.
         reason = f"batch={batch}"
     if reason is not None:
         # This gate runs once per layer per batch; without dedup a single run

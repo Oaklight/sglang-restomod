@@ -78,6 +78,9 @@ def _method(layer, experts, local_experts, top_k):
             use_mxfp8=False,
             is_fp4_experts=False,
             dequant_fp4_to_fp8=False,
+            # Read by Fp8MoEMethod.__init__ since v0.5.23; None means the
+            # engine decides, which is what a real Fp8Config provides.
+            convert_mxfp8_to_block_fp8=None,
         )
     )
     method.moe_runner_config = SimpleNamespace(

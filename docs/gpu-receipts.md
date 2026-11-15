@@ -47,6 +47,11 @@ On the operator host it is a dedicated venv's `oob`.
 
 ## Operator runbook
 
+Host and measurement prerequisites — device class, kernel libraries, build
+space, contexts, and what must not run alongside — are in
+[measurement-prerequisites.md](measurement-prerequisites.md). A receipt from a
+host that misses them is green and about the wrong machine.
+
 ### 1. Run the suite on the GPU host
 
 Check out the exact commit under test (the receipt binds the commit and its
@@ -71,6 +76,13 @@ The script records `dirty_files`; sign with `--allow-dirty` only when that
 number is deliberate, because the receipt binds the commit's tree, not the
 worktree.
 
+`gpus.csv` and `topo.txt` come from nvidia-smi, which needs the host driver
+library on the container's search path. Inside the CUDA image it often cannot
+find `libnvidia-ml.so` while CUDA itself works; the probe then writes that
+reason into both files and names `runtime.txt` as the source of GPU identity,
+instead of leaving the error text where topology belongs. `runtime.txt` is the
+torch view and is always written.
+
 With `--bench-host`, the suite also stores the endpoint's `/server_info` as
 `server_info.json`. If neither `/server_info` nor `/get_server_info` answers,
 the bundle gets `server_info.unavailable.txt` instead and no
@@ -93,12 +105,70 @@ once per value and appends to `bench.log`, so one bundle carries the
 single-stream rate and what batching buys on the same launch. Without it the
 bench runs at concurrency 1, as before.
 
+Two host conditions cost a run each on 2026-11-07; neither is a code defect and
+both are worth checking before a bench instead of during one.
+
+**The bench context must leave room for the output.** A bench client builds a
+prompt of exactly the requested token count, then the chat template and
+`max_tokens` are added on top. Against a server launched with
+`--context-length 4096`, `--contexts 4096` is rejected with HTTP 400 — the
+request is 4,096 prompt tokens plus 64 output tokens plus template overhead.
+Measured: `--contexts 4096` returned 400 on every rep, and `--contexts 3900`
+(3,912 actual tokens) served normally. Ask for the context minus a few hundred
+tokens, and record the prompt length the client reports rather than the
+`--contexts` label.
+
+**The decode JIT needs a build directory with space.** `attention_v100`'s
+decode extension builds through `torch.utils.cpp_extension`, and since #244 it
+refuses before nvcc when `TMPDIR` or `SGLANG_V100_DECODE_CUDA_BUILD_DIR` has
+less than 1 GiB free. On a host whose `/` is nearly full (28 MiB free on
+gpu-host-6) a cold build fails with the preflight message; a cached build in the
+default `/tmp/sglang_sm70_longctx_decode` lets the loader skip the check, so the
+failure only appears after the cache is cleared. Set
+`SGLANG_V100_DECODE_CUDA_BUILD_DIR` to a directory on the data mount in the
+launch environment.
+
 The suite also runs the GPU-marked component tests (`pytest -m gpu tests/`) and
 records them as `gpu_tests.txt`. The bench measures speed and the launch check
 measures routing; these are the only step that measures whether a kernel still
 computes what it claims. A failure fails the suite after the bundle is packed,
 so the evidence still explains it. `--skip-gpu-tests` exists for a host without
 the SM70 environment, and a bundle made with it says so by its absence.
+
+`--server-log <path>` answers a question no other file in the bundle can: did
+custom allreduce build? A failure there does not fail the launch — the server
+warns once, falls back to NCCL ring, and serves about 3.1 ms per decode step
+slower with every number still looking plausible (#260). The scan writes
+`custom_allreduce.txt` in three states: `failed` when the log carries
+`Setup Custom allreduce failed with`, `failure-absent-only` when it does not,
+and `not checked` when no log was passed. The middle state is deliberately not
+called a pass: at the pin there is no success line on the CUDA path, only the
+warning, so absence of the warning cannot confirm that the setup worked. A
+failure fails the suite after packing; a wrong `--server-log` path is an error,
+not a state.
+
+### Checking which components actually registered
+
+`versions.txt` cannot answer this: it comes from `importlib.metadata`, which
+reports the *installed* distribution, so a run that imports the engine from
+`PYTHONPATH` records the other tree's version. Log lines cannot answer it
+either — on the V100 hosts plugin-load logging does not reach the log file at
+all, including sglang's own `Available plugins`.
+
+Set `SGLANG_RESTOMOD_ATTEST=/path/attest.json` on the launch and the plugin
+writes what happened: the engine path and version **as imported**, the selected
+components, the loaded ones, the ones that raised with the exception text, and
+the ones that were selected but never attempted. Bundle that file with the
+evidence:
+
+```sh
+SGLANG_RESTOMOD_ATTEST=/tmp/attest.json SGLANG_PLUGINS=restomod ...
+```
+
+This matters because `sglang.srt.plugins` wraps the plugin call in
+`except Exception`: a component that raises leaves a server that starts
+normally, serves on the pinned kernels, and produces numbers indistinguishable
+from having selected nothing.
 
 The suite inherits the environment, and `versions.txt` is written by the
 interpreter it runs, not by the server it benchmarks. Export `PYTHONPATH` to

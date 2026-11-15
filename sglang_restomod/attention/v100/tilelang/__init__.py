@@ -6,6 +6,18 @@ on sglang's Triton backend. Adapted for sglang's tilelang 0.1.8
 (T.GemmWarpPolicy accessor, decorator-form jit, BaseKernelAdapter patch).
 """
 
-from ._paged_adapter import gather_fp8_paged_kv, grouped_decode_forward, paged_forward
-
 __all__ = ["gather_fp8_paged_kv", "grouped_decode_forward", "paged_forward"]
+
+
+def __getattr__(name):
+    """Import the adapter only when a public name is requested.
+
+    The adapter pulls torch, tilelang and the kernel builders; importing this
+    package must not (golden rule 1). ``from ... import paged_forward`` still
+    works because Python falls back to this hook.
+    """
+    if name in __all__:
+        from . import _paged_adapter
+
+        return getattr(_paged_adapter, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

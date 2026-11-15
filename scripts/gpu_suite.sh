@@ -10,11 +10,14 @@
 #   scripts/gpu_suite.sh --out evidence \
 #       --bench-host 127.0.0.1:11435 --model qwen38next-nvfp4 \
 #       --model-dir /path/to/checkpoint --contexts 8192,32768
+#   scripts/gpu_suite.sh --out evidence --server-log /tmp/server.log
 #
 # Environment:
-#   OOB      path to oob (default: oob from PATH)
-#   PYTHON   interpreter with torch (default: python3)
-#   GPUS     CUDA_VISIBLE_DEVICES for the probe (default: 0)
+#   OOB       path to oob (default: oob from PATH)
+#   PYTHON    interpreter with torch (default: python3)
+#   GPUS      CUDA_VISIBLE_DEVICES for the probe (default: 0)
+#   SM70_SITE sglang site the launch used; checked with scripts/check_site.py
+#             and recorded as site.txt (unset: not checked)
 #
 # --concurrency takes a comma list (for example 1,2,4); the bench runs once per
 # value and appends to bench.log, so one bundle carries the single-stream rate
@@ -23,6 +26,11 @@
 # The suite runs `pytest -m gpu tests/` and records the result as
 # gpu_tests.txt; a failure fails the suite after the bundle is packed. Use
 # --skip-gpu-tests on a host without the SM70 environment.
+#
+# --server-log names the serving log to scan for a failed custom-allreduce
+# setup, which costs about 3.1 ms per decode step and is otherwise silent.
+# custom_allreduce.txt is written either way: without the argument it records
+# that the check did not run, because a missing file reads as a pass.
 set -euo pipefail
 
 OUT=evidence
@@ -32,6 +40,7 @@ MODEL_DIR=""
 CONTEXTS="8192,32768"
 OUTPUT_TOKENS=128
 CONCURRENCY=""
+SERVER_LOG=""
 SKIP_GPU_PROBE=0
 SKIP_GPU_TESTS=0
 
@@ -44,9 +53,10 @@ while [[ $# -gt 0 ]]; do
     --contexts) CONTEXTS="$2"; shift 2 ;;
     --output-tokens) OUTPUT_TOKENS="$2"; shift 2 ;;
     --concurrency) CONCURRENCY="$2"; shift 2 ;;
+    --server-log) SERVER_LOG="$2"; shift 2 ;;
     --skip-gpu-probe) SKIP_GPU_PROBE=1; shift ;;
     --skip-gpu-tests) SKIP_GPU_TESTS=1; shift ;;
-    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,33p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -82,10 +92,74 @@ mkdir -p "$OUT"
   uname -srm
 } > "$OUT/commit.txt"
 
+# A site that cannot build its own kernels still serves and still produces a
+# green bundle: custom allreduce falls back to NCCL and the tuned MoE configs
+# fall back to a heuristic, each invisible except for one line in the server
+# log. When the operator names the site, refuse to pack evidence for one that
+# is not in its patched state.
+if [[ -n "${SM70_SITE:-}" ]]; then
+  if ! "$PYTHON" scripts/check_site.py "$SM70_SITE" > "$OUT/site.txt" 2>&1; then
+    echo "error: $SM70_SITE is not usable for a receipt; see $OUT/site.txt" >&2
+    exit 1
+  fi
+fi
+
 if [[ "$SKIP_GPU_PROBE" != "1" ]]; then
-  nvidia-smi -q > "$OUT/nvidia-smi-q.txt" 2>&1 || true
-  nvidia-smi --query-gpu=index,name,compute_cap,driver_version,clocks.current.sm,clocks.max.sm,memory.total,temperature.gpu --format=csv > "$OUT/gpus.csv" 2>&1 || true
-  nvidia-smi topo -m > "$OUT/topo.txt" 2>&1 || true
+  # nvidia-smi needs the host driver library on the container's search path.
+  # Inside the CUDA image it often prints "couldn't find libnvidia-ml.so"
+  # while CUDA itself works, and the bundle then carried that error text where
+  # topology belongs. Probe once; when the probe fails, say so and point at
+  # runtime.txt, which is the identity that always exists.
+  "$PYTHON" - "$OUT" <<'PY_PROBE'
+import os
+import subprocess
+import sys
+
+out = sys.argv[1]
+
+
+def run(args):
+    """Run one nvidia-smi command; return (ok, text)."""
+    try:
+        done = subprocess.run(args, capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, f"{args[0]}: {exc}"
+    if done.returncode != 0:
+        return False, (done.stderr or done.stdout).strip()
+    return True, done.stdout
+
+
+def write(name, text):
+    with open(os.path.join(out, name), "w") as handle:
+        handle.write(text)
+
+
+probe_ok, probe_text = run(
+    ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"]
+)
+if probe_ok:
+    for name, args in (
+        ("nvidia-smi-q.txt", ["nvidia-smi", "-q"]),
+        (
+            "gpus.csv",
+            [
+                "nvidia-smi",
+                "--query-gpu=index,name,compute_cap,driver_version,"
+                "clocks.current.sm,clocks.max.sm,memory.total,temperature.gpu",
+                "--format=csv",
+            ],
+        ),
+        ("topo.txt", ["nvidia-smi", "topo", "-m"]),
+    ):
+        ok, text = run(args)
+        write(name, text if ok else f"{' '.join(args)} failed:\n{text}\n")
+else:
+    write(
+        "topo.txt",
+        f"nvidia-smi unavailable: {probe_text}\nGPU identity is in runtime.txt.\n",
+    )
+    write("gpus.csv", "nvidia-smi unavailable; GPU identity is in runtime.txt\n")
+PY_PROBE
   CUDA_VISIBLE_DEVICES="$GPUS" "$PYTHON" - > "$OUT/runtime.txt" 2>&1 <<'PY'
 import torch
 
@@ -254,6 +328,26 @@ else:
     for component, check_component in CHECKS.items():
         if component in selected:
             check_component()
+
+    # The SM70 launch cannot import the flash_mla wheel, so the component stubs
+    # it before any worker imports an attention backend. Report which of the two
+    # this host gives, and with it whether the stub the workers get is
+    # installable here: a bundle that says "absent" over a graph-capturing
+    # launch is the case the stub exists for.
+    if "attention_v100" in selected:
+        try:
+            from sglang_restomod.attention.v100 import flash_mla_compat as fm
+
+            installed = fm.ensure_flash_mla_stub()
+            status = fm.flash_mla_status()
+            report(
+                status in ("stub", "imported", "importable"),
+                "flash_mla",
+                "importable wheel or restomod stub",
+                f"{status} (stub_installed={installed})",
+            )
+        except Exception as exc:  # noqa: BLE001 - the row must not vanish
+            report(False, "flash_mla", "importable wheel or restomod stub", repr(exc))
 sys.exit(1 if failures else 0)
 PY
     if [[ "$check_rc" -ne 0 ]]; then
@@ -299,6 +393,18 @@ if [[ "$SKIP_GPU_TESTS" != "1" ]]; then
   "$PYTHON" -m pytest -q -m gpu tests/ > "$OUT/gpu_tests.txt" 2>&1 || GPU_TEST_RC=$?
 fi
 
+# A custom-allreduce setup that fails to build costs about 3.1 ms per decode
+# step and leaves one warning in the serving log; nothing else in this bundle
+# can see it. The state is written whether or not a log was supplied, because a
+# missing file reads as a pass.
+ALLREDUCE_RC=0
+if [[ -n "$SERVER_LOG" ]]; then
+  "$PYTHON" scripts/check_allreduce.py --server-log "$SERVER_LOG" \
+    --out "$OUT/custom_allreduce.txt" > /dev/null || ALLREDUCE_RC=$?
+else
+  "$PYTHON" scripts/check_allreduce.py --out "$OUT/custom_allreduce.txt" > /dev/null
+fi
+
 # The archive goes to a public release asset. Strip paths under a home or site
 # mount, NVIDIA serials, UUIDs and bus ids, and any IDENTITY_DENYLIST name
 # before anything is packed.
@@ -309,6 +415,10 @@ PACK="${OUT%/}.tgz"
 echo "evidence: $PACK"
 if [[ "$GPU_TEST_RC" -ne 0 ]]; then
   echo "error: a GPU test failed; see $OUT/gpu_tests.txt" >&2
+  exit 1
+fi
+if [[ "$ALLREDUCE_RC" -ne 0 ]]; then
+  echo "error: custom allreduce is not usable on this launch; see $OUT/custom_allreduce.txt" >&2
   exit 1
 fi
 if [[ "$DIRTY" != "0" ]]; then

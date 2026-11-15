@@ -144,7 +144,10 @@ Requirements and refusals, checked at startup:
   scan misses the prefill target, the fallback is the dense matmul below the
   reference's fused-scan gate, not a new algorithm.
 - **Graphs.** Prefill selection is host-orchestrated in the reference and is not
-  CUDA-graph capturable; decode selection is. Do not promise a captured prefill.
+  CUDA-graph capturable. At the pin decode selection is not capturable either:
+  the backend keeps the bucket table on the host and refuses capture, which is
+  why every launch passes `--disable-cuda-graph`. Do not promise a captured
+  prefill or a captured decode.
 - **Pinned internals.** The component imports pinned SGLang symbols lazily, as
   the QSA backend does. A pin bump can break them; the component must fail at
   startup, not on the first forward.

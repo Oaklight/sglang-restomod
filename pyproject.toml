@@ -18,7 +18,13 @@ classifiers = [
 dependencies = [
   # The baseline. When patches exist, scripts/build.sh installs a patched
   # source tree at the same version instead of this wheel.
-  "sglang==0.5.22",
+  "sglang==0.5.23",
+  # The engine asserts this at startup (`assert_pkg_version` in
+  # sglang/srt/utils/common.py) with a 0.4.9 floor and refuses to serve
+  # without it. It arrives transitively only when sglang is installed as a
+  # wheel; running from a patched source tree on PYTHONPATH drops the
+  # transitive dependency entirely, so it has to be declared here.
+  "sglang-kernel>=0.4.9",
 ]
 
 [project.optional-dependencies]
@@ -49,9 +55,15 @@ include = ["sglang_restomod*"]
 [tool.setuptools.package-data]
 "sglang_restomod.attention.v100" = ["kernels/*.cu", "kernels/SHA256SUMS", "PROVENANCE.md"]
 "sglang_restomod.attention.lsa_sm70" = ["PROVENANCE.md"]
+"sglang_restomod.linear_attn_sm70" = ["PROVENANCE.md"]
 "sglang_restomod.quant.sm70_fp8_moe" = ["*.cpp", "README.md"]
-"sglang_restomod.quant.sm70_fp4_moe" = ["PROVENANCE.md"]
-"sglang_restomod.quant.sm70_marlin_v100" = ["patches/*.patch", "patches/README.md"]
+"sglang_restomod.quant.sm70_fp4_moe" = ["PROVENANCE.md", "csrc/*.cu"]
+"sglang_restomod.quant.sm70_fp4_dense" = ["PROVENANCE.md"]
+"sglang_restomod.quant.sm70_marlin_v100" = [
+  "patches/*.patch",
+  "patches/README.md",
+  "patches/manifest.json",
+]
 "sglang_restomod.spec" = ["cccl/cuda/functional"]
 
 [tool.ruff]

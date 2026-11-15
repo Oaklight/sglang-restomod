@@ -1,5 +1,15 @@
 # Architecture
 
+## This is a mod, not a mirror
+
+The project exists because SGLang does not work well on SM70. Where upstream is
+wrong for this hardware -- a kernel that lowers `tl.dot` to scalar FMA, a backend
+that assumes SM80, a shape gate that refuses a Volta-only layout -- this
+repository changes it. The patch queue and the component interface are the
+bookkeeping for those changes, not a gate on whether to make them. What still
+binds is evidence: nothing lands without a run on the hardware, and nothing is
+called verified until one says so.
+
 ## The model
 
 `main` is a layer, not a fork:
@@ -78,8 +88,11 @@ patch earlier would silently remove a fix that the pinned source does not have.
   patch applicability, and retires accepted patches that are now redundant;
 - divergent history: open an issue, do not force a merge.
 
-`restomod-pin-sync` moves the `upstream` reference branch to the pin after each
-`main` push and tags it `upstream-<tag>`.
+`scripts/move_upstream.sh` moves the `upstream` reference branch to the pin and
+tags it `upstream-<tag>`. It is a maintainer step, not a workflow one: the tree
+contains `.github/workflows/`, and a `GITHUB_TOKEN` may not push those files.
+`restomod-pin-sync` runs `scripts/move_upstream.sh --check` after each `main`
+push and fails when the branch or the tag is stale.
 
 ## Contributing upstream
 
@@ -96,7 +109,7 @@ with only the upstreamable change, and open the PR from there. Never push
 | `restomod-ci` | compile, pin/manifest checks, build + twine check |
 | `restomod-patch-guard` | fetch the pin, apply/check patches, enforce retirement |
 | `restomod-upstream-watch` | detect new tags, open bump PRs, retire redundant patches |
-| `restomod-pin-sync` | move the reference `upstream` branch |
+| `restomod-pin-sync` | check the reference `upstream` branch against the pin |
 | `test-release` | version-checked TestPyPI publish |
 | `release` | version-checked PyPI publish; creates the tag and GitHub Release |
 

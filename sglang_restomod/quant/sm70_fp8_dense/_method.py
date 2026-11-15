@@ -30,13 +30,65 @@ def _resolve_sm70_paths():
 
 _sm70_csrc, _sm70_prebuilt = _resolve_sm70_paths()
 
-_DEFAULT_OPS_PATH = (
-    str(_sm70_prebuilt("_sm70_turbomind_v100.so")) if _sm70_prebuilt else None
-)
+def _discover_default_ops_path() -> str | None:
+    """Locate the TurboMind library without requiring a fork module.
+
+    The fork resolves it through ``sglang.kernels.sm70_paths``, which the pinned
+    upstream does not ship. Discovery in :mod:`sglang_restomod._sm70_paths`
+    covers the environment and the standard directories, so a stock engine
+    finds the library without anyone exporting a variable.
+    """
+    from sglang_restomod._sm70_paths import find_prebuilt
+
+    found = find_prebuilt(
+        "_sm70_turbomind_v100.so",
+        env_names=("SM70_TURBOMIND_SO", "SGLANG_SM70_TURBOMIND_SO"),
+    )
+    return str(found) if found is not None else None
+
+
+_DEFAULT_OPS_PATH = _discover_default_ops_path()
 _OPS_LOAD_ATTEMPTED = False
 _OPS_AVAILABLE = False
 
 _PREFILL_BACKENDS = ("auto", "turbomind", "fp16")
+
+# The packed E4M3 kernel spans complete K quantization groups and writes N in
+# 32-column HMMA-884 tiles. A partial K group can wedge split-K completion and
+# a partial N tile corrupts the packing, so both shapes are refused before
+# packing or dispatch: the kernel's own failure is a stall or a wrong result.
+_GROUP_SIZE = 128
+_N_PACK = 32
+
+
+def _check_dense_weight_shape(
+    n: int, k: int, group_size: int = _GROUP_SIZE
+) -> None:
+    """Reject a block-FP8 weight the packed E4M3 kernel cannot represent."""
+    if n <= 0 or k <= 0:
+        raise RuntimeError(
+            f"SM70 TurboMind FP8 needs positive N and K, got N={n} K={k}."
+        )
+    if n % _N_PACK:
+        raise RuntimeError(
+            f"SM70 TurboMind FP8 needs N a multiple of {_N_PACK}, got N={n}."
+        )
+    if k % group_size:
+        raise RuntimeError(
+            f"SM70 TurboMind FP8 needs K a multiple of the {group_size}-wide "
+            f"quantization group, got K={k}."
+        )
+
+
+def _check_activation_k(layer: torch.nn.Module, x_2d: torch.Tensor) -> None:
+    """Reject an activation whose K differs from the prepared weight's K."""
+    expected = getattr(layer, "sm70_fp8_in_features", None)
+    if expected is not None and x_2d.shape[-1] != expected:
+        raise RuntimeError(
+            "SM70 TurboMind FP8: activation K disagrees with the prepared "
+            f"weight (prepared K={expected}, got {x_2d.shape[-1]})."
+        )
+
 
 # --- SM70 QPN8 decode backend (W8A16, M<=8, default on) ----------------
 # Adapted from v100-skinny's QPN8 kernel for our block-wise [N/128][K/128]
@@ -285,13 +337,45 @@ def _use_sm70_fp8_prefill_dispatch(layer: torch.nn.Module) -> bool:
     ) != 0 and hasattr(torch.ops.sglang_sm70_turbomind, "fp8_prefill_dispatch")
 
 
+def _resolve_ops_path() -> str | None:
+    """Name the TurboMind library, or ``None`` when nothing names it.
+
+    The dense kernel path predates the MoE one and used its own variable, but
+    the site launchers only export the MoE names. A host that serves the MoE
+    experts and leaves ``SGLANG_SM70_TURBOMIND_OPS_PATH`` alone therefore
+    disabled the dense kernel without saying so. Accept all three names:
+    the explicit dense variable first, then the fork's own resolver, then the
+    MoE aliases.
+    """
+    explicit = os.environ.get("SGLANG_SM70_TURBOMIND_OPS_PATH")
+    if explicit:
+        return explicit
+    if _DEFAULT_OPS_PATH:
+        return _DEFAULT_OPS_PATH
+    for name in ("SM70_TURBOMIND_SO", "SGLANG_SM70_TURBOMIND_SO"):
+        value = os.environ.get(name)
+        if value:
+            return value
+    return None
+
+
 def _load_sm70_turbomind_fp8_ops() -> bool:
     global _OPS_AVAILABLE, _OPS_LOAD_ATTEMPTED
     if _OPS_LOAD_ATTEMPTED:
         return _OPS_AVAILABLE
     _OPS_LOAD_ATTEMPTED = True
 
-    ops_path = Path(os.environ.get("SGLANG_SM70_TURBOMIND_OPS_PATH", _DEFAULT_OPS_PATH))
+    ops_path = _resolve_ops_path()
+    if not ops_path:
+        # Nothing names the library. That is a provisioning gap, not a load
+        # failure: report it the same way a failed load is reported, so every
+        # caller can keep its fallback.
+        logger.warning(
+            "SM70 TurboMind FP8 operators unavailable: no library path "
+            "(set SGLANG_SM70_TURBOMIND_OPS_PATH, SM70_TURBOMIND_SO or "
+            "SGLANG_SM70_TURBOMIND_SO)"
+        )
+        return _OPS_AVAILABLE
     try:
         torch.ops.load_library(str(ops_path))
         _OPS_AVAILABLE = hasattr(
@@ -347,6 +431,26 @@ def prepare_sm70_turbomind_fp8_linear(layer: torch.nn.Module) -> None:
     if getattr(layer, "weight_block_size", None) != [128, 128]:
         raise RuntimeError("SM70 TurboMind FP8 requires weight_block_size=[128, 128].")
 
+    stored = layer.weight
+    if stored.dim() != 2:
+        raise RuntimeError(
+            "SM70 TurboMind FP8 requires a 2-D weight, got shape "
+            f"{tuple(stored.shape)}."
+        )
+    n, k = (int(dim) for dim in stored.shape)
+    _check_dense_weight_shape(n, k)
+    expected_scales = (
+        (n + _GROUP_SIZE - 1) // _GROUP_SIZE,
+        (k + _GROUP_SIZE - 1) // _GROUP_SIZE,
+    )
+    stored_scales = tuple(layer.weight_scale_inv.shape)
+    if stored_scales != expected_scales:
+        raise RuntimeError(
+            "SM70 TurboMind FP8 requires scales of "
+            f"[ceil(N/{_GROUP_SIZE}), ceil(K/{_GROUP_SIZE})] = "
+            f"{expected_scales}, got {stored_scales}."
+        )
+
     # QPN8 decode codes must be captured from the raw checkpoint weight before
     # the TurboMind repack replaces it.
     _maybe_prepare_sm70_fp8_qpn8(layer)
@@ -372,6 +476,7 @@ def prepare_sm70_turbomind_fp8_linear(layer: torch.nn.Module) -> None:
     layer.sm70_fp8_q_ld = int(meta[1].item())
     layer.sm70_fp8_turbomind = True
     layer.sm70_fp8_gated_silu = is_gated_silu
+    layer.sm70_fp8_in_features = k
     prefill_backend = _get_sm70_fp8_prefill_backend()
     exact_dense_enabled = _env_flag("SGLANG_SM70_FP8_PREFILL_EXACT_DENSE", "1")
     if (
@@ -405,6 +510,7 @@ def apply_sm70_turbomind_fp8_linear(
     x_2d = x.reshape(-1, x.shape[-1])
     if x_2d.stride(-1) != 1:
         x_2d = x_2d.contiguous()
+    _check_activation_k(layer, x_2d)
     k, n = (
         layer.sm70_fp8_qpn8_shape
         if getattr(layer, "sm70_fp8_qpn8_ready", False)
@@ -481,6 +587,7 @@ def apply_sm70_turbomind_fp8_fused_silu_and_mul(
     x_2d = x.reshape(-1, x.shape[-1])
     if x_2d.stride(-1) != 1:
         x_2d = x_2d.contiguous()
+    _check_activation_k(layer, x_2d)
     out_features = layer.output_size_per_partition // 2
     k, n = (
         layer.sm70_fp8_qpn8_shape

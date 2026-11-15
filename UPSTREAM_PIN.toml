@@ -1,18 +1,19 @@
 # The upstream baseline this layer targets.
 #
-# `upstream` is a reference branch in this repository containing the pristine
-# SGLang tree at this commit. `main` does not merge it; it only carries the
-# layer, the patches, and the pin.
+# `upstream` is a reference branch in this repository containing the
+# pristine SGLang tree at this commit. `main` does not merge it; it only
+# carries the layer, the patches, and the pin.
 #
 # `scripts/upstream_bump.py` updates this file and patches/manifest.json.
 
 [upstream]
 repo = "sgl-project/sglang"
 kind = "tag"
-ref = "v0.5.22"
-commit = "baa9befa381511cd4d56f83980951e5a45fffc6d"
-pypi_version = "0.5.22"
-pinned_at = "2026-10-23"
+ref = "v0.5.23"
+commit = "297e54fd105e974cdf401e5b4d20253a22c16f90"
+pypi_version = "0.5.23"
+pinned_at = "2026-11-06"
+
 
 # Kernel sources are not vendored by hand any more. They arrive through a git
 # submodule pinned to a commit (the repository has no tags) and are copied into
@@ -20,7 +21,7 @@ pinned_at = "2026-10-23"
 # SHA256SUMS next to the `.cu` files. `--check` fails on any drift.
 [kernels]
 repo = "https://github.com/Oaklight/sm70-kernels.git"
-commit = "bdf1e56a3c46f39c03b85f69856ae95834ee564a"
+commit = "7f7467a46eb4ddf79ea9be9dd0d0e9a61d2cb402"
 path = "third_party/sm70-kernels"
 
 [[kernels.files]]
@@ -34,6 +35,19 @@ sha256 = "3038250394ab872958e09a3eb98be914e471da8b99f5c4f199ccfc90b31b0b2f"
 source = "sm70_kernels/tilelang_fa/_kernels_paged.py"
 dest = "sglang_restomod/attention/v100/tilelang/_kernels_paged.py"
 sha256 = "f12b45d6a1f67de2e4a3f6598d92dc58332b20eb7b1044d9f4e4a97690dd8b1a"
+
+# The GDN prefill pair, bound to the FLA wrappers by `linear_attn_sm70`. The
+# copies are generated from the pin like the two above, so the component ships
+# exactly the kernel the pin names; do not edit them in place.
+[[kernels.files]]
+source = "sm70_kernels/gdn_chunk_o/_chunk_o.py"
+dest = "sglang_restomod/linear_attn_sm70/_gdn_chunk_o.py"
+sha256 = "b1370f83735fb4693bcba65d79122e909f12a3e9990cfe4f975dc1570e393d13"
+
+[[kernels.files]]
+source = "sm70_kernels/gdn_chunk_h/_chunk_h.py"
+dest = "sglang_restomod/linear_attn_sm70/_gdn_chunk_h.py"
+sha256 = "5bf333f83d8c259267301fa6bf5a4deef8f66f1b0df7f83a9d723470eabf5a19"
 
 # Latent Sparse Attention is not vendored either. The standalone package is the
 # only implementation; the `lsa_sm70` component in this repository is a shim
