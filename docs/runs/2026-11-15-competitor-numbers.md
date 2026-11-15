@@ -32,12 +32,20 @@ The decomposition survives the variance, so it is the useful statement:
 | ours TP4, SPEC=1, lambda6 median | 26.8 | 3.10 marginal | 115.5 |
 | ratio | **1.38x slower per step** | **1.23x better accept** | 1.12x behind |
 
-Our per-step kernel time is **38% worse** and our draft acceptance **23% better**;
-the two nearly cancel. The kernel deficit is real and larger than the old "27%"
-framing suggested, and it is currently paid for by draft quality rather than
-hidden. `1.38 / 1.23 = 1.12` is an identity on these cells, so a reader can check
-it. It also predicts that better accept buys less than fixing the step, which is
-the opposite of what the 27% framing implied.
+Read the decomposition carefully: the two step figures are **not measured the same
+way**. Ours — 26.8 ms and 3.10 tokens per step — are both marginal and both from
+our own two runs, so they are internally consistent. 1Cat's 19.4 ms is
+`slope x average accept` at its published average 2.51, which assumes that
+average held across the 32-to-128 window; we do not hold their short-run verify
+count and will not invent one. The throughput ratio **1.12x is solid**, because
+both sides are `1/slope` with no accept in the arithmetic. The step/accept split
+is the shape of the difference, not a like-for-like measurement.
+
+Read conditionally, it says: if 1Cat's average accept held over that window, our
+per-step kernel time is 38% worse and our acceptance 23% better, and the two
+nearly cancel. On that reading the kernel deficit is real and larger than the old
+"27%" framing suggested, it is currently paid for by draft quality, and improving
+accept further buys less than fixing the step.
 
 Two arms, two boxes, not averaged: **lambda1 95.3** (one arm, old bench) and
 **lambda6 115.5** median (range 104-145). Same tree and NEXTN on both; accept is
@@ -48,11 +56,11 @@ and have nothing to compare it to: 1Cat publishes only its MTP arm.
 
 **Prefill**, our first pair with MTP on both sides: **2971 tok/s**, SPEC=1 on
 lambda6, cold (`cached=0`), against 1Cat's 4825 MTP4 — **1.62x theirs, we trail
-38%**. Like for like in arm, unlike in box; lambda6 also carries about **1.7 GiB
-per card of someone else's resident allocations**, idle but held. A SPEC=0 arm on
-the same lambda6 box decides whether what remains is the MTP cost or the box; it
-is in flight and I will not guess. The contended-island 3450-3565 stays withheld
-from the verdict.
+38%**. Like for like in arm; **not established as the same configuration** (see
+below), and on a box that carries about **1.7 GiB per card of someone else's
+resident allocations**, idle but held. A SPEC=0 arm on the same lambda6 box is
+loading; until it and multi-node's diff land, the 38% is **unattributed**. The
+contended-island 3450-3565 stays withheld from the verdict.
 
 **Cross-quant caveat that applies to the whole note.** Strata runs IQ2_XS
 (35.5 GB of experts) against our fp8/fp4 (125.9 GiB). That is not a tok/s
@@ -174,6 +182,32 @@ SPEC=1 prefill we hold is the 2971 above, from lambda6. The direction holds in
 every pairing we hold; the size of the win does not, and the contended numbers are
 not quotable as ours.
 
+### The two boxes are not established as the same configuration
+
+Counting the known gates in each run's log (counted by the coordinator; I
+re-counted the lambda6 side myself):
+
+| gate | lambda4 (the 4199 run) | lambda6 (the 2971 run) |
+|---|---:|---:|
+| `Using default MoE kernel config` | 0 | **8** |
+| `Setup Custom allreduce failed` | 0 | 0 |
+
+Same model, same prompt size, same site path — but lambda4 never entered the
+Triton fused-MoE config lookup and lambda6 entered it eight times. Both trees
+carry identical `configs/triton_3_5_1/` contents and neither has a V100 or
+`E=512` entry, so this is **not a missing file: it is a different MoE code path**.
+Expert GEMM tiling is prefill-side, so it is a candidate cause of much of the
+2971-vs-4199 difference, and it is a configuration difference rather than a host
+one.
+
+My own count is unambiguous on the side I can see: of fourteen
+`launch-11480*.log` files, `Using default MoE kernel config` appears only in
+`launch-11480-l6spec1c.log` — the launch that produced 2971 — eight times, and
+zero in every other, including the lambda4 SPEC=1 attempt.
+
+Until multi-node's diff lands the prefill gap has three candidate causes — MTP
+cost, box, MoE path — and this note adopts none of them.
+
 Rule: **never cite a prefill number without the component list.** The
 difference is invisible at `register()` time and does not appear as a log
 line, so the component list is the only record of which arm ran.
@@ -287,10 +321,12 @@ does not exist.
 
 The decode row is like for like in arm. The prefill row now is too, for the first
 time: 2971 is our SPEC=1 arm on lambda6 and 4825 is 1Cat's MTP4. That is like for
-like in arm and unlike in box — a better claim and a worse number than the 4199
-comparison it replaces. 4199 stays in the table only because it is the one
-clean-island prefill we hold; it is a SPEC=0 arm against their MTP4, so it is
-recorded and not quoted as a ratio.
+like in arm, unlike in box, and **not established as the same configuration** —
+the lambda6 log enters the default MoE kernel path eight times where the lambda4
+log does not. It is a better claim and a worse number than the 4199 comparison it
+replaces, and the 38% is **unattributed** until multi-node's diff lands. 4199
+stays in the table only because it is the one clean-island prefill we hold; it is
+a SPEC=0 arm against their MTP4, so it is recorded and not quoted as a ratio.
 
 ### Against Strata — SPEC=1 to `--spec 2`
 
@@ -329,6 +365,15 @@ has no Strata peer; 1Cat ships no 1/2/8-card recipe.
 
 ## Protocol caveats that apply to any reuse
 
+- **Engine trees differ by arm, and they are not the same tree.** The lambda1 and
+  lambda6 arms ran `flashnext/repo/.build/sglang/python`, a source checkout at git
+  tag `v0.5.23` (commit `297e54f`, checked with `git describe`). The 4199 arm is
+  reported to have run the canonical pin site `sites/pin-v0.5.23/`
+  (`sglang-0.5.23.dist-info`); I did not verify that from a launch record, since
+  the only attestation file I can read describes a `.build` launch. Same tag,
+  different trees, and the patch sets are not established as equal. The version
+  banner in the `.build` tree reads `0.0.0.dev1+g73abfe1dd`, which is stale
+  metadata — read the git tag, not the banner.
 - Checkpoints differ by construction: 1Cat served NVIDIA's original NVFP4
   (MTP in FP8); we served model-sm70 (`mtp.*` unquantized).
 - 1Cat's attention block size is 816 (mamba page alignment); ours is page 64.
