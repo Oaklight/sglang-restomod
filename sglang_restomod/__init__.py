@@ -27,11 +27,17 @@ def register() -> None:
     Loads only the components named in ``SGLANG_RESTOMOD_COMPONENTS``. With the
     variable unset the plugin stays inert, which is the baseline behaviour.
     """
+    from . import attest
     from .plugins import load_enabled, selection
 
     selected = selection()
     if not selected:
         logger.info("sglang-restomod plugin loaded (no components selected)")
+        # Still attested: "the plugin loaded and nothing was selected" is a
+        # different fact from "the plugin never ran", and a reader needs to be
+        # able to tell them apart.
+        attest.set_selected([])
+        attest.write()
         return
 
     # Install the engine overrides first. A component that raises while
@@ -42,3 +48,6 @@ def register() -> None:
     install_overrides()
     loaded = load_enabled()
     logger.info("sglang-restomod plugin loaded (components: %s)", ", ".join(loaded))
+    # Written unconditionally when the path is configured, including when some
+    # component failed, because the failures are the reason to look.
+    attest.write()

@@ -135,6 +135,29 @@ computes what it claims. A failure fails the suite after the bundle is packed,
 so the evidence still explains it. `--skip-gpu-tests` exists for a host without
 the SM70 environment, and a bundle made with it says so by its absence.
 
+### Checking which components actually registered
+
+`versions.txt` cannot answer this: it comes from `importlib.metadata`, which
+reports the *installed* distribution, so a run that imports the engine from
+`PYTHONPATH` records the other tree's version. Log lines cannot answer it
+either — on the V100 hosts plugin-load logging does not reach the log file at
+all, including sglang's own `Available plugins`.
+
+Set `SGLANG_RESTOMOD_ATTEST=/path/attest.json` on the launch and the plugin
+writes what happened: the engine path and version **as imported**, the selected
+components, the loaded ones, the ones that raised with the exception text, and
+the ones that were selected but never attempted. Bundle that file with the
+evidence:
+
+```sh
+SGLANG_RESTOMOD_ATTEST=/tmp/attest.json SGLANG_PLUGINS=restomod ...
+```
+
+This matters because `sglang.srt.plugins` wraps the plugin call in
+`except Exception`: a component that raises leaves a server that starts
+normally, serves on the pinned kernels, and produces numbers indistinguishable
+from having selected nothing.
+
 The suite inherits the environment, and `versions.txt` is written by the
 interpreter it runs, not by the server it benchmarks. Export `PYTHONPATH` to
 the engine under test before running it, or the bundle will name whatever

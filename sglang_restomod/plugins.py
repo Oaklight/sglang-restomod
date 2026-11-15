@@ -127,15 +127,52 @@ def is_enabled(name: str, env: Mapping[str, str] | None = None) -> bool:
 
 
 def load_enabled(env: Mapping[str, str] | None = None) -> Sequence[str]:
-    """Import and register every selected component; return the loaded names."""
+    """Import and register every selected component; return the loaded names.
+
+    One component that fails does not take the others with it. That matters
+    more than it looks: ``sglang.srt.plugins`` wraps this whole call in
+    ``except Exception``, so a raise here used to leave a server that started
+    normally with *every* component missing, and the only symptom was numbers
+    that matched having selected nothing. Each outcome is recorded in
+    :mod:`sglang_restomod.attest` so it can be checked from outside.
+    """
+    from . import attest
+
+    selected = list(selection(env))
+    attest.set_selected(selected)
     loaded: list[str] = []
-    for name in selection(env):
+    for name in selected:
         component = COMPONENTS[name]
-        module = importlib.import_module(component.module)
-        register = getattr(module, "register", None)
-        if register is None:
-            raise AttributeError(f"component {name!r} ({component.module}) has no register()")
-        register()
+        try:
+            module = importlib.import_module(component.module)
+            register = getattr(module, "register", None)
+            if register is None:
+                raise AttributeError(
+                    f"component {name!r} ({component.module}) has no register()"
+                )
+            register()
+        except Exception as exc:
+            # Recorded rather than raised: the rest of the stack is still
+            # worth having, and a silent total failure is what this replaces.
+            attest.record(name, False, f"{type(exc).__name__}: {exc}")
+            logger.warning(
+                "sglang-restomod: component %s failed to register and is not active",
+                name,
+                exc_info=True,
+            )
+            continue
+        attest.record(name, True)
         loaded.append(name)
         logger.debug("sglang-restomod: component %s registered", name)
+    # Only names with no record at all: a component that raised already carries
+    # the exception text, and that is the most useful thing in the report.
+    recorded = attest.snapshot()["components"]
+    for name in sorted(set(selected) - set(recorded)):
+        attest.record(name, False, "selected but not loaded")
+    logger.info(
+        "sglang-restomod: %d/%d components active (%s)",
+        len(loaded),
+        len(selected),
+        ", ".join(sorted(loaded)) or "none",
+    )
     return loaded
