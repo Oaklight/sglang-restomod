@@ -268,6 +268,37 @@ a complete capture or the counter:
 > dispatch, printed at teardown — no profile window, and it answers which shapes
 > each expert path serves, which is the question the partial capture cannot.
 
+### 5.2 The GEMV/Marlin A/B: per-call numbers do not compose into a step
+
+One control launch, `SM70_MOE_DECODE_GEMV=0`, same tree, host, day and bench as the
+arm before it:
+
+| arm | step | accept | prefill |
+|---|---:|---:|---:|
+| GEMV on | **25.29 ms** | 3.12 | 1,059 ms |
+| GEMV off | **27.36 ms** | 2.74 | 1,064 ms |
+
+**Turning our no-tile kernel off costs 8.2% of a decode step**, which is outside
+the 3.8% drift floor and therefore decidable. That contradicts the per-call
+arithmetic — 61.4 µs for ours at m=4 against Marlin's 43.6 at m ≥ 12 — and the
+contradiction is the finding: **per-call duration is not the quantity that composes
+into a step.** The candidate explanations are launch count, tile padding on rows
+that carry one real token, or a cache pattern the per-call timer does not see. None
+is measured, and the ~2 ms gap between the two views is now the thing to explain
+before any further expert-kernel proposal.
+
+**Two items this arm settles by making them provable rather than inferred:**
+
+- **`n=160` never reaches that call site**, in any configuration, now that the
+  counter sits unconditionally at the Marlin dispatch. So the routed **down
+  projection is dispatched somewhere the instrument cannot see**, and the 1.87x
+  down ratio measured from the trace is therefore **not attributed to a kernel** —
+  the "down is Marlin's 64-row tile" reading loses its basis until something counts
+  at the real call.
+- **`n=2560` is the dense and shared-expert Marlin series, not MoE**, in both arms
+  (m = 40–320 at decode, 40,960 at prefill). A reader who sees a 40-row Marlin
+  series beside a 40,960-row prefill row will assume routed experts; it is not.
+
 **Rule adopted from this:** an all-reduce count is quoted **with its per-call size,
 its TP degree, and its span filter**. A family share from a window that contains
 prefill is not a decode share, and "96 collectives" alone cannot be compared between
