@@ -244,13 +244,38 @@ dense figures:
 - expert: 6.61 -> 3.88 ms, -2.73 ms
 - dense: 10.5-12.3 -> 2.2 ms, -8.3 to -10.1 ms
 - step: 26.8 -> 14.0-15.8 ms
-- at 3.10 tokens/step: **196-221 tok/s on four cards, 49-55 per card**
+- at 3.10 tokens/step: 196-221 tok/s on four cards, 49-55 per card
 
-Against today's 31.6 per card that is 1.55-1.74x, not 1.8-2.1x. Against **the capacity reference's 55.9 tok/s on one card** — a different
-product from the wheel-default arm compared above, and a per-card figure — it is
-0.88-0.99x: parity per card, and still behind per model, because we spend four
-cards to get it. The bucket that carries the
-projection is **dense**, which is this page's other result.
+**That projection is withdrawn the same day, because its dense term is the same
+artifact as the expert term.** The reference's 2.2 ms for dense came from the 22%
+window. De-clipped, same trace, same divisor:
+
+| family, per step | ours (lambda6, QPN8 arm) | reference (lambda1) |
+|---|---:|---:|
+| **dense linears** | **7.90 ms** (709 launches, 11.2 us) | **12.41 ms** (843, 14.7 us) |
+| routed experts | 5.13 ms (96) | 3.02 ms (96) |
+| expert, third kernel | 1.48 ms | 0.86 ms |
+| collectives | 0.61 ms | 10.96 ms (profiler-inflated) |
+| memcpy / elementwise | 1.18 ms | 4.05 ms |
+
+**We spend 1.6x less GPU time on dense linears, not 5x more.** So the projection
+has no dense term: the end state is the expert-only 11.3%, about **1.11x**, and the
+honest summary is that there is **no kernel work available on our side that changes
+the step materially**.
+
+The divisor is pinned rather than assumed: the reference's
+`_sm70_qwen38_router_topk_kernel` fires **52.0 times per de-clipped step** — 48
+layers plus 4 MTP forwards — so the per-step normalisation is right to +-2%.
+
+**What is not established, and must not be written down yet: that the remaining
+difference is "overlap".** The tempting sentence is that the reference's 37.9 ms of
+kernels fit inside a 19.4-25.8 ms wall, hiding ~15 ms. **That wall is derived, not
+measured** — it is `7.71 ms/output-token x accept`, and the reference's accept is
+not separately measured, because their bench prints ms/output-token only. At the
+marginal acceptance our own arm reaches (3.84), the same product gives ~29.6 ms and
+the hidden time falls to ~8 ms. So overlap is **bounded between roughly 1.3x and
+2x by an unknown accept**: a live candidate, not a result. What settles it is their
+measured wall for a known output length, with no derivation in the chain.
 
 ### Which side each number is on
 
