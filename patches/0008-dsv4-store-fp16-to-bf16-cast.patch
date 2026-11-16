@@ -1,0 +1,12 @@
+diff --git a/python/sglang/kernels/jit/csrc/deepseek_v4/store.cuh b/python/sglang/kernels/jit/csrc/deepseek_v4/store.cuh
+--- a/python/sglang/kernels/jit/csrc/deepseek_v4/store.cuh
++++ b/python/sglang/kernels/jit/csrc/deepseek_v4/store.cuh
+@@ -73,7 +73,7 @@
+     reinterpret_cast<fp8x2_e4m3_t*>(row.data)[tid] = result;
+     row.scale[wid] = scale_ue8m0;
+   } else {
+-    const auto result = cast<bf16x2_t>(elems);
++    const auto result = cast<bf16x2_t>(cast<fp32x2_t>(elems));
+     const auto row = Paged::row(static_cast<uint8_t*>(cache), index);
+     reinterpret_cast<bf16x2_t*>(row.data + 448)[tid - 7 * 32] = result;
+   }

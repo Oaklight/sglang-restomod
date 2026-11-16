@@ -1,0 +1,35 @@
+diff --git a/python/sglang/kernels/ops/layernorm/mhc.py b/python/sglang/kernels/ops/layernorm/mhc.py
+--- a/python/sglang/kernels/ops/layernorm/mhc.py
++++ b/python/sglang/kernels/ops/layernorm/mhc.py
+@@ -1139,14 +1139,24 @@
+     else:
+         if num_tokens <= 2048:
+             assert n_splits == 1
+-            if hc_hidden_size == 16384:
+-                hidden_block = 256
+-            elif hc_hidden_size == 28672:
+-                hidden_block = 128
+-            else:
++            # The kernel takes (split_k, hidden_block) and constrains only that
++            # split_size = hc_hidden_size // split_k divides by hidden_block
++            # (see mhc_pre_gemm_sqrsum_splitk_kernel's asserts). The two sizes
++            # this used to list were not a set of supported models: 16384//32
++            # is 512 and takes 256, 28672//32 is 896 and takes 128, because
++            # each is the largest block in the candidate set that divides.
++            # Selecting it that way keeps any shape the kernel can compile,
++            # instead of failing every new hidden size at load time.
++            split_size = hc_hidden_size // n_splits_pre
++            hidden_block = next(
++                (block for block in (256, 128) if split_size % block == 0), None
++            )
++            if hidden_block is None:
+                 raise NotImplementedError(
+-                    f"mhc_pre splitk kernel only supports hc_hidden_size in {{16384, 28672}}, "
+-                    f"got {hc_hidden_size}"
++                    "mhc_pre splitk kernel needs split_size = hc_hidden_size // "
++                    "split_k to divide by 256 or 128; "
++                    f"hc_hidden_size={hc_hidden_size}, split_k={n_splits_pre}, "
++                    f"split_size={split_size}"
+                 )
+             kernel_0, _ = mhc_pre_gemm_sqrsum_splitk_kernel(
+                 hc_mult3,
