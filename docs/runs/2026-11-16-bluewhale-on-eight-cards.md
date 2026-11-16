@@ -78,10 +78,40 @@ a per-expert residency decision.
 
 ## 4. What it means for us
 
-**Eight cards is reachable for us only with the 2.25 bpw set.** At base FP4 the
-experts are 288.76 GB against 233.6 GB of capacity at 8 cards — short by 55.2 GB —
-so the published checkpoint needs **10 cards** fully resident. At 2.25 bpw it is
-149.06 GB and fits **6**.
+**Eight cards is reachable for us only with a 2-bit set.** At base FP4 the experts
+are 288.76 GB against 233.6 GB of capacity at 8 cards — short by 55.2 GB — so the
+published checkpoint needs **10 cards** fully resident. At 2.25 bpw it is 149.06 GB
+and fits **6**.
+
+**But 4 cards is the cheapest path and it is 3.45 GB away.** The 1.75 bpw set's
+experts are **114.56 GB**, which at the 1.025 residency factor needs 117.42 GB;
+four cards give 113.98 GB at the planner's NVIDIA overhead of 3.6 GB per card. The
+gap is **entirely the overhead term**, and it is the softest number in the model:
+Strata measured **1.60 GB** on AMD cards holding at least half the experts, against
+3.6 GB assumed for NVIDIA.
+
+| overhead/card | 4-card capacity | 1.75 bpw (117.42 GB) |
+|---|---:|---|
+| 3.6 GB (planner default) | 113.98 GB | short **3.45 GB** |
+| 3.0 GB | 116.38 GB | short 1.05 GB |
+| **2.2 GB** | **119.58 GB** | **fits, 2.16 GB spare** |
+| 1.6 GB (measured on AMD) | 121.98 GB | fits, 4.56 GB spare |
+
+So the first measurement is **our real per-card overhead** — CUDA context, graph
+pools, Marlin workspace, KV headroom — not another kernel and not another card. If
+it lands near 2.2 GB, 1.75 bpw is **fully resident on four cards with no tier at
+all**, and it is also the fastest set per token because it moves the fewest bytes.
+
+**Ordering, and it is deliberately not "buy a host tier first":** measure the
+overhead; fetch the 1.75 shards if the gap closes (the Engram and drafter are files
+already held, so it is ~120.7 GB rather than a second full download); and only then
+consider a tier — and a tier of **bytes-into-card, not compute-off-card**.
+
+**Compute-off-card is not available to us even if we wanted it.** This host is a
+Xeon Silver 4116 pair: AVX-512 but **no VNNI**, so a CPU expert lane would need an
+int8 GEMM we do not have and would run roughly 40x short of four V100s per FLOP.
+Strata's mechanism is unavailable to us twice over — no engine support, and no
+hardware-appropriate GEMM.
 
 **We cannot buy the difference the way either reference does.** Strata's answer
 needs a CPU expert lane, which we do not have and which 1Cat explicitly declines to
@@ -105,5 +135,15 @@ transferable even if the byte budget is.
 - Whether 1Cat's Engram reader sustains the 8-card profile at 1M context is
   **unmeasured** — the 24-rows-per-channel figure is a design bound, not a
   throughput result.
+- **The Engram tier on this host is page cache, not SSD, because there is no data
+  disk to name.** lambda6's local volume is 100% full (1.7 T of 1.7 T) and carries
+  no data NVMe. That is not a blocker: the base table's rows are **264 B**
+  (256 B `F8_E4M3` plus 8 B `F8_E8M0` scale), so two layers is **~528 B/token** —
+  a latency problem, not a bandwidth one — and 110.6 GB fits inside the 227 GB of
+  available page cache once warmed.
+- **The two per-token figures refer to different artifacts and must not be mixed.**
+  The base checkpoint's FP8 table is 264 B/row → **~528 B/token**; 1Cat's
+  `IQ4_NL` sidecar is **144 B/row → 288 B/token**. Both are real, for different
+  files.
 - Our 6- and 10-card figures are **budget arithmetic** on measured byte counts, not
   a launch. No bluewhale serve of ours exists.
