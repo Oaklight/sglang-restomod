@@ -322,17 +322,29 @@ that carry one real token, or a cache pattern the per-call timer does not see. N
 is measured, and the ~2 ms gap between the two views is now the thing to explain
 before any further expert-kernel proposal.
 
-**Two items this arm settles by making them provable rather than inferred:**
+**The two arms are single-variable**: they differ in exactly three census rows —
+`n=320` at m = 4, 5 and 8 — and the down series is byte-identical between them.
+That is why 8.2% is quotable as a path effect.
 
-- **`n=160` never reaches that call site**, in any configuration, now that the
-  counter sits unconditionally at the Marlin dispatch. So the routed **down
-  projection is dispatched somewhere the instrument cannot see**, and the 1.87x
-  down ratio measured from the trace is therefore **not attributed to a kernel** —
-  the "down is Marlin's 64-row tile" reading loses its basis until something counts
-  at the real call.
-- **`n=2560` is the dense and shared-expert Marlin series, not MoE**, in both arms
-  (m = 40–320 at decode, 40,960 at prefill). A reader who sees a 40-row Marlin
-  series beside a 40,960-row prefill row will assume routed experts; it is not.
+**Two corrections to what this section first said, both mine and both wrong:**
+
+- **`n=2560` IS the routed down projection**, not a dense or shared-expert series.
+  Its `m` runs exactly **10x the `w13` rows** at every served point — 4→40, 8→80,
+  32→320, 4,096→40,960 — and 10 is `top_k`, because down's `m` counts route rows.
+  So down **is** instrumented: on Marlin, at every served `m` from 40 to 40,960, in
+  both arms.
+- **`160` is down's K** (`FF / tp = 640/4`), not its width, so there is no `n=160`
+  row because no tensor in this model has that width. The admission rule refuses
+  down at `N = 2560` because `2560 / 64 = 40` is **even** — stated plainly in
+  `docs/quantization-dispatch.md:69`: *"The down projection is `N = 2560`,
+  `N / 64 = 40`, so it is refused on purpose."*
+
+**What survives, and it survives better than before:** the **M-tile attribution for
+down is now observed rather than inferred** — Marlin serves that width at every
+served `m` — so the lever is the **even-`n/64` admission rule** or a kernel that
+reads 2560 columns, **not `MAX_M`**. What the 1.87x still is not: a per-shape kernel
+gap, because it compares our `w13` call against Marlin's *down* call — two different
+shapes in two different families.
 
 **Rule adopted from this:** an all-reduce count is quoted **with its per-call size,
 its TP degree, and its span filter**. A family share from a window that contains
