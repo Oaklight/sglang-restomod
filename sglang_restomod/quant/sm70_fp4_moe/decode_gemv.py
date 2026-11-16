@@ -32,6 +32,10 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 ENV_ENABLE = "SM70_MOE_DECODE_GEMV"
+#: Count which expert projection each decode path serves, and how often.
+#: Off by default; one line per 256 dispatches at INFO, so a served arm answers
+#: the question a profile window cannot without another window.
+ENV_CENSUS = "SM70_MOE_CENSUS"
 BLOCK_M = 8
 # Largest token count the decode path is admitted for; the same cut
 # ``method._select_split_k`` uses.
@@ -59,6 +63,47 @@ def enabled() -> bool:
     return os.environ.get(ENV_ENABLE, "1") != "0"
 
 
+#: ``(path, size_n, size_m) -> calls``. ``n`` separates the two routed
+#: projections (w13 n=320 per rank, down n=160); ``m`` is the token count, which
+#: is what the M cut acts on, so the triple answers "which path serves which
+#: projection at which batch size" -- the question a partial profile window
+#: could not, and the one that decides whether ``MAX_M`` has work to do.
+_CENSUS: dict[tuple[str, int, int], int] = {}
+_CENSUS_CALLS = 0
+_CENSUS_EVERY = 256
+
+
+def _census(path: str, size_n: int, size_m: int) -> None:
+    """Record one dispatch. Never raises: this is an instrument, not control."""
+    global _CENSUS_CALLS
+    if os.environ.get(ENV_CENSUS, "") != "1":
+        return
+    try:
+        key = (path, int(size_n), int(size_m))
+        _CENSUS[key] = _CENSUS.get(key, 0) + 1
+        _CENSUS_CALLS += 1
+        if _CENSUS_CALLS % _CENSUS_EVERY == 0:
+            report()
+    except Exception:  # noqa: BLE001 - see the docstring
+        logger.debug("decode gemv: census failed", exc_info=True)
+
+
+def note_marlin(size_n: int, size_m: int) -> None:
+    """Record a call that left for Marlin, with the shape it carried."""
+    _census("marlin", size_n, size_m)
+
+
+def report() -> str:
+    """One line naming every path/shape pair seen so far, and the total."""
+    rows = ", ".join(
+        f"{path}:n={size_n}:m={size_m}={calls}"
+        for (path, size_n, size_m), calls in sorted(_CENSUS.items())
+    )
+    line = f"SM70 MoE census ({_CENSUS_CALLS} dispatches): {rows or '<none>'}"
+    logger.info("%s", line)
+    return line
+
+
 def _log_once(key: str, fmt: str, *args) -> None:
     """Report the first occurrence of ``key`` at INFO, later ones at DEBUG."""
     if key in _LOG_ONCE or len(_LOG_ONCE) >= _LOG_ONCE_MAX:
@@ -81,7 +126,9 @@ def _load():
                 name="sm70_decode_moe_gemv",
                 sources=[str(_CSRC)],
                 extra_cuda_cflags=[
-                    "-O3", "--use_fast_math", "-std=c++17",
+                    "-O3",
+                    "--use_fast_math",
+                    "-std=c++17",
                     "--expt-relaxed-constexpr",
                 ],
                 verbose=False,
@@ -96,8 +143,7 @@ def _load():
         return _MODULE
 
 
-def supports(size_m: int, size_n: int, size_k: int, top_k: int,
-             moe_block_size: int) -> bool:
+def supports(size_m: int, size_n: int, size_k: int, top_k: int, moe_block_size: int) -> bool:
     """Whether the decode kernel covers this shape."""
     if not enabled():
         return False
@@ -164,13 +210,18 @@ def maybe_call(
         _log_once(
             f"unsupported n={size_n} k={size_k} topk={top_k} block={moe_block_size}",
             "decode gemv skipped: unsupported m=%d n=%d k=%d topk=%d block=%d",
-            size_m, size_n, size_k, top_k, moe_block_size,
+            size_m,
+            size_n,
+            size_k,
+            top_k,
+            moe_block_size,
         )
         return None
     module = _load()
     if module is None:
         _log_once("extension unavailable", "decode gemv skipped: extension unavailable")
         return None
+    _census("gemv", size_n, size_m)
 
     rows = c.size(0)
     # ``rows`` is the route count, ``size_m * top_k``: the align kernel emits
@@ -185,7 +236,8 @@ def maybe_call(
         _log_once(
             f"non-contiguous a={a.is_contiguous()} c={c.is_contiguous()}",
             "decode gemv skipped: non-contiguous a=%s c=%s",
-            a.is_contiguous(), c.is_contiguous(),
+            a.is_contiguous(),
+            c.is_contiguous(),
         )
         return None
     # The reduce kernel indexes topk_weights by route, so it needs one entry
@@ -195,7 +247,8 @@ def maybe_call(
         _log_once(
             f"topk_weights {topk_weights.numel()}<{rows}",
             "decode gemv skipped: topk_weights %d < rows %d",
-            topk_weights.numel(), rows,
+            topk_weights.numel(),
+            rows,
         )
         return None
     # `expert_ids` is allocated for the worst case and the align kernel writes
@@ -213,12 +266,22 @@ def maybe_call(
             logger.info(
                 "decode gemv inputs: a=%s%s c=%s%s bq=%s bs=%s%s gs=%s%s "
                 "si=[%d,%d] ei=[%d,%d] tw=%s topk=%d rows=%d",
-                tuple(a.shape), a.dtype, tuple(c.shape), c.dtype,
-                tuple(b_q_weight.shape), tuple(b_scales.shape), b_scales.dtype,
-                tuple(global_scale.shape), global_scale.dtype,
-                int(sorted_token_ids.min()), int(sorted_token_ids.max()),
-                int(expert_ids.min()), int(expert_ids.max()),
-                tuple(topk_weights.shape), top_k, rows,
+                tuple(a.shape),
+                a.dtype,
+                tuple(c.shape),
+                c.dtype,
+                tuple(b_q_weight.shape),
+                tuple(b_scales.shape),
+                b_scales.dtype,
+                tuple(global_scale.shape),
+                global_scale.dtype,
+                int(sorted_token_ids.min()),
+                int(sorted_token_ids.max()),
+                int(expert_ids.min()),
+                int(expert_ids.max()),
+                tuple(topk_weights.shape),
+                top_k,
+                rows,
             )
     # Kept as a once-per-shape line rather than dropped: "the fast path ran"
     # is the fact that took a profiler to establish the last time it was
@@ -226,13 +289,29 @@ def maybe_call(
     _log_once(
         f"dispatch n={size_n} k={size_k}",
         "decode gemv: rows=%d tiles=%d n=%d k=%d",
-        rows, expert_ids.size(0), size_n, size_k,
+        rows,
+        expert_ids.size(0),
+        size_n,
+        size_k,
     )
     workspace = _workspace_for(rows, size_n, c.device)
     return module.decode_moe_gemv(
-        a, c, b_q_weight, b_scales, global_scale, sorted_token_ids,
-        expert_ids, topk_weights, rows, top_k, size_n, size_k,
-        bool(mul_topk_weights), workspace, K_SPLIT, num_tokens_post_padded,
+        a,
+        c,
+        b_q_weight,
+        b_scales,
+        global_scale,
+        sorted_token_ids,
+        expert_ids,
+        topk_weights,
+        rows,
+        top_k,
+        size_n,
+        size_k,
+        bool(mul_topk_weights),
+        workspace,
+        K_SPLIT,
+        num_tokens_post_padded,
     )
 
 
