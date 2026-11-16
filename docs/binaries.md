@@ -20,6 +20,7 @@ ones are the silent failures, not the missing files:
 | tuned V100 MoE tiles | `Using default MoE kernel config`; slower draft MoE |
 | QPN8 source | `fp8_dense_quant` stays on the older decode path; no failure |
 | checkout `dist-info` | **no `sglang.srt.plugins` entry point**, so no component loads at all, and the symptom is `--attention-backend: invalid choice` |
+| a component's module fails to import | recorded as `inactive` with `import failed: ...`; without that it looks "loaded" and the engine serves its own backend |
 
 ## `restomod doctor`
 
@@ -39,11 +40,35 @@ It checks:
 5. every artefact that has a site path matches its `sha256`;
 6. the container image exists, and with `--deep` matches its hash;
 7. the versions of torch, triton, tilelang, sglang-kernel, flashinfer, and
-   transformers are printed.
+   transformers are printed;
+8. the restomod tree records the commit it was built from (git `HEAD` or a
+   `COMMIT` file) and matches the declared `[engine].commit` or
+   `RESTOMOD_EXPECT_COMMIT`.
 
 It exits non-zero with a named reason. It imports nothing heavy until a check
 needs it, and a missing site config is a note, not a crash: the wheel must stay
 importable on a host that is not ours.
+
+An **import failure** is recorded as `inactive`, not `failed`: the module never
+loaded, but the server is healthy and would otherwise serve its own backend
+under the same component list. The doctor prints `import failed: ...` as the
+reason and exits non-zero.
+
+## Commit pinning
+
+A deployed tree must name the code it contains: either it is a git checkout
+(`git rev-parse HEAD`) or it carries a `COMMIT` file written when it was built.
+The site config declares what the run expects:
+
+```toml
+[engine]
+commit = "<40-hex-commit>"
+```
+
+`restomod doctor` fails when the two differ or when the tree records nothing.
+A stale tree is an error, not a configuration choice: a site tree that predated
+`sglang_restomod/_sm70_paths.py` served bf16 dense linears under the full
+component list, and every gate available at the time passed.
 
 ## Fetch and build
 

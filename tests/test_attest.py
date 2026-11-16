@@ -61,7 +61,8 @@ def test_registration_is_recorded_and_survives_a_failure(monkeypatch):
     assert snap["missing"] == []
 
 
-def test_component_without_register_is_a_failure_not_a_crash(monkeypatch):
+def test_component_without_register_is_inactive_not_a_crash(monkeypatch):
+    """A module that imports but cannot register is inactive, with the reason."""
     empty = types.ModuleType("fake_empty")
     monkeypatch.setitem(sys.modules, "fake_empty", empty)
     monkeypatch.setitem(
@@ -71,7 +72,10 @@ def test_component_without_register_is_a_failure_not_a_crash(monkeypatch):
     loaded = plugins.load_enabled({"SGLANG_RESTOMOD_COMPONENTS": "fake_empty"})
 
     assert list(loaded) == []
-    assert attest.snapshot()["failed"] == ["fake_empty"]
+    snap = attest.snapshot()
+    assert snap["inactive"] == ["fake_empty"]
+    assert snap["failed"] == []
+    assert "no register()" in snap["components"]["fake_empty"]["detail"]
 
 
 def test_attestation_file_is_written_and_names_the_engine(tmp_path, monkeypatch):
