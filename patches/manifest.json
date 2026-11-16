@@ -84,6 +84,20 @@
       "reason": "DeepseekV4AttnBackend.__init__ imports flash_mla_interface under `if is_cuda():`, and flash_mla is built only for the architectures it targets, so on sm70 the import raises ModuleNotFoundError at construction -- before any subclass can replace the decode path. All three --dsv4-attn-backend choices subclass this class, so no flag avoids it. Defer the import: compute the SWA layout unconditionally, resolve flash_mla inside a try and, when absent, bind a callable that raises a named error at the terminal call instead of a ModuleNotFoundError at construction. Behaviour is unchanged wherever flash_mla exists.",
       "source": "local, 2026-11-16 (bluewhale SM70 bring-up)",
       "upstream_status": "pending"
+    },
+    "0008-dsv4-store-fp16-to-bf16-cast.patch": {
+      "paths": [
+        "python/sglang/kernels/jit/csrc/deepseek_v4/store.cuh"
+      ],
+      "site_hashes": {
+        "python/sglang/kernels/jit/csrc/deepseek_v4/store.cuh": {
+          "unpatched": "70e40c3765e8f2d602781f4418f88ff78cee18a994f96956de3d503a10a68ac1",
+          "patched": "a0418fbf64aed792a5180afa9437fee68e5fbda9c53f2f5361160a1f2106af94"
+        }
+      },
+      "reason": "The DSV4 KV store JIT kernel casts its RoPE tail with cast<bf16x2_t>(elems) from the input dtype's pair, but DTypeTrait<bf16x2_t> registers only from(fp32x2_t) plus a generic static_cast, and CUDA 12.8 has no __nv_bfloat162(__half2) conversion. The failure is at compile time: the kernel never builds, so the symptom is a JIT build error, not a wrong write. It is specific to fp16 activations, which is what SM70 forces; bf16 inputs compile unpatched. Diagnostic: 'type.cuh(167): error: no suitable user-defined conversion from const sglang::fp16x2_t to __nv_bfloat162 exists', instantiated through DTypeTrait<bf16x2_t>::from [S=fp16x2_t] at store.cuh:76. One line, cast through fp32x2_t, which is the registered path. Verified on V100-SXM2-32GB cap(7,0), torch 2.9.1+cu128, nvcc 12.8, -gencode=arch=compute_70,code=sm_70 -DSGL_CUDA_ARCH=700, kPageBits=8 (page 256) only: unpatched rc=1 with that diagnostic, patched rc=0 and a write of fp16 input at token 259 reads back scale bytes [119,119,119,119,119,119,119,0], fp8 nope and bf16 rope both max abs err 0.0, 256-byte page tail zero. Other page sizes are unexercised; they change only kPageBits.",
+      "source": "local, 2026-11-16 (DSV4 SM70 store-cache probe; kernel-crafter observed the flash_mla import failure that led here)",
+      "upstream_status": "pending"
     }
   }
 }
