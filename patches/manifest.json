@@ -50,10 +50,10 @@
       "site_hashes": {
         "python/sglang/srt/arg_groups/model_hook.py": {
           "unpatched": "ef3220ba4329f58fe4cdd22b2a3211f5bef87163bec2ffb683bd0ae5434c11c6",
-          "patched": "ece0c34cf4d7640c9ba5061d8e8de3470fcdb4e41d8abd9aebbb5357399bf35e"
+          "patched": "b7182c5b3617a4d73f2287be1de2869bed3a814fe616b95a6bd30effc1dbd9a3"
         }
       },
-      "reason": "On SM70 the platform block in model_hook.py turns off the DeepGEMM-only knobs for sm120 and hip and has no arm for sm70, so SGLANG_OPT_DEEPGEMM_HC_PRENORM keeps its True default and SGLANG_FP8_PAGED_MQA_LOGITS_TORCH its False one. Both consumers import deep_gemm inside the function (deepseek_v4.py HC prenorm above 1024 prefill tokens, indexer.py nonpaged gather), and configurer.py leaves the module unimported below sm90, so the first large prefill raises NameError instead of taking the torch implementation that exists for each. One arm, two envs; no capability or number changes.",
+      "reason": "On SM70 the platform block in model_hook.py turns the DeepGEMM-only knobs off for sm120 and for hip and has no arm for sm70, so SGLANG_OPT_DEEPGEMM_HC_PRENORM keeps its True default and SGLANG_FP8_PAGED_MQA_LOGITS_TORCH its False one. Both consumers import deep_gemm inside the function (deepseek_v4.py HC prenorm above 1024 prefill tokens, indexer.py nonpaged gather) and configurer.py leaves the module unimported below sm90, so the first large prefill raises NameError instead of taking the torch implementation that exists for each. One arm, two envs, both guarded by is_set() like the sm120 arm, so each knob stays env-overridable; no capability or number changes.",
       "source": "local, 2026-11-16 (bluewhale SM70 bring-up)",
       "upstream_status": "pending"
     }

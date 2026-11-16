@@ -1,21 +1,24 @@
 diff --git a/python/sglang/srt/arg_groups/model_hook.py b/python/sglang/srt/arg_groups/model_hook.py
 --- a/python/sglang/srt/arg_groups/model_hook.py
 +++ b/python/sglang/srt/arg_groups/model_hook.py
-@@ -500,6 +500,17 @@
+@@ -500,6 +500,20 @@
                  envs.SGLANG_FP8_PAGED_MQA_LOGITS_TORCH.set(True)
              if not envs.SGLANG_OPT_USE_TILELANG_INDEXER.is_set():
                  envs.SGLANG_OPT_USE_TILELANG_INDEXER.set(True)
 +        elif get_platform().is_sm70:
 +            # Volta has no DeepGEMM, and both consumers of these knobs import
-+            # it lazily at call time rather than at module import: the HC
++            # it inside the function rather than at module import: the HC
 +            # prenorm dispatch in deepseek_v4 (first prefill chunk of 1024+
-+            # tokens) and the nonpaged DSV4 indexer (indexer.py, `import
-+            # deep_gemm`). With the defaults, a large prefill raises
-+            # NameError before reaching the torch implementations that exist
-+            # for both. Paged torch logits also veto the nonpaged path, so one
-+            # flag both closes the hole and picks the torch indexer.
-+            envs.SGLANG_OPT_DEEPGEMM_HC_PRENORM.set(False)
-+            envs.SGLANG_FP8_PAGED_MQA_LOGITS_TORCH.set(True)
++            # tokens) and the nonpaged DSV4 indexer in indexer.py. With the
++            # defaults a large prefill raises NameError rather than reaching
++            # the torch implementation that exists for each. The guards keep
++            # both knobs env-overridable, as the sm120 arm above them does, so
++            # a DeepGEMM build that later supports SM70 can opt in and be
++            # compared.
++            if not envs.SGLANG_OPT_DEEPGEMM_HC_PRENORM.is_set():
++                envs.SGLANG_OPT_DEEPGEMM_HC_PRENORM.set(False)
++            if not envs.SGLANG_FP8_PAGED_MQA_LOGITS_TORCH.is_set():
++                envs.SGLANG_FP8_PAGED_MQA_LOGITS_TORCH.set(True)
          elif get_platform().is_hip:
              envs.SGLANG_OPT_DEEPGEMM_HC_PRENORM.set(False)
              _configure_rocm_fp8_wo_a_gemm(model_config, cfg.download_dir)
