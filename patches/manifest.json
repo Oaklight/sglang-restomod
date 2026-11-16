@@ -42,6 +42,20 @@
       "reason": "fused_marlin_moe asserts the Marlin weight layout before it calls moe_wna16_marlin_gemm, which is the only seam sglang-restomod replaces, so a QPN2 expert bank can never reach the QPN2 reader. Derive E/K/N from the bank when w1 is a uint8 QPN2 tensor, and gate the path to the NVFP4, single-rank, gated envelope.",
       "source": "local, 2026-11-07 (issue #224)",
       "upstream_status": "pending"
+    },
+    "0005-sm70-deepgemm-env-defaults.patch": {
+      "paths": [
+        "python/sglang/srt/arg_groups/model_hook.py"
+      ],
+      "site_hashes": {
+        "python/sglang/srt/arg_groups/model_hook.py": {
+          "unpatched": "ef3220ba4329f58fe4cdd22b2a3211f5bef87163bec2ffb683bd0ae5434c11c6",
+          "patched": "ece0c34cf4d7640c9ba5061d8e8de3470fcdb4e41d8abd9aebbb5357399bf35e"
+        }
+      },
+      "reason": "On SM70 the platform block in model_hook.py turns off the DeepGEMM-only knobs for sm120 and hip and has no arm for sm70, so SGLANG_OPT_DEEPGEMM_HC_PRENORM keeps its True default and SGLANG_FP8_PAGED_MQA_LOGITS_TORCH its False one. Both consumers import deep_gemm inside the function (deepseek_v4.py HC prenorm above 1024 prefill tokens, indexer.py nonpaged gather), and configurer.py leaves the module unimported below sm90, so the first large prefill raises NameError instead of taking the torch implementation that exists for each. One arm, two envs; no capability or number changes.",
+      "source": "local, 2026-11-16 (bluewhale SM70 bring-up)",
+      "upstream_status": "pending"
     }
   }
 }
