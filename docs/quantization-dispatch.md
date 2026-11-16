@@ -209,3 +209,16 @@ the untested-but-supported path is that environment variable, not a patch:
 it turns a 32x32 UE8M0 dense layer into `[128,128]` block fp8, which is the
 group size marlin_v100's FP8 kernel accepts. Unverified on this hardware as
 of 2026-11-16; until an arm runs it, neither route is known to work.
+
+Measured 2026-11-16 on V100 (pin + patches 0004-0006, 2-layer real slice of
+`base-fp8`, TP1): `SGLANG_FORCE_MXFP8_BLOCK_CONVERT=1` is accepted and the
+model loads with the same memory as without it (`mem usage=3.84 GB` both
+ways), so **no patch is needed for this checkpoint shape and the fork's
+`_unpack_mxfp8_layer_to_fp16` should not be ported.** The conversion
+requantizes rather than taking a max: `mxfp8_block_convert.py:63` dequantizes
+to bf16, then `bf16_to_block_fp8_128` takes a per-128x128 `amax` and divides
+by 448. Cost is a second quantization step plus a transient bf16 copy at load;
+steady-state bytes do not grow, and the scale grid actually shrinks (one fp32
+per 16384 values instead of one uint8 per 32). Numerically unverified either
+way: no forward has executed on this hardware, because the DSV4 attention
+backend requires `flash_mla` (see `sm70-dsv4-attention-plan.md`).
