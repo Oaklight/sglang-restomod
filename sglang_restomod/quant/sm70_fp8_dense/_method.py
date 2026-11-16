@@ -100,14 +100,29 @@ def _check_activation_k(layer: torch.nn.Module, x_2d: torch.Tensor) -> None:
 # upstream has no such module. The packaged copy is the default so a stock
 # engine works without an export; `SGLANG_SM70_QPN8_SRC` remains the override.
 _PACKAGED_QPN8_SRC = Path(__file__).with_name("csrc") / "sm70_fp8_qpn8_decode.cu"
-_QPN8_SRC_PATH = (
-    _sm70_csrc("sm70_fp8_qpn8_decode.cu")
-    if _sm70_csrc
-    else (
-        os.environ.get("SGLANG_SM70_QPN8_SRC")
-        or (str(_PACKAGED_QPN8_SRC) if _PACKAGED_QPN8_SRC.is_file() else None)
+
+
+def _resolve_qpn8_src() -> Path | None:
+    """Name the QPN8 CUDA source as a ``Path``, or ``None`` when nothing does.
+
+    ``_load_sm70_qpn8_ops`` calls ``.is_file()`` on the result, so a plain
+    string here is an AttributeError on the first decode call rather than a
+    clear refusal. The packaged copy and the environment override both arrive
+    as strings, and on the pinned upstream -- which has no
+    ``sglang.kernels.sm70_paths`` -- those are the only two sources there are.
+    """
+    raw = (
+        _sm70_csrc("sm70_fp8_qpn8_decode.cu")
+        if _sm70_csrc
+        else (
+            os.environ.get("SGLANG_SM70_QPN8_SRC")
+            or (str(_PACKAGED_QPN8_SRC) if _PACKAGED_QPN8_SRC.is_file() else None)
+        )
     )
-)
+    return Path(raw) if raw else None
+
+
+_QPN8_SRC_PATH = _resolve_qpn8_src()
 _QPN8_EXT = None
 _QPN8_MISSING_LOGGED = False
 _QPN8_EXACT_DENSE_SHAPES = {
@@ -117,6 +132,26 @@ _QPN8_EXACT_DENSE_SHAPES = {
     "out_proj": (5120, 1536),
     "o_proj": (5120, 1536),
 }
+# Qwen3.8-Flash-Next TP4 shapes, per rank, as (N, K). The two tables in this
+# file use different conventions on purpose, and the reason is where they are
+# read: this gate runs before ``fp8_prepare`` replaces the tensor, so the weight
+# is still the checkpoint layout, which is (N, K). The prefill table above is
+# read after the repack, where the tensor is logical KxN. Off by default, via
+# SGLANG_SM70_FP8_DECODE_QPN8_SHAPES=flashnext.
+#
+# The shapes are the transposes of the prefill table's Flash-Next entries plus
+# the counts the candidate log measured per rank: 49 x (2560, 1536) for the
+# attention output projections, 36 x (4096, 2560) for in_proj_qkvz, 13 x
+# (3584, 2560) for qkv_proj, 2 x (2560, 2560).
+_QPN8_EXACT_DENSE_SHAPES_FLASHNEXT = {
+    "in_proj_qkvz": (4096, 2560),
+    "qkv_proj": (3584, 2560),
+    "o_proj": (2560, 1536),
+    "out_proj": (2560, 1536),
+    "ple.key_proj": (2560, 2560),
+    "ple.value_proj": (2560, 2560),
+}
+ENV_QPN8_SHAPES = "SGLANG_SM70_FP8_DECODE_QPN8_SHAPES"
 _QPN8_SPLITK = 16
 _QPN8_NACC = 1
 _QPN8_FASTDEC_NACC_ARG = 3  # NACC=1 plus the extension's word-parallel decoder
@@ -226,9 +261,14 @@ def _env_flag(name: str, default: str) -> bool:
 
 
 def _get_sm70_fp8_decode_qpn8_enabled() -> bool:
-    # Default on for SM70 FP8 decode; set SGLANG_SM70_FP8_DECODE_QPN8=0 to
-    # fall back to the TurboMind decode GEMM path.
-    return _env_flag("SGLANG_SM70_FP8_DECODE_QPN8", "1")
+    # Default OFF, and the default is part of this change. QPN8 has never run on
+    # any model -- its gate read an attribute no linear module carries -- so the
+    # old "1" never enabled anything. Fixing that gate without flipping this
+    # would have turned a never-executed kernel on for the 27B TP4 serving path
+    # by default, where we have no measurement. On Flash-Next it is neutral at
+    # 100 layers per rank and costs 0.70 GB per rank of duplicated codes.
+    # Enabling it is a decision someone makes with a number in hand.
+    return _env_flag("SGLANG_SM70_FP8_DECODE_QPN8", "0")
 
 
 def _get_sm70_fp8_qpn8_fastdec_enabled() -> bool:
@@ -297,12 +337,37 @@ def _qpn8_gscales(scale_inv: torch.Tensor, k: int) -> torch.Tensor:
     return gs
 
 
+def _get_sm70_fp8_qpn8_shape_set() -> str:
+    """Return the requested QPN8 shape set, refusing a value we do not know.
+
+    Same rule as the prefill reader: a misspelt value must not read as "off",
+    because a configuration that is silently ignored still counts as evidence.
+    """
+    value = os.environ.get(ENV_QPN8_SHAPES, "").strip().lower()
+    if value not in ("", "flashnext"):
+        raise ValueError(f"{ENV_QPN8_SHAPES} must be empty or 'flashnext'; got {value!r}.")
+    return value
+
+
 def _is_sm70_fp8_qpn8_exact_dense_layer(layer: torch.nn.Module) -> bool:
-    if getattr(layer, "tp_size", 1) != 4:
+    tp_size, _source = _sm70_fp8_layer_tp_size(layer)
+    if tp_size is not None and tp_size != 4:
         return False
+    shape = tuple(layer.weight.shape)
     suffix = getattr(layer, "prefix", "").rsplit(".", 1)[-1]
     expected = _QPN8_EXACT_DENSE_SHAPES.get(suffix)
-    return expected is not None and tuple(layer.weight.shape) == expected
+    if expected is not None and shape == expected:
+        return True
+    if _get_sm70_fp8_qpn8_shape_set() != "flashnext":
+        return False
+    # Modules converted by ``fp8_dense_quant`` carry no ``prefix``, so the
+    # suffix is empty for 68 of the 104 candidates per rank and a name-matched
+    # gate cannot see them. The fallback is confined to the env-gated table.
+    extra = _QPN8_EXACT_DENSE_SHAPES_FLASHNEXT.get(suffix) if suffix else None
+    if extra is not None and shape == extra:
+        return all(dim % 128 == 0 for dim in extra)
+    admitted_shapes = set(_QPN8_EXACT_DENSE_SHAPES_FLASHNEXT.values())
+    return shape in admitted_shapes and all(dim % 128 == 0 for dim in shape)
 
 
 def _maybe_prepare_sm70_fp8_qpn8(layer: torch.nn.Module) -> None:
@@ -320,6 +385,22 @@ def _maybe_prepare_sm70_fp8_qpn8(layer: torch.nn.Module) -> None:
                 "(SGLANG_SM70_QPN8_SRC), decode GEMMs stay on TurboMind"
             )
         return
+    if _get_sm70_fp8_qpn8_shape_set() == "flashnext":
+        # The count has to name its cause. Before this line the only record of a
+        # zero was silence, and on 2026-11-15 a dead tp guard and an absent
+        # shape were indistinguishable in the log.
+        tp_size, tp_source = _sm70_fp8_layer_tp_size(layer)
+        n, k = (int(dim) for dim in layer.weight.shape)
+        logger.info(
+            "sm70_fp8_dense: qpn8 candidate prefix=%s shape=%s tp=%s (%s) "
+            "aligned=%s admitted=%s",
+            getattr(layer, "prefix", "<no-prefix>"),
+            tuple(layer.weight.shape),
+            tp_size,
+            tp_source,
+            n % 128 == 0 and k % 128 == 0,
+            _is_sm70_fp8_qpn8_exact_dense_layer(layer),
+        )
     if not _is_sm70_fp8_qpn8_exact_dense_layer(layer):
         return
     weight = layer.weight.data
@@ -343,9 +424,11 @@ def _maybe_prepare_sm70_fp8_qpn8(layer: torch.nn.Module) -> None:
     if not _get_sm70_fp8_qpn8_fastdec_enabled():
         layer.sm70_fp8_qpn8_nacc_arg = _QPN8_NACC
     layer.sm70_fp8_qpn8_ready = True
-    logger.info_once(
-        "SM70 (V100): QPN8 decode backend prepared for %s K=%d N=%d.",
-        getattr(layer, "prefix", "?"),
+    # One line per layer, not once: the admitted count is what a launch report
+    # quotes, and info_once made it ungreppable.
+    logger.info(
+        "sm70_fp8_dense: qpn8 layer prepared: %s K=%d N=%d",
+        getattr(layer, "prefix", "<no-prefix>"),
         k,
         n,
     )
