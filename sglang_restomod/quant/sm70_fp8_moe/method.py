@@ -18,6 +18,8 @@ import logging
 import os
 from pathlib import Path
 
+from sglang_restomod import attest
+
 import torch
 from sglang.srt.layers.moe.token_dispatcher import StandardCombineInput
 from sglang.srt.layers.quantization.fp8 import Fp8MoEMethod
@@ -322,15 +324,21 @@ def install() -> bool:
         return True
     mode = _mode()
     if mode == "off":
+        attest.inactive("fp8_moe", f"{ENV_MODE}=off")
         return False
     if mode not in ("auto", "on"):
         raise ValueError(f"{ENV_MODE} must be auto, on or off; got {mode!r}")
     if not _is_sm70():
         if mode == "on":
             raise RuntimeError(f"{ENV_MODE}=on requires an SM70 device")
+        attest.inactive("fp8_moe", "not an SM70 device")
         return False
     if mode == "auto" and not _library_present():
         logger.warning("SM70 TurboMind library not found; keeping the upstream FP8 MoE method")
+        attest.inactive(
+            "fp8_moe",
+            "the TurboMind library is not present; the upstream FP8 MoE method is in place",
+        )
         return False
     if mode == "on" and not available():
         raise RuntimeError(f"{ENV_MODE}=on but the TurboMind binding cannot be loaded")
