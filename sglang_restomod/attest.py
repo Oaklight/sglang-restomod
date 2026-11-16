@@ -81,10 +81,20 @@ def engine() -> dict[str, Any]:
 
 
 def record(name: str, ok: bool, detail: str = "") -> None:
-    """Record one component's registration outcome."""
+    """Record one component's registration outcome.
+
+    A reason the component recorded about itself with :func:`inactive` is kept
+    when this call has no detail of its own. ``plugins.load_enabled`` records
+    ``ok`` after ``register()`` returns, so overwriting here used to leave the
+    name in ``inactive`` with nothing next to it saying why.
+    """
     entry = {"ok": bool(ok)}
     if detail:
         entry["detail"] = detail
+    else:
+        previous = _STATE["components"].get(name) or {}
+        if previous.get("detail"):
+            entry["detail"] = previous["detail"]
     _STATE["components"][name] = entry
     if ok:
         if name not in _STATE["loaded"]:

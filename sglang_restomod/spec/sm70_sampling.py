@@ -41,6 +41,8 @@ import os
 import sys
 from typing import TYPE_CHECKING
 
+from sglang_restomod import attest
+
 if TYPE_CHECKING:
     import torch
 
@@ -129,61 +131,164 @@ _REPLACEMENTS = {
 }
 
 
-def install() -> bool:
-    """Replace the FlashInfer renorm entry points on SM70.
+#: Modules that bind the renorm entry points before ``eagle_utils`` uses them.
+_RENORM_MODULES = (
+    "sglang.kernels.ops.sampling.renorm",
+    "sglang.srt.speculative.eagle_utils",
+)
 
-    ``eagle_utils`` imports the name inside ``eagle_sample``, so the attribute
-    is resolved per call and replacing it on ``flashinfer.sampling`` is enough
-    today. A module that hoisted that import would keep the original binding,
-    so every already-imported module that still points at the original is
-    rewritten as well -- the same sweep ``sm70_fp4_moe`` uses for
-    ``moe_sum_reduce``.
+
+def _bound(module, alias):
+    """``getattr`` that survives a module-level ``__getattr__`` that raises."""
+    try:
+        return getattr(module, alias, None)
+    except Exception:  # noqa: BLE001 - partial modules raise anything
+        return None
+
+
+def _is_flashinfer_lazy(obj) -> bool:
+    """True when ``obj`` is a lazy handle onto one of the names we replace.
+
+    At this pin ``sglang/kernels/ops/sampling/renorm.py`` binds
+    ``LazyImport("flashinfer.sampling", "top_k_renorm_probs")`` and
+    ``eagle_utils`` takes it with a module-level ``from ... import``, so the
+    handle itself is what has to be replaced: patching the attribute on
+    ``flashinfer.sampling`` needs that module to import, and on the host this
+    component exists for it does not.
+
+    Duck-typed on the class name rather than ``isinstance``, because the class
+    lives in ``sglang.utils`` and asking the object's type is the only question
+    that cannot trigger a load. ``module_name`` and ``class_name`` are instance
+    attributes, so reading them does not go through ``LazyImport.__getattr__``
+    either -- that one imports flashinfer.
+    """
+    if type(obj).__name__ != "LazyImport":
+        return False
+    if _bound(obj, "module_name") != "flashinfer.sampling":
+        return False
+    return _bound(obj, "class_name") in _REPLACEMENTS
+
+
+def _rebind_module(module) -> int:
+    """Replace the flashinfer ``LazyImport`` handles bound in one module."""
+    rebound = 0
+    for alias, replacement in _REPLACEMENTS.items():
+        if not _is_flashinfer_lazy(_bound(module, alias)):
+            continue
+        try:
+            setattr(module, alias, replacement)
+        except Exception:  # noqa: BLE001 - read-only module attribute
+            continue
+        rebound += 1
+    return rebound
+
+
+def _rebind_lazy_imports() -> int:
+    """Replace every binding that is already in ``sys.modules``."""
+    rebound = 0
+    for module in list(sys.modules.values()):
+        if module is None:
+            continue
+        rebound += _rebind_module(module)
+    return rebound
+
+
+def _unpatchable_binding() -> str | None:
+    """A reason when a loaded module holds a binding this cannot replace.
+
+    The one case the sweep cannot fix and the finder cannot see: the module was
+    imported before this ran and its entry point is not a flashinfer lazy
+    handle, which is a pin rename. Reporting success there is the failure this
+    component is being repaired for.
+    """
+    for name in _RENORM_MODULES:
+        module = sys.modules.get(name)
+        if module is None:
+            continue
+        for alias in ("top_k_renorm_prob", "top_p_renorm_prob"):
+            if _bound(module, alias) is _REPLACEMENTS[alias]:
+                continue
+            return (
+                f"{name}.{alias} is not a flashinfer LazyImport and was not "
+                "replaced: the pin renamed the renorm entry point"
+            )
+    return None
+
+
+def _arm_rebind_finder() -> None:
+    """Patch the renorm modules on import, for a launch where they import later."""
+    if any(isinstance(finder, _RenormRebindFinder) for finder in sys.meta_path):
+        return
+    sys.meta_path.insert(0, _RenormRebindFinder())
+
+
+def _patch_flashinfer_attributes() -> int:
+    """Replace the names on ``flashinfer.sampling`` when that module exists.
+
+    Needed for a call site that imports the function after this runs. Returns
+    the number of attributes replaced, or 0 when flashinfer is absent -- which
+    is the normal case on a host where it was never installed, and is not a
+    failure on its own.
+    """
+    try:
+        import flashinfer.sampling as sampling
+    except Exception:  # noqa: BLE001 - absent flashinfer is a supported case
+        return 0
+    patched = 0
+    for alias in _ALIASES:
+        if getattr(sampling, alias, None) is None:
+            continue
+        try:
+            setattr(sampling, alias, _REPLACEMENTS[alias])
+            patched += 1
+        except Exception:  # noqa: BLE001
+            continue
+    return patched
+
+
+def install() -> str | None:
+    """Replace the EAGLE renorm entry points on SM70.
+
+    Returns ``None`` when the replacement bound, or the reason it did not. The
+    reason is what ``register()`` hands to ``attest.inactive``: a component that
+    reports success while doing nothing is the failure this whole module exists
+    to avoid, and the previous signature -- a bool nobody read -- is how this one
+    stayed invisible on a host where flashinfer has never been installed.
     """
     global _INSTALLED
     if _INSTALLED:
-        return True
-    import sys
-
+        return None
     import torch
 
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] >= 8:
-        return False
-    try:
-        import flashinfer.sampling as sampling
-    except Exception:  # noqa: BLE001 - absent flashinfer means nothing to patch
-        return False
+    if not torch.cuda.is_available():
+        return "no CUDA device: the renorm kernels have nothing to run on"
+    if torch.cuda.get_device_capability()[0] >= 8:
+        # Not a failure: on sm80+ the FlashInfer kernels are the intended path.
+        return "not SM70, FlashInfer's own kernels are the intended path"
 
-    originals = {}
-    for alias in _ALIASES:
-        original = getattr(sampling, alias, None)
-        if original is not None:
-            originals[alias] = original
-    if not originals:
-        return False
-
-    for alias in _ALIASES:
-        setattr(sampling, alias, _REPLACEMENTS[alias])
-
-    rebound = 0
-    for module in list(sys.modules.values()):
-        if module is None or module is sampling:
-            continue
-        for alias, original in originals.items():
-            try:
-                bound = getattr(module, alias, None)
-            except Exception:  # noqa: BLE001 - partial modules raise anything
-                continue
-            if bound is not original:
-                continue
-            try:
-                setattr(module, alias, _REPLACEMENTS[alias])
-            except Exception:  # noqa: BLE001 - read-only module attribute
-                continue
-            rebound += 1
-
+    rebound = _rebind_lazy_imports()
+    patched = _patch_flashinfer_attributes()
+    stale = _unpatchable_binding()
+    if stale is not None:
+        return stale
+    # A finding at registration time is not required. ``renorm`` and
+    # ``eagle_utils`` are imported by the speculative worker long after the
+    # plugin loads, so zero bindings here is the normal case, and the earlier
+    # version of this function called it a failure -- which is the same shape
+    # as the bug it now avoids. The finder is what covers those imports.
+    _arm_rebind_finder()
     _INSTALLED = True
-    logger.info("sglang-restomod: EAGLE renorm kernels replaced for SM70 (%d rebound)", rebound)
-    return True
+    # The count belongs in the attestation, not only in a log line: on these
+    # hosts plugin log lines do not reach the log file, so the JSON is the only
+    # place a launch can say what it bound. Zero now is normal -- the renorm
+    # modules import later -- and the finder is what covers them.
+    detail = (
+        f"armed: {rebound} binding(s) replaced at registration, {patched} "
+        f"flashinfer attribute(s); rebinds {', '.join(_RENORM_MODULES)} on import"
+    )
+    attest.record("spec_sm70", True, detail)
+    logger.info("sglang-restomod: EAGLE renorm kernels replaced for SM70 (%s)", detail)
+    return None
 
 
 def _positional_index(func, name: str) -> int | None:
@@ -240,29 +345,35 @@ def _wrap_sampling_module(module) -> bool:
 
 
 class _PatchingLoader:
-    """Run the real loader, then patch the module it produced."""
+    """Run the real loader, then hand the module to ``patch``."""
 
-    def __init__(self, loader) -> None:
+    def __init__(self, loader, patch) -> None:
         self._loader = loader
+        self._patch = patch
 
     def create_module(self, spec):
         return self._loader.create_module(spec)
 
     def exec_module(self, module) -> None:
         self._loader.exec_module(module)
-        _wrap_sampling_module(module)
+        self._patch(module)
 
 
-class _JitSamplingFinder:
-    """Patch the speculative sampling module when it is first imported.
+class _PatchingFinder:
+    """Patch named modules right after the import system builds them.
 
-    The component must not import ``torch``-heavy SGLang modules at
-    registration time, and a profile without speculative decoding never needs
-    this one, so the patch is deferred to the import itself.
+    ``targets`` is a method, not a class attribute, so a test can point it at a
+    stub module by patching the global it reads.
     """
 
+    def __init__(self, patch) -> None:
+        self._patch = patch
+
+    def targets(self) -> tuple[str, ...]:
+        return ()
+
     def find_spec(self, fullname, path=None, target=None):
-        if fullname != _JIT_SAMPLING_MODULE:
+        if fullname not in self.targets():
             return None
         for finder in sys.meta_path:
             if finder is self:
@@ -272,9 +383,34 @@ class _JitSamplingFinder:
                 continue
             spec = find_spec(fullname, path, target)
             if spec is not None:
-                spec.loader = _PatchingLoader(spec.loader)
+                spec.loader = _PatchingLoader(spec.loader, self._patch)
                 return spec
         return None
+
+
+class _JitSamplingFinder(_PatchingFinder):
+    """Patch the speculative sampling module when it is first imported.
+
+    The component must not import ``torch``-heavy SGLang modules at
+    registration time, and a profile without speculative decoding never needs
+    this one, so the patch is deferred to the import itself.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(_wrap_sampling_module)
+
+    def targets(self) -> tuple[str, ...]:
+        return (_JIT_SAMPLING_MODULE,)
+
+
+class _RenormRebindFinder(_PatchingFinder):
+    """Rebind the renorm entry points when their modules first import."""
+
+    def __init__(self) -> None:
+        super().__init__(_rebind_module)
+
+    def targets(self) -> tuple[str, ...]:
+        return _RENORM_MODULES
 
 
 def install_jit_cccl_compat() -> bool:
@@ -325,6 +461,16 @@ def install_jit_cccl_compat() -> bool:
 
 
 def register() -> None:
-    """Component entry point."""
-    install()
+    """Component entry point.
+
+    ``install()`` used to return a bool that this function dropped on the floor,
+    so a component that could not bind anything still recorded as loaded: the
+    attestation said healthy, ``inactive`` was empty, and every non-greedy
+    request died in ``eagle_sample``. The reason now goes to ``attest.inactive``
+    so a launch that cannot replace these kernels says so.
+    """
+    reason = install()
+    if reason is not None:
+        attest.inactive("spec_sm70", reason)
+        logger.warning("sglang-restomod: spec_sm70 inactive: %s", reason)
     install_jit_cccl_compat()

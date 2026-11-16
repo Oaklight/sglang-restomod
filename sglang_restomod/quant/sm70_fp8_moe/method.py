@@ -23,6 +23,8 @@ from sglang.srt.layers.moe.token_dispatcher import StandardCombineInput
 from sglang.srt.layers.quantization.fp8 import Fp8MoEMethod
 from torch.nn.parameter import Parameter
 
+from sglang_restomod import attest
+
 from . import apply as fp8_apply
 from . import available, ensure_loaded, prepare_experts
 
@@ -322,15 +324,23 @@ def install() -> bool:
         return True
     mode = _mode()
     if mode == "off":
+        # Not recorded as inactive: the flag is a declaration, and the
+        # attestation's inactive class is for a component that cannot apply
+        # itself when it was meant to. `restomod doctor` fails on inactive.
         return False
     if mode not in ("auto", "on"):
         raise ValueError(f"{ENV_MODE} must be auto, on or off; got {mode!r}")
     if not _is_sm70():
         if mode == "on":
             raise RuntimeError(f"{ENV_MODE}=on requires an SM70 device")
+        attest.inactive("fp8_moe", "not an SM70 device")
         return False
     if mode == "auto" and not _library_present():
         logger.warning("SM70 TurboMind library not found; keeping the upstream FP8 MoE method")
+        attest.inactive(
+            "fp8_moe",
+            "the TurboMind library is not present; the upstream FP8 MoE method is in place",
+        )
         return False
     if mode == "on" and not available():
         raise RuntimeError(f"{ENV_MODE}=on but the TurboMind binding cannot be loaded")

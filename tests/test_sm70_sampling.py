@@ -246,3 +246,186 @@ def test_jit_cccl_compat_reports_failure_when_the_module_has_no_load_jit(monkeyp
 
     assert sm70_sampling.install_jit_cccl_compat() is False
     assert sm70_sampling._JIT_CCCL_INSTALLED is False
+
+
+# --- the binding, not the module attribute ----------------------------------
+#
+# The pin binds ``LazyImport("flashinfer.sampling", "top_k_renorm_probs")`` in
+# ``sglang/kernels/ops/sampling/renorm.py`` and ``eagle_utils`` takes it with a
+# module-level ``from ... import``. On a host without flashinfer, patching the
+# attribute on ``flashinfer.sampling`` cannot work: that module does not import.
+# These tests pin the replacement to the binding.
+
+_LAZY_STUB = '''\
+class LazyImport:
+    """Stand-in for sglang.utils.LazyImport: two attributes and a load."""
+
+    def __init__(self, module_name, class_name):
+        self.module_name = module_name
+        self.class_name = class_name
+
+    def __call__(self, *args, **kwargs):
+        raise RuntimeError("the flashinfer handle was called, not replaced")
+
+    def __getattr__(self, name):
+        raise RuntimeError("the flashinfer handle was read, not replaced")
+
+
+top_k_renorm_prob = LazyImport("flashinfer.sampling", "top_k_renorm_probs")
+top_p_renorm_prob = LazyImport("flashinfer.sampling", "top_p_renorm_probs")
+'''
+
+
+def _write_renorm_stub(root):
+    package = root / "lazypkg"
+    package.mkdir(parents=True, exist_ok=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "renorm.py").write_text(_LAZY_STUB, encoding="utf-8")
+    # The eagle_utils shape: a module-level ``from ... import`` of the handle.
+    (package / "eagle.py").write_text(
+        "from lazypkg.renorm import top_k_renorm_prob, top_p_renorm_prob\n",
+        encoding="utf-8",
+    )
+    return package
+
+
+def test_flashinfer_lazy_handle_is_recognised():
+    from sglang_restomod.spec import sm70_sampling
+
+    class LazyImport:
+        module_name = "flashinfer.sampling"
+        class_name = "top_k_renorm_probs"
+
+    assert sm70_sampling._is_flashinfer_lazy(LazyImport())
+    # A different module, a different name, or a plain function is not a match.
+    LazyImport.module_name = "flashinfer.other"
+    assert not sm70_sampling._is_flashinfer_lazy(LazyImport())
+    LazyImport.module_name = "flashinfer.sampling"
+    LazyImport.class_name = "something_else"
+    assert not sm70_sampling._is_flashinfer_lazy(LazyImport())
+    assert not sm70_sampling._is_flashinfer_lazy(lambda *a: None)
+    assert not sm70_sampling._is_flashinfer_lazy(None)
+
+
+def test_rebind_replaces_a_handle_in_an_already_imported_module(monkeypatch):
+    import sys
+    import types
+
+    from sglang_restomod.spec import sm70_sampling
+
+    class LazyImport:
+        module_name = "flashinfer.sampling"
+        class_name = "top_k_renorm_probs"
+
+    module = types.ModuleType("lazy.in.sys.modules")
+    module.top_k_renorm_prob = LazyImport()
+    monkeypatch.setitem(sys.modules, "lazy.in.sys.modules", module)
+
+    assert sm70_sampling._rebind_module(module) == 1
+    assert module.top_k_renorm_prob is sm70_sampling.top_k_renorm_probs
+    # Nothing left to replace, so a second sweep is a no-op.
+    assert sm70_sampling._rebind_module(module) == 0
+
+
+def test_rebind_finder_patches_both_modules_on_import(monkeypatch, tmp_path):
+    import importlib
+    import sys
+
+    from sglang_restomod.spec import sm70_sampling
+
+    _write_renorm_stub(tmp_path)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.setattr(sys, "meta_path", list(sys.meta_path))
+    monkeypatch.setattr(sm70_sampling, "_RENORM_MODULES", ("lazypkg.renorm", "lazypkg.eagle"))
+    monkeypatch.delitem(sys.modules, "lazypkg", raising=False)
+    monkeypatch.delitem(sys.modules, "lazypkg.renorm", raising=False)
+    monkeypatch.delitem(sys.modules, "lazypkg.eagle", raising=False)
+
+    sm70_sampling._arm_rebind_finder()
+    renorm = importlib.import_module("lazypkg.renorm")
+    eagle = importlib.import_module("lazypkg.eagle")
+
+    assert renorm.top_k_renorm_prob is sm70_sampling.top_k_renorm_probs
+    assert renorm.top_p_renorm_prob is sm70_sampling.top_p_renorm_probs
+    # The ``from ... import`` in the second module took the replaced function,
+    # which is the binding the pin's eagle_utils actually calls.
+    assert eagle.top_k_renorm_prob is sm70_sampling.top_k_renorm_probs
+    assert eagle.top_p_renorm_prob is sm70_sampling.top_p_renorm_probs
+
+    # One finder, however many times it is armed.
+    sm70_sampling._arm_rebind_finder()
+    finders = [f for f in sys.meta_path if isinstance(f, sm70_sampling._RenormRebindFinder)]
+    assert len(finders) == 1
+
+
+def test_unpatchable_binding_reports_a_pin_rename(monkeypatch):
+    import sys
+    import types
+
+    from sglang_restomod.spec import sm70_sampling
+
+    monkeypatch.setattr(sm70_sampling, "_RENORM_MODULES", ("renamed.renorm",))
+    assert sm70_sampling._unpatchable_binding() is None
+
+    module = types.ModuleType("renamed.renorm")
+    module.top_k_renorm_prob = lambda probs, k: probs
+    module.top_p_renorm_prob = sm70_sampling.top_p_renorm_probs
+    monkeypatch.setitem(sys.modules, "renamed.renorm", module)
+
+    reason = sm70_sampling._unpatchable_binding()
+    assert reason is not None and "renamed.renorm.top_k_renorm_prob" in reason
+
+
+def test_install_arms_the_finder_even_with_no_binding_present(monkeypatch):
+    """No binding at registration time is the normal case, not a failure.
+
+    The renorm modules are imported by the speculative worker after the plugin
+    loads. Returning a reason here is what made the component report inactive
+    on a host where it would have worked.
+    """
+    import sys
+
+    from sglang_restomod.spec import sm70_sampling
+
+    monkeypatch.setattr(sys, "meta_path", list(sys.meta_path))
+    monkeypatch.setattr(sm70_sampling, "_INSTALLED", False)
+    monkeypatch.setattr(sm70_sampling, "_rebind_lazy_imports", lambda: 0)
+    monkeypatch.setattr(sm70_sampling, "_patch_flashinfer_attributes", lambda: 0)
+    monkeypatch.setattr(sm70_sampling, "_unpatchable_binding", lambda: None)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: (7, 0))
+
+    assert sm70_sampling.install() is None
+    finders = [f for f in sys.meta_path if isinstance(f, sm70_sampling._RenormRebindFinder)]
+    assert len(finders) == 1
+
+
+def test_register_records_inactive_when_install_cannot_bind(monkeypatch):
+    from sglang_restomod import attest
+    from sglang_restomod.spec import sm70_sampling
+
+    monkeypatch.setattr(attest, "reset", attest.reset)
+    attest.reset()
+    monkeypatch.setattr(sm70_sampling, "install", lambda: "no flashinfer binding")
+    monkeypatch.setattr(sm70_sampling, "install_jit_cccl_compat", lambda: True)
+
+    sm70_sampling.register()
+
+    snapshot = attest.snapshot()
+    assert "spec_sm70" in snapshot["inactive"]
+    assert "no flashinfer binding" in snapshot["components"]["spec_sm70"]["detail"]
+    attest.reset()
+
+
+def test_register_records_nothing_when_install_succeeds(monkeypatch):
+    from sglang_restomod import attest
+    from sglang_restomod.spec import sm70_sampling
+
+    attest.reset()
+    monkeypatch.setattr(sm70_sampling, "install", lambda: None)
+    monkeypatch.setattr(sm70_sampling, "install_jit_cccl_compat", lambda: True)
+
+    sm70_sampling.register()
+
+    assert attest.snapshot()["inactive"] == []
+    attest.reset()

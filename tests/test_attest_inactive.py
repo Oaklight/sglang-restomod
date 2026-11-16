@@ -71,3 +71,32 @@ def test_a_component_that_skips_is_recorded_by_its_own_install(monkeypatch):
     assert "fp4_moe" in snapshot["inactive"]
     assert "fp4_moe" not in snapshot["failed"]
     assert snapshot["components"]["fp4_moe"]["detail"].startswith("registered, inactive:")
+
+
+def test_record_after_inactive_keeps_the_reason():
+    """The plugin records ``ok`` after ``register()`` returns.
+
+    A component that called ``attest.inactive`` from inside ``register()`` had
+    its reason overwritten by that later ``record`` call, so ``inactive`` named
+    the component and said nothing about why.
+    """
+    attest = _attest()
+
+    attest.inactive("stub", "no flashinfer binding")
+    attest.record("stub", ok=True)
+
+    snapshot = attest.snapshot()
+    assert snapshot["inactive"] == ["stub"]
+    assert snapshot["components"]["stub"]["detail"] == (
+        "registered, inactive: no flashinfer binding"
+    )
+
+
+def test_record_with_its_own_detail_replaces_the_old_one():
+    attest = _attest()
+
+    attest.inactive("stub", "no flashinfer binding")
+    attest.record("stub", ok=False, detail="RuntimeError: boom")
+
+    snapshot = attest.snapshot()
+    assert snapshot["components"]["stub"]["detail"] == "RuntimeError: boom"

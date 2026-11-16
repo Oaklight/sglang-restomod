@@ -26,6 +26,8 @@ import threading
 from pathlib import Path
 from typing import Optional, Tuple
 
+from sglang_restomod import attest
+
 logger = logging.getLogger(__name__)
 
 ENV_DIR = "SM70_MARLIN_DIR"
@@ -158,7 +160,14 @@ def install() -> bool:
     extension, which the engine leaves empty.
     """
     if not available():
-        logger.warning("SM70 WNA16: the marlin_v100 extension did not load; GPTQ stays on the JIT path")
+        logger.warning(
+            "SM70 WNA16: the marlin_v100 extension did not load; GPTQ stays on the JIT path"
+        )
+        marlin_dir = os.environ.get("SM70_MARLIN_DIR", "<unset>")
+        attest.inactive(
+            "sm70_marlin_v100",
+            f"the marlin_v100 extension did not load from {marlin_dir}",
+        )
         return False
 
     from sglang.srt.layers.quantization import marlin_utils
@@ -166,6 +175,7 @@ def install() -> bool:
     original = getattr(marlin_utils, "gptq_marlin_gemm", None)
     if original is None:
         logger.warning("SM70 WNA16: marlin_utils has no gptq_marlin_gemm; nothing routed")
+        attest.inactive("sm70_marlin_v100", "marlin_utils has no gptq_marlin_gemm; the pin moved")
         return False
     if getattr(original, "_restomod_sm70", False):
         return False
@@ -199,9 +209,23 @@ def install() -> bool:
             return c
         return gemm(
             *gemm_args(
-                a, c, b_q_weight, b_scales, global_scale, b_zeros, g_idx, perm,
-                workspace, b_q_type, size_m, size_n, size_k, is_k_full,
-                use_atomic_add, use_fp32_reduce, is_zp_float,
+                a,
+                c,
+                b_q_weight,
+                b_scales,
+                global_scale,
+                b_zeros,
+                g_idx,
+                perm,
+                workspace,
+                b_q_type,
+                size_m,
+                size_n,
+                size_k,
+                is_k_full,
+                use_atomic_add,
+                use_fp32_reduce,
+                is_zp_float,
             )
         )
 

@@ -29,6 +29,8 @@ from __future__ import annotations
 
 import logging
 
+from sglang_restomod import attest
+
 from ..sm70_marlin_v100 import gemm_args
 from . import ENV_DIR, available, ops
 
@@ -195,6 +197,7 @@ def install() -> bool:
         from sglang.srt.layers.quantization import marlin_utils_fp4
     except Exception as exc:  # noqa: BLE001 - absent module means nothing to patch
         logger.warning("SM70 NVFP4 dense: marlin_utils_fp4 is not importable (%s)", exc)
+        attest.inactive("fp4_dense", f"marlin_utils_fp4 is not importable ({exc})")
         return False
 
     bridges = {
@@ -208,6 +211,10 @@ def install() -> bool:
             "SM70 NVFP4 dense: marlin_utils_fp4 has no %s; the pin moved and this "
             "component needs updating",
             ", ".join(missing),
+        )
+        attest.inactive(
+            "fp4_dense",
+            "marlin_utils_fp4 has no " + ", ".join(missing) + "; the pin moved",
         )
         return False
 

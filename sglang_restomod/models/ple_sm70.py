@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import logging
 
+from sglang_restomod import attest
+
 logger = logging.getLogger(__name__)
 
 MODULE = "sglang.srt.models.qwen4_exp"
@@ -91,13 +93,16 @@ def install() -> bool:
     import torch
 
     if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] >= 8:
+        attest.inactive("ple_sm70", "not an SM70 device")
         return False
     try:
         from sglang.srt.models import qwen4_exp
-    except Exception:  # noqa: BLE001 - absent model module means nothing to patch
+    except Exception as exc:  # noqa: BLE001 - absent model module means nothing to patch
+        attest.inactive("ple_sm70", f"{MODULE} is not importable ({exc})")
         return False
     if not hasattr(qwen4_exp, KERNEL):
         logger.warning("sglang-restomod: %s.%s not found", MODULE, KERNEL)
+        attest.inactive("ple_sm70", f"{KERNEL} is absent from {MODULE}; the pin moved")
         return False
 
     setattr(qwen4_exp, KERNEL, _kernel())
