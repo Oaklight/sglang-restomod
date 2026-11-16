@@ -413,6 +413,11 @@ fi
 PACK="${OUT%/}.tgz"
 "$OOB" pack --evidence-dir "$OUT" --out "$PACK"
 echo "evidence: $PACK"
+# `oob pack` prints the manifest digest of the contents. That number cannot say
+# which directory a person means: unpack, redact again, repack, and the digest
+# moves while the evidence does not. The archive's own hash names the bytes, so
+# quote the two together.
+echo "archive sha256: $(sha256sum "$PACK" | cut -d' ' -f1)"
 if [[ "$GPU_TEST_RC" -ne 0 ]]; then
   echo "error: a GPU test failed; see $OUT/gpu_tests.txt" >&2
   exit 1

@@ -6,8 +6,11 @@ archive is packed, because the archive is uploaded to a public release asset.
 It rewrites absolute paths under a home or site mount, NVIDIA serial numbers,
 UUIDs and bus ids, the ``host=`` line, and any name from ``IDENTITY_DENYLIST``.
 
-The pass is idempotent and records only counts in ``redaction.txt``; the
-replaced values are not written anywhere.
+The pass is content-idempotent: a second run rewrites nothing. The record is
+idempotent too, by accumulation. ``redaction.txt`` describes the bundle, not the
+last pass, so counts from an earlier pass are kept and a later pass that finds
+nothing leaves them standing. Rewriting the record with the current pass's
+zeros would erase the only account of what the published archive had removed.
 """
 
 from __future__ import annotations
@@ -48,10 +51,19 @@ _TRAVERSAL_RE = re.compile(  # identity-check: allow
 _REDACTIONS = [
     ("path", _TRAVERSAL_RE),
     ("path", _PATH_RE),
-    ("nvidia-field", re.compile(r"(?m)^(\s*(?:Serial Number|GPU UUID|Bus Id|ClusterUUID)\s*:).*$")),
+    (
+        "nvidia-field",
+        re.compile(
+            r"(?m)^(\s*(?:Serial Number|GPU UUID|Bus Id|ClusterUUID)\s*:)(?!\s*<redacted>).*$"
+        ),
+    ),
     ("gpu-bus-header", re.compile(r"(?m)^GPU [0-9a-fA-F:]+")),
-    ("host-line", re.compile(r"(?m)^host=.*$")),
-    ("uname-nodename", re.compile(r"(?m)^(Linux) \S+(?=[^\n]* #)")),
+    # The negative lookaheads keep a rule from re-matching its own output. A
+    # rewrite that changes nothing must not be counted either: the record says
+    # how much identity this bundle lost, and a second pass that finds nothing
+    # has to leave it alone.
+    ("host-line", re.compile(r"(?m)^host=(?!<redacted>).*$")),
+    ("uname-nodename", re.compile(r"(?m)^(Linux) (?!<redacted>)\S+(?=[^\n]* #)")),
 ]
 
 _FIELD_RE = re.compile(r"(?m)^(\s*[A-Za-z][A-Za-z ]*:\s*)(?!<redacted>).*$")
@@ -156,6 +168,32 @@ def run(directory: pathlib.Path, denylist: list[str]) -> dict[str, int]:
     return counts
 
 
+def _read_counts(path: pathlib.Path) -> dict[str, int]:
+    """The counts an earlier pass recorded, ignoring anything unparseable."""
+    counts: dict[str, int] = {}
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return counts
+    for line in lines:
+        name, sep, value = line.partition("\t")
+        if not sep:
+            continue
+        try:
+            counts[name] = int(value)
+        except ValueError:
+            continue
+    return counts
+
+
+def merge_counts(earlier: dict[str, int], later: dict[str, int]) -> dict[str, int]:
+    """Add this pass's counts to the bundle's record; counts only grow."""
+    merged = dict(earlier)
+    for name, value in later.items():
+        merged[name] = merged.get(name, 0) + value
+    return merged
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("directory", help="evidence directory to rewrite in place")
@@ -176,14 +214,17 @@ def main(argv: list[str] | None = None) -> int:
     else:
         denylist = [p.strip() for p in re.split(r"[,\n]", args.denylist) if len(p.strip()) >= 3]
 
-    counts = run(directory, denylist)
+    this_pass = run(directory, denylist)
     leaks = verify(directory, denylist)
-    lines = [f"{name}\t{count}" for name, count in sorted(counts.items())]
+    # The record describes the bundle, so it accumulates; a pass that finds
+    # nothing must not overwrite what an earlier pass removed.
+    record = merge_counts(_read_counts(directory / "redaction.txt"), this_pass)
+    lines = [f"{name}\t{count}" for name, count in sorted(record.items())]
     (directory / "redaction.txt").write_text(
         "fields redacted from this bundle; values are not recorded\n"
         + ("\n".join(lines) + "\n" if lines else "none\n")
     )
-    print("redacted: " + (", ".join(f"{k}={v}" for k, v in sorted(counts.items())) or "none"))
+    print("redacted: " + (", ".join(f"{k}={v}" for k, v in sorted(this_pass.items())) or "none"))
     if leaks:
         print("\nresidual identity in the evidence bundle:", file=sys.stderr)
         for leak in leaks:

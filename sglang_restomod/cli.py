@@ -131,8 +131,14 @@ def doctor(args: argparse.Namespace) -> int:
     failed: list[str] = []
     notes: list[str] = []
 
-    def check(condition: bool, label: str) -> None:
-        (ok if condition else failed).append(label)
+    def check(condition: bool, label: str, failed_label: str | None = None) -> None:
+        # ``label`` describes the state when the check holds. A failing check
+        # must say what it found instead, or the report reads "FAIL ... matches"
+        # and states the opposite of its own verdict.
+        if condition:
+            ok.append(label)
+        else:
+            failed.append(failed_label or label)
 
     manifest_path = _find_manifest(args.manifest)
     manifest: dict[str, Any] = {}
@@ -185,7 +191,11 @@ def doctor(args: argparse.Namespace) -> int:
         engine_version = getattr(sglang, "__version__", "?")
         print(f"  sglang version: {engine_version} (metadata {_version('sglang')})")
         ok.append("engine: sglang imports")
-        check("/var/tmp" not in str(sglang.__file__), "engine: not a /var/tmp checkout")
+        check(
+            "/var/tmp" not in str(sglang.__file__),
+            "engine: not a /var/tmp checkout",
+            "engine: a /var/tmp checkout, which is the unpinned fork",
+        )
     except Exception as exc:  # noqa: BLE001
         failed.append(f"engine: sglang does not import ({exc})")
 
@@ -194,7 +204,11 @@ def doctor(args: argparse.Namespace) -> int:
     try:
         entry_points = [ep.name for ep in metadata.entry_points(group="sglang.srt.plugins")]
         print(f"  plugin entry points: {entry_points}")
-        check("restomod" in entry_points, "plugin: restomod entry point resolves")
+        check(
+            "restomod" in entry_points,
+            "plugin: restomod entry point resolves",
+            "plugin: no restomod entry point, so SGLANG_PLUGINS has nothing to load",
+        )
     except Exception as exc:  # noqa: BLE001
         failed.append(f"plugin: entry point lookup failed ({exc})")
 
@@ -254,6 +268,7 @@ def doctor(args: argparse.Namespace) -> int:
                 check(
                     _commit_matches(recorded, declared),
                     f"commit: {recorded} matches {declared}",
+                    f"commit: {recorded} does not match {declared}",
                 )
         else:
             notes.append(
@@ -268,7 +283,11 @@ def doctor(args: argparse.Namespace) -> int:
         for name in MOE_TILES:
             tile = engine_dir / MOE_TILE_DIR / name
             print(f"  moe tile: {tile}")
-            check(tile.is_file(), f"moe tiles: {name} resolves in the engine tree")
+            check(
+                tile.is_file(),
+                f"moe tiles: {name} resolves in the engine tree",
+                f"moe tiles: {name} missing at {tile}",
+            )
 
     for name in VERSION_PACKAGES:
         print(f"  {name}: {_version(name)}")
@@ -322,7 +341,11 @@ def doctor(args: argparse.Namespace) -> int:
                     ),
                     None,
                 )
-                check(actual == expected, "cuda-image: sha256 matches")
+                check(
+                    actual == expected,
+                    "cuda-image: sha256 matches",
+                    f"cuda-image: sha256 {actual} != {expected}",
+                )
             else:
                 notes.append("cuda-image: size only; pass --deep to hash it")
 

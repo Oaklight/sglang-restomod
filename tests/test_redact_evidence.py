@@ -61,6 +61,27 @@ def test_redaction_record_holds_counts_only(tmp_path, capsys):
     assert denylisted not in capsys.readouterr().out
 
 
+def test_a_later_pass_does_not_erase_the_record(tmp_path, capsys):
+    # The record describes the bundle, not the last pass. A second run over an
+    # already-scrubbed directory removes nothing, and rewriting the counters
+    # with its zeros would delete the only account of what was removed.
+    denylisted = "node-q7"
+    (tmp_path / "commit.txt").write_text(f"host={denylisted}\n")
+    # The value after the colon is irrelevant; a long digit run would trip the
+    # identity check that keeps real serials out of the source.
+    (tmp_path / "gpu.txt").write_text("    Serial Number : SN-ALPHA\n")
+
+    assert redact_evidence.main([str(tmp_path), "--denylist", denylisted]) == 0
+    first = (tmp_path / "redaction.txt").read_text()
+    assert "host-line\t1" in first
+    assert "nvidia-field\t1" in first
+
+    assert redact_evidence.main([str(tmp_path), "--denylist", denylisted]) == 0
+    assert (tmp_path / "redaction.txt").read_text() == first
+    # The second pass removed nothing, and says so.
+    assert "host-line=0" in capsys.readouterr().out
+
+
 def test_uname_keeps_the_kernel_release(tmp_path):
     (tmp_path / "commit.txt").write_text(
         "Linux 5.15.0-177-generic x86_64\n"
