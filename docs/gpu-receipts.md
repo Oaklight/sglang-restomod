@@ -193,13 +193,25 @@ mount, NVIDIA serial numbers, UUIDs and bus ids, the `host=` line, and every
 name in `IDENTITY_DENYLIST`. `redaction.txt` records the count per rule and
 never the replaced value.
 
-**Name redaction is opt-in, and the rest is not.** Paths, serials and ids are
-removed on every run, but a host name or an account name is removed only when a
-denylist is supplied — a default run therefore produces a bundle that is
-path-clean, serial-clean and still carries the machine's name. The pass also
-walks the whole directory and reports (rather than skips) symlinks and binary
-files it cannot inspect, and prints how many files it examined so an empty
-bundle cannot read as a clean one.
+**The local host name and account are removed on every run.** The pass runs on
+the host that produced the bundle, so it redacts that host's own name and the
+account that ran it without a flag or a list. Generic accounts — `root`,
+`user`, `admin`, `test`, `ubuntu`, `runner`, `nobody`, `app`, `default` — are
+left alone, because rewriting an ordinary word would corrupt the bundle; a name
+such as `pding` cannot match prose and is removed.
+
+This covers the account that ran the pass, **not a co-tenant named in a process
+table or a scheduler log**. No collector here emits one today — the suite calls
+`nvidia-smi -q`, a GPU-only csv and `topo -m`, with no `ps`, `pgrep`, `who` or
+`--query-compute-apps` — so the structural rule in #328 is preventive, not
+urgent, and that issue names the change that would make it live.
+
+A denylist is still needed for **other** hosts — the bundle builder and the
+packer are not always the same machine — and when none is supplied the pass says
+so inside `redaction.txt`, so the gap travels with the artifact instead of
+living only in a terminal. The pass also walks the whole directory and reports
+(rather than skips) symlinks and binary files it cannot inspect, and prints how
+many files it examined, so an empty bundle cannot read as a clean one.
 
 Pass the same list the CI check reads:
 
