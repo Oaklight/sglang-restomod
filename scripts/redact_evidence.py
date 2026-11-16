@@ -11,6 +11,21 @@ idempotent too, by accumulation. ``redaction.txt`` describes the bundle, not the
 last pass, so counts from an earlier pass are kept and a later pass that finds
 nothing leaves them standing. Rewriting the record with the current pass's
 zeros would erase the only account of what the published archive had removed.
+
+Two properties of this tool that the person running it needs to know, so they
+are here and not only in ``docs/gpu-receipts.md``:
+
+**Name redaction happens only when a denylist is supplied** (``--denylist`` or
+``$IDENTITY_DENYLIST``). Paths, serials, UUIDs, bus ids and the ``host=`` line
+are always redacted; a host name or an account name is redacted only if it is
+on the list. A default run can therefore produce a bundle that is path-clean and
+serial-clean and still carries the machine's name. Supply the list.
+
+**The walk is recursive and reports what it could not inspect.** Symlinks are
+reported, never followed: writing through one would edit a file outside the
+bundle. Files that are not text are reported, never skipped. A bundle that
+examined no files is an error, because an empty report reads exactly like a
+clean one.
 """
 
 from __future__ import annotations
@@ -124,38 +139,86 @@ _RESIDUAL = [
 ]
 
 
+def bundle_files(directory: pathlib.Path) -> list[pathlib.Path]:
+    """Every regular file in the bundle, at any depth, except the record.
+
+    ``iterdir()`` read only the top level, so a nested directory was neither
+    rewritten nor verified while ``verify()`` returned an empty list — the
+    condition that means "safe to pack" (issue #320). A gate that reports clean
+    on input it never examined is worse than no gate, so the walk is recursive
+    and the same filters apply at every depth.
+
+    Symlinks are not returned. Writing through one would modify a file outside
+    the bundle, and reading one can leave the directory entirely; ``verify``
+    reports them instead of following them.
+    """
+    files: list[pathlib.Path] = []
+    for root, dirs, names in os.walk(directory):
+        dirs.sort()
+        for name in sorted(names):
+            path = pathlib.Path(root) / name
+            if path.name == "redaction.txt" or path.is_symlink():
+                continue
+            files.append(path)
+    return files
+
+
+def bundle_symlinks(directory: pathlib.Path) -> list[pathlib.Path]:
+    """Every symlink in the bundle: not followed, and not silently dropped."""
+    found: list[pathlib.Path] = []
+    for root, dirs, names in os.walk(directory):
+        for name in sorted(dirs):
+            path = pathlib.Path(root) / name
+            if path.is_symlink():
+                found.append(path)
+        for name in sorted(names):
+            path = pathlib.Path(root) / name
+            if path.is_symlink():
+                found.append(path)
+    return found
+
+
+def _relative(path: pathlib.Path, root: pathlib.Path) -> str:
+    """Name a file by its path inside the bundle, so a leak names its file."""
+    try:
+        return str(path.relative_to(root))
+    except ValueError:  # pragma: no cover - every path comes from a walk of root
+        return path.name
+
+
 def verify(directory: pathlib.Path, denylist: list[str]) -> list[str]:
     """Return every residual identity marker left in the bundle.
 
     ``run`` calls it after rewriting; an empty list is the condition for
     packing. A non-empty list is a failure, not a warning.
     """
-    leaks: list[str] = []
-    for path in sorted(directory.iterdir()):
-        if not path.is_file() or path.name == "redaction.txt":
-            continue
+    leaks: list[str] = [
+        f"{_relative(path, directory)}: symlink, not inspected"
+        for path in bundle_symlinks(directory)
+    ]
+    for path in bundle_files(directory):
         try:
             text = path.read_text()
         except (UnicodeDecodeError, OSError):
+            leaks.append(f"{_relative(path, directory)}: unreadable, not inspected")
             continue
         if "\0" in text:
+            leaks.append(f"{_relative(path, directory)}: binary, not inspected")
             continue
         leaks.extend(
-            f"{path.name}: residual {name}"
+            f"{_relative(path, directory)}: residual {name}"
             for name, pattern in _RESIDUAL
             if pattern.search(text)
         )
         for item in denylist:
             if re.search(re.escape(item), text, re.IGNORECASE):
-                leaks.append(f"{path.name}: residual denylist name")
+                leaks.append(f"{_relative(path, directory)}: residual denylist name")
     return leaks
 
 
 def run(directory: pathlib.Path, denylist: list[str]) -> dict[str, int]:
     counts: dict[str, int] = {}
-    for path in sorted(directory.iterdir()):
-        if not path.is_file() or path.name == "redaction.txt":
-            continue
+    for path in bundle_files(directory):
         try:
             text = path.read_text()
         except (UnicodeDecodeError, OSError):
@@ -215,6 +278,7 @@ def main(argv: list[str] | None = None) -> int:
         denylist = [p.strip() for p in re.split(r"[,\n]", args.denylist) if len(p.strip()) >= 3]
 
     this_pass = run(directory, denylist)
+    examined = len(bundle_files(directory))
     leaks = verify(directory, denylist)
     # The record describes the bundle, so it accumulates; a pass that finds
     # nothing must not overwrite what an earlier pass removed.
@@ -225,6 +289,12 @@ def main(argv: list[str] | None = None) -> int:
         + ("\n".join(lines) + "\n" if lines else "none\n")
     )
     print("redacted: " + (", ".join(f"{k}={v}" for k, v in sorted(this_pass.items())) or "none"))
+    # The other silent skip: a bundle with nothing in it produces no leaks and
+    # reads exactly like a clean one. Say what was looked at, and refuse zero.
+    print(f"examined: {examined} files")
+    if examined == 0:
+        print(f"error: no files to examine under {directory}", file=sys.stderr)
+        return 1
     if leaks:
         print("\nresidual identity in the evidence bundle:", file=sys.stderr)
         for leak in leaks:
