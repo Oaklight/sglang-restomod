@@ -172,7 +172,7 @@ two buckets' measured 5-8x per-call ratio makes plausible rather than proven.
 - It does not rank the decode families reliably: the capture holds roughly a
   third of a step's kernels, so the shares bound the order, not the savings.
 - It does not touch capacity. The same policy inverts on `bluewhale`, where
-  residency is **9.8%** and the host tier costs **~92 ms/token** — that is the
+  residency is 18.4% and the host tier costs ~45 ms/token — that is the
   capacity page's result, and it is why decode is the part of this work that
   transfers.
 
@@ -214,6 +214,10 @@ CUDA-graphed decode.
 | w2 / down | 44.3 us (`sm70_marlin_moe_gemm_kernel`, 48 calls) | 23.7 us (`nvfp4_qpn_m1_sm70_kernel<1>`, 48 calls) | 1.87x |
 | per step, target | 5.13 ms | 3.02 ms | 1.70x |
 | per step, incl. the MTP layer | 6.61 ms | 3.88 ms | 1.70x |
+
+**Bucket share and ceiling, both required beside the ratio:** the expert bucket is
+**19.1% of a decode step**, so matching the reference's per-call times buys
+**1.13x** and deleting the bucket outright buys 1.33x. "1.70x" is not "70% to win".
 
 Our per-call figures are confirmed on an independent arm: this page's own
 verify-window census measured 61.4 us and 43.6 us on lambda4, within 2% of the
@@ -314,6 +318,11 @@ and theirs pays for its own sharding far more than we pay for ours.
   `.so`.
 - It does not establish the MTP owner from the trace. That is inference from our
   own loader and from the reference's call count.
+- **It supersedes two figures in the page body above.** `bluewhale` residency is
+  **9.8%**, not 18.4%, and the host tier costs **~92 ms/token**, not ~45, per the
+  capacity page's per-tensor rebuild of the expert term. The original sentences
+  stand, quoted, rather than edited — the same rule this addendum applies to the
+  5-8x.
 - It does not rank the step from kernel sums. The reference's 37.9 ms of kernels
   per step cannot fit its own 19.4-25.8 ms wall, so that step has multi-stream
   overlap and only per-call durations and source-side launch counts may be
