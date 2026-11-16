@@ -45,13 +45,32 @@ page is indicative only.
 **Both structural candidates are now closed, and the difference is step time times
 accept.** Overlap is the same on both stacks — **1.102 against 1.065** inside the
 drift band, with absolute overlap 1.36 ms/step on ours against 0.11 on theirs, and
-ours is compute-against-compute rather than collectives. And the reference's
-**`busy_union` is 35.64 ms/step inside its own trace**, so its wall cannot be
-shorter than that: against its measured 7.71 ms/output-token that implies a
-**marginal accept of ~4.6**, near the 5-token ceiling, against our 3.84. They take
-a longer step and get more tokens per step. Per output token that leaves us **8.02
-ms against 7.71 on comparable arms — level within 4%** — and 10.49 against 7.71,
-1.36x behind, on lambda1.
+ours is compute-against-compute rather than collectives.
+
+The reference's **`busy_union` is 35.64 ms/step measured inside its own trace**, so
+its wall cannot be shorter than that. Against its measured 7.71 ms/output-token, a
+step of at least 35.6 ms implies a **marginal accept of ~4.6**, near the 5-token
+ceiling, against our 3.84. **This conflicts with the reference's own logged
+acceptance — 3.34 and 2.55 for two intervals — which at the same rate would give
+steps of 25.8 and 19.7 ms, both below the union floor.** There are exactly two
+resolutions:
+
+- **A:** the marginal accept over the slope window really is ~4.6, and the logged
+  averages belong to other intervals;
+- **B:** the profiled kernel durations are inflated 1.4–1.8x, so both `kernel_sum`
+  and `busy_union` are unusable — **and then the 1.59x and 1.87x per-call expert
+  ratios shrink too**, because they are means of the same durations.
+
+**So 4.6 is an inference under A, not a measurement, and it is not independent of
+the expert ratios.** B is unlikely — CUPTI timestamps are hardware, and our own
+trace shows unperturbed durations (sum 23.74 ms against a 25.05 ms unprofiled
+step) — but it is not free to dismiss. One run discriminates: the reference's
+per-step wall **and** per-step accept from the same request in its own metric line.
+That is a lambda1 measurement, so it is not ours to take.
+
+What survives without the inference: per output token, **8.02 ms against 7.71 on
+comparable arms — level within 4%** — and 10.49 against 7.71, 1.36x behind, on
+lambda1.
 
 **So the 2.77x per-model figure above is against the capacity reference's 2.25-bit
 model, not an engine comparison**, and must not be quoted as one. Against a
