@@ -1,0 +1,45 @@
+From: restomod bluewhale bring-up, 2026-11-16
+Subject: [PATCH] deepseek_v4: import deep_gemm at the call site, not at module scope
+
+``mhc_mega.py`` imported ``deep_gemm`` at module scope behind ``if is_cuda()``,
+and ``deepseek_v4_mhc`` imports ``mhc_mega`` at module scope, so the whole
+DeepSeek-V4 model class is unimportable on any host without DeepGEMM.
+
+The kernel is only reached when ``_can_use_mega_mhc`` is true, and that
+requires sm100, so on sm70 the import is the only thing that ever runs: the
+registry skipped the model, fell back to the generic HF wrapper, and the load
+died with ``Unrecognized configuration class DeepseekV41Config`` -- a config
+error naming the wrong file. Moving the import into the function makes the
+model class importable on V100 and never enters the sm100 path.
+
+Verified: ``import sglang.srt.models.deepseek_v4`` succeeds on V100 with this
+patch and fails without it; ``EntryClass = [DeepseekV4ForCausalLM]`` registers.
+
+---
+--- a/python/sglang/kernels/ops/layernorm/mhc_mega.py
++++ b/python/sglang/kernels/ops/layernorm/mhc_mega.py
+@@ -5,11 +5,6 @@
+ """
+ 
+ import torch
+-
+-from sglang.srt.utils import is_cuda
+-
+-if is_cuda():
+-    import deep_gemm
+ 
+ 
+ def mhc_mega_boundary(
+@@ -38,6 +33,12 @@
+     on the capture stream to initialize DeepGEMM's per-stream barriers.
+     ``y_fp8`` / ``y_gemm_sf`` also receive the normed rows as a DeepGEMM MXFP8 pair.
+     """
++    # DeepGEMM ships Hopper/Blackwell kernels only, but this module is imported
++    # by the DeepSeek-V4 model chain on every platform. Import it where the
++    # kernel is called: ``_can_use_mega_mhc`` already restricts the call to
++    # sm100, so on sm70 the module imports and this function never runs.
++    import deep_gemm
++
+     rows, hidden = x.shape
+     hc = residual.shape[1]
+     updated = torch.empty_like(residual)
