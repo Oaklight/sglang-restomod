@@ -24,6 +24,14 @@ validated on hardware.
 
 ### Added
 
+- `attest.inactive(name, reason)` records a component that registered but cannot
+  act — an unavailable prebuilt library, a mode switched off, a non-SM70
+  device, or a hook that did not bind — so `snapshot()["inactive"]` separates
+  "selected" from "active" (#294)†.
+- `SGLANG_SM70_FP8_PREFILL_EXACT_DENSE_SHAPES=flashnext` admits the Flash-Next
+  TP4 dense shapes to the exact-dense prefill dispatch; unset keeps the 27B
+  table and the previous behaviour, and an unrecognised value raises rather
+  than silently disabling the table (#299).
 - `attest` records a component whose module fails to import as `inactive` with
   the import error; the loader can no longer report "loaded" while the engine
   serves its own backend (#297).
@@ -67,6 +75,11 @@ validated on hardware.
 
 ### Changed
 
+- A GPU receipt is required only for the paths that decide GPU behaviour:
+  `sglang_restomod/{quant,attention,moe,models,spec,linear_attn_sm70}/`,
+  `sglang_restomod/plugins.py`, `patches/` and `recipes/`. A change to
+  `cli.py`, to tests or to documentation no longer needs a hardware run for
+  evidence that has nothing to certify (#302).
 - The engine baseline is v0.5.23; `pyproject.toml` declares `sglang==0.5.23` and
   `sglang-kernel` (#243, #267, #268).
 - The plugin records which components registered, and one failing component no
@@ -98,6 +111,10 @@ validated on hardware.
 - A suite pack reports the archive's own sha256 beside the manifest digest
   `oob pack` prints, because the manifest digest cannot say which directory a
   person means (#303).
+- The exact-dense prefill dispatch gated on `layer.tp_size`, which no linear
+  module carries in the pinned engine, so it admitted zero layers on every site
+  and every model, silently. It now reads the engine's own tensor-parallel size,
+  and logs the tp value and its source for each refused candidate (#299).
 - The GDN tail chunk is padded and trimmed instead of refused, so prompts whose
   token count is not a multiple of 64 stay on TileLang (#287)†.
 - A decode-GEMV skip is logged once per shape instead of once per layer (#269)†.
