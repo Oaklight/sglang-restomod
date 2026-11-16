@@ -1,10 +1,10 @@
 # 2026-11-15 — The dense-GEMM dive: where the time is, and where it is not
 
-Status: **measured, with one line closed negatively and one left open.** The
-decode dense cluster is byte-bound once it is on fp8 and launch-bound whatever
-its dtype; a per-call GEMV kernel is not worth writing in Triton; the
-exact-dense prefill dispatch was worth 2.1% once every listed shape reached it,
-and nothing more than that was claimed for it.
+Status: **measured, and the GEMV lane is closed.** The decode dense cluster is
+byte-bound once it is on fp8 and launch-bound whatever its dtype; neither a
+Triton nor a TileLang per-call GEMV clears the control on the shape family that
+bounds the time; the exact-dense prefill dispatch was worth 2.1% once every
+listed shape reached it, and nothing more than that was claimed for it.
 
 Everything here is one box (lambda4, 4x V100-32GB, TP4), one arm per
 configuration, no repeats unless stated. The prototype scripts for the GEMV
@@ -52,12 +52,110 @@ collapses outright. The reason is the one this repository keeps rediscovering:
 Triton kernel is scalar FMA against a cuBLAS path that is already at the
 launch-cost floor.
 
-Verdict: no per-call kernel change is justified on this evidence, and the
-family should be attacked by reducing the number of launches.
+Verdict for Triton: no per-call kernel change is justified on this
+evidence. The Triton numbers say nothing about TileLang, which does emit
+`mma.sync` on sm70 — so that question was tested separately, below.
 
-**The TileLang question is open.** TileLang does emit `mma.sync` on sm70, and
-nothing here tests it. This section is a negative result about Triton against
-`torch.mv`; it is not a result about TileLang.
+### The TileLang rounds
+
+Standalone microbenchmark, lambda4 GPU4, TileLang 0.1.8 / torch 2.9.1, M=4.
+Control is `min(torch.mv, torch.matmul)` on the same tensors; the control itself
+runs at 314-348 GB/s on the two 6.55 MB shapes, not the ~218 GB/s quoted
+earlier, so the bar is higher than it looked.
+
+**Round one: a hand-mapped reduction, 25 GB/s.** The kernel mapped
+`(block_N, M)` per block with a serial K loop and read one fp16 per thread per
+step. It ran at 25 GB/s — 10x slower than the control. **This number says the
+mapping was wrong, not that TileLang is slow:** it is listed here so it does not
+later read as a language verdict.
+
+**Round two: tensor-core tiles with M padded 4 to 16.** Padding costs 4x compute
+on a bandwidth-bound operation, which is free; the MMA path is the one sm70
+actually has.
+
+| shape (N,K) | control us | round two us | ratio |
+|---|---:|---:|---:|
+| `(320, 10240)` | 19.0 | 148.9 | 0.13x |
+| `(10240, 320)` | 20.9 | 14.5 | 1.45x |
+| `(4, 10240)` | 22.4 | 101.8 | 0.22x |
+| `(320, 2560)` | 23.6 | 27.1 | 0.87x |
+| `(2560, 160)` | 19.0 | 4.8 | 4.00x |
+
+**The split is structural.** The grid was over N only, so `(320, 10240)` became
+5-10 blocks on an 80-SM part with 160 sequential K chunks, and `(4, 10240)`
+became one block. Every loss is a small-N shape; the two large-N shapes won.
+
+**Round three: split-K**, grid over (N, ksplit), fp32 partials, a second kernel
+summing them, both inside the timed region.
+
+| shape (N,K) | control us | split-K us | best ksplit | ratio |
+|---|---:|---:|---:|---:|
+| `(320, 10240)` | 18.8 | 32.4 | 8 | **0.58x** |
+| `(10240, 320)` | 17.2 | 14.2 | 1 | **1.21x** |
+| `(4, 10240)` | 17.8 | 24.3 | 8 | 0.73x |
+| `(320, 2560)` | 15.2 | 9.4 | 8 | **1.61x** |
+| `(2560, 160)` | 11.8 | 5.3 | 1 | **2.22x** |
+
+Split-K moved `(320, 10240)` from 148.9 to 32.4 us and `(320, 2560)` from 0.87x
+to 1.61x, so the diagnosis was right. It did not close `(320, 10240)`: five
+N-blocks times eight splits is 40 blocks against 80 SMs, and the reduction
+kernel's cost is charged on top — at 6.55 MB that second kernel is a real
+fraction of the total, though the two are timed together here and their shares
+are not separated. `(10240, 320)` won at ksplit=1; it never needed the split.
+
+**The lane is closed.** The gate was: beat the control on both 6.55 MB shapes.
+`(320, 10240)` loses at 0.58x with the parallelism fixed, so no further rounds
+were run. Four of five shapes are at or above the control, and that is still not
+a pass, because the gate was the two big shapes.
+
+What would reopen it: a design that keeps N-blocks and K-splits in one kernel
+(atomics, or a fused reduction), which is a different kernel, not another round
+of this one.
+
+### Why not dispatch per shape, and use TileLang only where it wins
+
+The obvious objection: four of five shapes are at or above the control, so route
+just those to a TileLang kernel. The arithmetic does not support it.
+
+The two big shapes are the whole family's bytes — 97 launches each, 6.55 MB
+each, about 1.27 GB per step — and one of them, `(320, 10240)`, is a loss. What
+the wins are worth, from this run's timings:
+
+| shape | saves per launch | launches per step | saved |
+|---|---:|---:|---:|
+| `(10240, 320)` 1.21x | 3.0 us | 97 | 0.29 ms |
+| `(320, 2560)` 1.61x | 5.8 us | 48 | 0.28 ms |
+| `(2560, 160)` 2.22x | 6.5 us | 48 | 0.31 ms |
+| **total** | | | **~0.88 ms of a 25.6 ms step, ~3%** |
+
+Those are standalone savings, and in situ the served path already averages ~24 us
+per launch, so the real number is at best this and probably less. The price is a
+new kernel, a new dispatch gate and a per-shape table on a family that has
+already cost +2.7 ms/step once through a Python-level hook: the HC modules call
+`F.linear` on the raw weight and bypass `forward`, so any hook has to intercept
+where the current path dispatches.
+
+A 3% ceiling for a permanent dispatch table is not the trade this repository
+should make, and the closure is argued rather than asserted.
+
+### The TileLang question is answered, not abandoned
+
+TileLang is competitive or faster at large N without split-K (`(10240, 320)`
+1.21x, `(2560, 160)` 2.22x) and with split-K at `(320, 2560)` (1.61x). It cannot
+beat cuBLAS's gemv on `(320, 10240)` even after the parallelism defect is fixed.
+That is a result about where the design loses, and it should stop the next
+person spending a window on the same kernel.
+
+Two properties of the measurement worth carrying:
+
+- `(4, 10240)` is 0.08 MB against a 17.8 us control. That is launch latency, not
+  bandwidth, so no kernel of this family wins it while the launch dominates —
+  a property of the measurement, not of the language.
+- Building these kernels has two traps with no useful error message. TVMScript
+  will not see constants from a closure (`NameError: KS/KP`), and it parses with
+  `inspect.getsource`, so a source string passed to `exec` fails with
+  `OSError: could not get source code`. Write each generated kernel to a module
+  file and import it.
 
 ## 3. A landmine: un-compiled small GEMMs run at ~4 GB/s
 
