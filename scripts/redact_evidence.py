@@ -15,11 +15,16 @@ zeros would erase the only account of what the published archive had removed.
 Two properties of this tool that the person running it needs to know, so they
 are here and not only in ``docs/gpu-receipts.md``:
 
-**Name redaction happens only when a denylist is supplied** (``--denylist`` or
-``$IDENTITY_DENYLIST``). Paths, serials, UUIDs, bus ids and the ``host=`` line
-are always redacted; a host name or an account name is redacted only if it is
-on the list. A default run can therefore produce a bundle that is path-clean and
-serial-clean and still carries the machine's name. Supply the list.
+**The local nodename is redacted unconditionally**, with no flag and no list:
+this script runs on the host that produced the bundle, so it knows the name the
+host writes about itself. The host name is the commonest leak and needs no
+operator input.
+
+**A denylist is still needed for other hosts** (``--denylist`` or
+``$IDENTITY_DENYLIST``): the bundle builder and the packer are not always the
+same machine, so a name that is not this host's cannot be discovered here. When
+no list is supplied the pass says so in ``redaction.txt`` as well as on stdout,
+because the reviewer reading the artifact needs to know what it did not cover.
 
 **The walk is recursive and reports what it could not inspect.** Symlinks are
 reported, never followed: writing through one would edit a file outside the
@@ -34,6 +39,7 @@ import argparse
 import os
 import pathlib
 import re
+import socket
 import sys
 
 _PATH_ROOTS = (  # identity-check: allow
@@ -98,7 +104,34 @@ def denylist_from_env() -> list[str]:
     return [p.strip() for p in re.split(r"[,\n]", raw) if len(p.strip()) >= 3]
 
 
-def redact_text(text: str, denylist: list[str], counts: dict[str, int]) -> str:
+def local_nodename() -> str | None:
+    """The name this host writes about itself, or None when it has none.
+
+    ``gethostname`` and ``uname().nodename`` are the same value on Linux, but
+    either can be missing in an unusual environment, and a host name shorter
+    than three characters is too weak a pattern to rewrite safely.
+    """
+    for probe in (socket.gethostname, lambda: os.uname().nodename):
+        try:
+            name = probe().strip()
+        except Exception:  # noqa: BLE001 - no name is a state, not a crash
+            continue
+        if len(name) >= 3:
+            return name
+    return None
+
+
+def nodename_pattern(name: str) -> re.Pattern[str]:
+    """The nodename as a bounded token, so ``lab`` does not rewrite ``label``."""
+    return re.compile(r"(?<![A-Za-z0-9])" + re.escape(name) + r"(?![A-Za-z0-9])", re.IGNORECASE)
+
+
+def redact_text(
+    text: str,
+    denylist: list[str],
+    counts: dict[str, int],
+    nodename: str | None = None,
+) -> str:
     for name, pattern in _REDACTIONS:
         if name == "path":
             text, n = pattern.subn(_path_tail, text)
@@ -113,6 +146,11 @@ def redact_text(text: str, denylist: list[str], counts: dict[str, int]) -> str:
         else:
             text, n = pattern.subn("<redacted>", text)
         counts[name] = counts.get(name, 0) + n
+    # The local host name first: it is the name most likely to be present, and
+    # it needs no operator input. It is counted under its own rule.
+    if nodename:
+        text, n = nodename_pattern(nodename).subn("<host>", text)
+        counts["nodename"] = counts.get("nodename", 0) + n
     for item in denylist:
         pattern = re.compile(re.escape(item), re.IGNORECASE)
         text, n = pattern.subn("<redacted>", text)
@@ -186,7 +224,7 @@ def _relative(path: pathlib.Path, root: pathlib.Path) -> str:
         return path.name
 
 
-def verify(directory: pathlib.Path, denylist: list[str]) -> list[str]:
+def verify(directory: pathlib.Path, denylist: list[str], nodename: str | None = None) -> list[str]:
     """Return every residual identity marker left in the bundle.
 
     ``run`` calls it after rewriting; an empty list is the condition for
@@ -210,13 +248,17 @@ def verify(directory: pathlib.Path, denylist: list[str]) -> list[str]:
             for name, pattern in _RESIDUAL
             if pattern.search(text)
         )
+        if nodename and nodename_pattern(nodename).search(text):
+            leaks.append(f"{_relative(path, directory)}: residual host name")
         for item in denylist:
             if re.search(re.escape(item), text, re.IGNORECASE):
                 leaks.append(f"{_relative(path, directory)}: residual denylist name")
     return leaks
 
 
-def run(directory: pathlib.Path, denylist: list[str]) -> dict[str, int]:
+def run(
+    directory: pathlib.Path, denylist: list[str], nodename: str | None = None
+) -> dict[str, int]:
     counts: dict[str, int] = {}
     for path in bundle_files(directory):
         try:
@@ -225,7 +267,7 @@ def run(directory: pathlib.Path, denylist: list[str]) -> dict[str, int]:
             continue
         if "\0" in text:
             continue
-        updated = redact_text(text, denylist, counts)
+        updated = redact_text(text, denylist, counts, nodename)
         if updated != text:
             path.write_text(updated)
     return counts
@@ -277,16 +319,32 @@ def main(argv: list[str] | None = None) -> int:
     else:
         denylist = [p.strip() for p in re.split(r"[,\n]", args.denylist) if len(p.strip()) >= 3]
 
-    this_pass = run(directory, denylist)
+    nodename = local_nodename()
+    if not denylist and nodename is None:
+        # Neither a list nor a resolvable local name: nothing about names can
+        # be removed, so a bundle from here would certify what it cannot check.
+        print("error: no denylist and no resolvable host name", file=sys.stderr)
+        return 2
+
+    this_pass = run(directory, denylist, nodename)
     examined = len(bundle_files(directory))
-    leaks = verify(directory, denylist)
+    leaks = verify(directory, denylist, nodename)
     # The record describes the bundle, so it accumulates; a pass that finds
     # nothing must not overwrite what an earlier pass removed.
     record = merge_counts(_read_counts(directory / "redaction.txt"), this_pass)
     lines = [f"{name}\t{count}" for name, count in sorted(record.items())]
+    # The record travels with the artifact, so a coverage gap belongs in it and
+    # not only on the terminal that ran the pass. The line carries no tab, so
+    # _read_counts ignores it and the counts still accumulate.
+    gaps = (
+        []
+        if denylist
+        else ["no denylist supplied; names other than the local nodename were not redacted"]
+    )
     (directory / "redaction.txt").write_text(
         "fields redacted from this bundle; values are not recorded\n"
         + ("\n".join(lines) + "\n" if lines else "none\n")
+        + ("\n".join(gaps) + "\n" if gaps else "")
     )
     print("redacted: " + (", ".join(f"{k}={v}" for k, v in sorted(this_pass.items())) or "none"))
     # The other silent skip: a bundle with nothing in it produces no leaks and

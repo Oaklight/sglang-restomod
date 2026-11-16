@@ -140,3 +140,74 @@ def test_main_refuses_a_bundle_with_nothing_to_examine(tmp_path, capsys):
     captured = capsys.readouterr()
     assert "examined: 0 files" in captured.out
     assert "no files to examine" in captured.err
+
+
+# --- the local nodename, which needs no list ---------------------------------
+
+
+def test_local_nodename_is_redacted_without_a_denylist(tmp_path):
+    planted = _nested_bundle(tmp_path, "ran on bench-07 today\n")
+
+    counts = redact.run(tmp_path, [], nodename="bench-07")
+
+    assert counts.get("nodename") == 1
+    assert planted.read_text() == "ran on <host> today\n"
+
+
+def test_nodename_redaction_does_not_eat_a_longer_word(tmp_path):
+    planted = _nested_bundle(tmp_path, "label the lattice\n")
+
+    counts = redact.run(tmp_path, [], nodename="lab")
+
+    assert counts.get("nodename", 0) == 0
+    assert planted.read_text() == "label the lattice\n"
+
+
+def test_nodename_redaction_still_takes_the_whole_word(tmp_path):
+    planted = _nested_bundle(tmp_path, "the lab reported\n")
+
+    redact.run(tmp_path, [], nodename="lab")
+
+    assert planted.read_text() == "the <host> reported\n"
+
+
+def test_verify_reports_a_surviving_host_name(tmp_path):
+    _nested_bundle(tmp_path, "ran on bench-07 today\n")
+
+    leaks = redact.verify(tmp_path, [], nodename="bench-07")
+
+    assert any("residual host name" in leak for leak in leaks)
+
+
+def test_verify_is_clean_on_a_host_name_after_the_pass(tmp_path):
+    _nested_bundle(tmp_path, "ran on bench-07 today\n")
+
+    redact.run(tmp_path, [], nodename="bench-07")
+
+    assert redact.verify(tmp_path, [], nodename="bench-07") == []
+
+
+def test_record_says_when_no_denylist_covered_other_names(tmp_path):
+    _nested_bundle(tmp_path, "nothing to redact\n")
+
+    assert redact.main([str(tmp_path)]) == 0
+
+    record = (tmp_path / "redaction.txt").read_text()
+    assert "no denylist supplied" in record
+
+
+def test_record_stays_silent_when_a_denylist_was_supplied(tmp_path):
+    _nested_bundle(tmp_path, "nothing to redact\n")
+
+    assert redact.main([str(tmp_path), "--denylist", "otherhost"]) == 0
+
+    assert "no denylist supplied" not in (tmp_path / "redaction.txt").read_text()
+
+
+def test_main_refuses_when_no_name_can_be_known(tmp_path, monkeypatch, capsys):
+    _nested_bundle(tmp_path, "nothing to redact\n")
+    monkeypatch.setattr(redact, "local_nodename", lambda: None)
+
+    assert redact.main([str(tmp_path)]) == 2
+
+    assert "no denylist and no resolvable host name" in capsys.readouterr().err
