@@ -7,6 +7,15 @@ pays.
 **No receipt covers this run.** It is a measurement on an already-receipted tree, and
 every flag is recorded below so the configuration can be reproduced.
 
+> **Superseded later the same day: the shipped launcher measures 7.17 GiB as 5.11 GiB.**
+> The arm this page reports was my own wrapper script. Run again through the shipped
+> `launch-flashnext.sh` — unchanged, on the same four cards — the same decomposition
+> gives a fixed footprint of **5.11 GiB (5.49 GB)**, and a residual after naming the
+> mamba cache of **2.72 GiB**, not 4.78. Everything below stands as the record of the
+> wrapper arm and of the method; the numbers to use are in
+> [the shipped-configuration table](#the-shipped-configuration-measured) at the end. The
+> four-card conclusion still holds, but the gap is 8.9 GB rather than 17.3.
+
 ## Result
 
 Per card, mean of four ranks, `nvidia-smi` used at steady state with the server
@@ -106,3 +115,59 @@ kernel change in the decode thread. Cheapest experiments, in order:
   1.2 TB free and works.
 - Both arms were single-variable: KV came out identical at 172,032 tokens, so the
   716 MiB delta is the graph pool and nothing else.
+
+## The shipped configuration, measured
+
+Three arms, same four cards, same model, one factor each. "Fixed" excludes weights and
+KV; the graph pool is borrowed from the graphs-on/off pair, which was measured in arm A
+only.
+
+| arm | what it is | used, mean | KV tokens | mamba | residual after naming | **fixed** |
+|---|---|---:|---:|---:|---:|---:|
+| A | my wrapper, no `gdn_tilelang_sm70`, TurboMind unset | 30,407.5 MiB | 172,032 | 1.43 GB | 4.78 GiB | 7.17 GiB (7.70 GB) |
+| **S1** | **`launch-flashnext.sh` as shipped** | **28,295.5 MiB** | 172,032 | 1.43 GB | **2.72 GiB** | **5.11 GiB (5.49 GB)** |
+| S2 | S1 + `SGLANG_SM70_TURBOMIND_OPS_PATH` (dense FP8 engaged, 416 layer binds) | 28,409.5 MiB | 183,168 | 1.48 GB | 2.77 GiB | 5.20 GiB (5.59 GB) |
+
+All three served a `/generate` request before the reading, and the per-rank spread is
+under 80 MiB inside every arm.
+
+Three things this settles:
+
+1. **The residual is 2.72 GiB in the configuration we ship**, and dense FP8 does not
+   move it (2.77 GiB; the difference is the engine spending the freed room on more KV
+   tokens and a larger mamba cache, `max_mamba_cache_size` 72 against 68). The 4.78 GiB
+   in arm A is a property of *that wrapper*, not of the stack, and the shipped residual
+   is not a bf16-dense artifact.
+2. **`Mamba Cache is allocated` is a named term, not part of the residual**: conv 0.04 +
+   ssm 0.91 + intermediate_ssm 0.47 + intermediate_conv 0.01 = **1.43 GB per card**
+   (1.33 GiB). It is a Flash-Next term: a model with no linear-attention layers pays
+   none of it.
+3. **KV is bounded by the static footprint, and the engine agrees with the card**:
+   `available_gpu_mem` is 5.81 GB in S1 and 5.68 GB in S2, matching `vram - used` to
+   within 0.2 GB in both. The residual is a real allocation, not a measurement artifact.
+
+### Capacity with the shipped number
+
+`n x (34.36 - 1.645 - fixed)`, fixed taken at the larger shipped arm (5.59 GB):
+
+| cards | expert capacity | 1.75 bpw (117.42 GB) | 2.25 bpw (149.06 GB) |
+|---|---:|---|---|
+| 4 | 108.5 GB | short **8.9 GB** | short 40.6 GB |
+| 5 | 135.6 GB | **fits, 18.2 GB spare** | short 13.4 GB |
+| 6 | 162.8 GB | fits, 45.3 GB spare | fits, 13.7 GB spare |
+
+Four cards would need the fixed footprint down to **3.36 GB**, i.e. 2.2 GB out of 5.59 —
+of which 1.48 GB is a mamba cache sized by `max_mamba_cache_size` and the remainder is
+the residual.
+
+**This arithmetic is Flash-Next's.** A different model substitutes its own `fixed`; the
+formula and the four measurements that feed it are in
+[the instrument](2026-11-16-overhead-bench-spec.md).
+
+### What is still not attributed
+
+The 2.1 GiB by which arm A exceeds S1. The candidates are the `gdn_tilelang_sm70`
+component (registered in S1 and S2, absent from A) and the singularity home flag A
+substituted for `--home`. `SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK=0` is not a candidate:
+`bootstrap.py:435-449` only chooses between raising and warning, it allocates nothing.
+Not chased, because it does not change which configuration we ship.

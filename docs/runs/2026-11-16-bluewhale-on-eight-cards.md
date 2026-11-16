@@ -116,6 +116,14 @@ all**, and it is also the fastest set per token because it moves the fewest byte
 > and the reduction work it implies — chunk size, draft-model scratch, allocator
 > fragmentation — now has to return about 4 GB per card.
 
+> **Follow-up, same day.** Run through the shipped launcher rather than my wrapper, the
+> fixed footprint is **5.11 GiB (5.49 GB)**, not 7.17: four cards then hold **108.5 GB**
+> and are short of the 1.75 set's 117.42 by **8.9 GB**, not 17.3. **The conclusion does
+> not move — 1.75 bpw is still a five-card plan** (135.6 GB, 18.2 GB spare), and 2.25 bpw
+> is six cards with 13.7 GB spare. To reach four cards the fixed footprint has to fall to
+> 3.36 GB, which is 2.2 GB out of 5.59, of which 1.48 GB is the mamba cache this model
+> pays and a model without linear attention does not.
+
 **Ordering, and it is deliberately not "buy a host tier first":** measure the
 overhead; fetch the 1.75 shards if the gap closes (the Engram and drafter are files
 already held, so it is ~120.7 GB rather than a second full download); and only then
