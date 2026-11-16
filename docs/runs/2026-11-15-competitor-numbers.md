@@ -49,15 +49,20 @@ accept further buys less than fixing the step.
 
 Two arms, two boxes, not averaged: **lambda1 95.3** (one arm, old bench) and
 **lambda6 115.5** median (range 104-145). Same tree and NEXTN on both; accept is
-what moves (2.67 on lambda1, 2.84-3.56 on lambda6).
+what moves (2.67 on lambda1, 2.84-3.56 on lambda6). On the served arm (lambda4,
+fp8-dense, GDN pair on) a reported run gives **126.2 tok/s** at 24.74 ms/step and
+accept 3.12 — 2.7% behind 1Cat, the same "level" reading with a tighter spread.
 
 At SPEC=0 we measure **58.5-58.8 tok/s** (accept 1 by construction) on two boxes
 and have nothing to compare it to: 1Cat publishes only its MTP arm.
 
 **Prefill on the arm we serve** — lambda4 4-7, SPEC=1, GDN pair on, dense FP8
-active (`98 dense linears quantized to block FP8, 0 refused`): **3641 tok/s**
-(1132 ms median for 4109 cold tokens, spread 5.6%, reported from the serving
-box) against 1Cat's 4825 MTP4 = **1.33x theirs, we trail 24.5%**.
+active (`98 dense linears quantized to block FP8, 0 refused`): **3912 tok/s**
+(1053 ms, 4121 prompt tokens, spread 1.5%, measured alone on a quiet box)
+against 1Cat's 4825 MTP4 = **1.23x theirs, we trail 18.9%**. A second measurement
+of the same arm with other work on the box gave **3641 tok/s** (1132 ms, spread
+5.6%); the two differ by 7% and that difference is **not reconciled** beyond the
+box conditions, so both are quoted and neither is averaged.
 
 The pair below, **2971 tok/s** on lambda6 against the same 4825 (38% behind), was
 measured with the dense FP8 components inactive. Like for like in arm and unlike
@@ -155,7 +160,7 @@ these numbers**.
 | 1 | not runnable | not runnable |
 | 2 | not runnable | not runnable |
 | 4 (single node) | **3450-3565 reported, contended island, components include `gdn_tilelang_sm70` — withheld from the verdict**; **4199 reported, SPEC=0, host unconfirmed**; **1549 measured, pair off, SPEC=1** (4121 prompt tokens, 2644 ms median); 1663 in the SPEC=0 arm | **95.3 measured, SPEC=1** (slope 10.50 ms/output-token; 128 completion tokens, 48 verify steps, 1627 ms long run, short 32 tokens in 619 ms) → accept 2.67 → 28.0 ms/step. Accept varied by request: 2.67 / 3.56 / 2.67 at 48 / 36 / 48 steps, so the marginal step is 28.0-37.4 ms. **58.8 measured, SPEC=0** (slope 17.00 ms/token, accept 1); 1Cat ships no SPEC=0 arm, so it has no peer |
-| 4 (single node, lambda4, served arm) | **3641 reported, SPEC=1, dense FP8 active, GDN pair on** (1132 ms median, 4109 cold tokens, spread 5.6%) | decode not held in this note |
+| 4 (single node, lambda4, served arm) | **3912 reported, SPEC=1, dense FP8, GDN pair on** (1053 ms, 4121 tokens, spread 1.5%, quiet box); **3641 reported, same arm with other work on the box** (1132 ms, spread 5.6%) | **126.2 reported, SPEC=1** (24.74 ms/step, accept 3.12) |
 | 4 (dual node) | comm-bound at 66% (reported), no number held here | — |
 | 4 (single node, lambda6) | **3593 measured, SPEC=0** (1147 ms, runs 1-2, run 0 JIT-excluded, spread 5.4%); **2971 measured, SPEC=1** (4121 prompt tokens, 1387 ms median, cold `cached=0`, spread 5.9%) | **115.5 measured median, SPEC=1** (104-145 across three prompts; per-run triples in the comparability table); **59.0 measured, SPEC=0** (16.95 ms/step, accept 1) |
 | 8 | untested | untested |
@@ -239,10 +244,16 @@ linears ran as **bf16**. They are accurate descriptions of a configuration nobod
 intended to measure, not wrong numbers; but they describe an arm we do not
 serve, and they must not be read as our configured performance.
 
-**The re-measurement has landed**: 3641 tok/s on lambda4 with the dense FP8 path
-active, quoted in the headline, and the trace below. QPN8 is **absent in effect**
-in that arm — its source loads but its exact-shape gate admits nothing on this
-model, so nothing here treats it as a variable. The bf16 linears that remain are
+**The re-measurement has landed**: 3912 tok/s quiet and 3641 tok/s with other work
+on the box, on lambda4 with the dense FP8 path active, quoted in the headline;
+the trace below. QPN8 and the exact-dense prefill dispatch are **absent in
+effect because their TP guard reads `tp_size`, which no linear carries in this
+engine**: `sm70_fp8_dense/_method.py:229` and `:283` both test
+`getattr(layer, "tp_size", 1) != 4`, and `sglang/srt/layers/linear.py` has 54
+occurrences of `tp_size` and zero `self.tp_size =` assignments, so the default 1
+is what every layer returns and both gates fail before any shape comparison —
+on every model, not only this one. Nothing here treats QPN8 as a variable. The
+bf16 linears that remain are
 unaligned by construction: `hyper_connection.input_mix_weight_down` [320, 10240],
 `block_inject_weight` [4, 10240], merged `gate_up_proj` [320, 2560],
 `shared_expert.down_proj` [2560, 160] and the visual tower all fail the
