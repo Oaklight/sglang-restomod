@@ -89,6 +89,15 @@ validated on hardware.
 
 ### Fixed
 
+- `restomod doctor` says what a failed check found instead of reusing the label
+  for the passing state, so a commit mismatch prints "does not match" rather
+  than "matches" (#TBD).
+- `scripts/redact_evidence.py` keeps the bundle's redaction record across
+  passes: a second pass that removes nothing no longer rewrites every counter
+  to zero, and the rules no longer re-match their own output (#TBD).
+- A suite pack reports the archive's own sha256 beside the manifest digest
+  `oob pack` prints, because the manifest digest cannot say which directory a
+  person means (#TBD).
 - The GDN tail chunk is padded and trimmed instead of refused, so prompts whose
   token count is not a multiple of 64 stay on TileLang (#287)†.
 - A decode-GEMV skip is logged once per shape instead of once per layer (#269)†.

@@ -70,7 +70,17 @@ scripts/gpu_suite.sh --out evidence \
 
 # Manual fallback: keep every log in evidence/ and pack it yourself.
 $OOB pack --evidence-dir evidence --out /tmp/evidence.tgz
+sha256sum /tmp/evidence.tgz
 ```
+
+`oob pack` prints a `sha256:` that is the **manifest digest of the file
+contents**, not the hash of the `.tgz`. Report both numbers together and say
+which is which. They answer different questions: the manifest digest says the
+contents are the ones the receipt names, and the archive hash says these are the
+bytes that were handed over. A bundle that is redacted twice differs only in
+`redaction.txt`, so its manifest digest moves while none of the evidence does;
+with only the digest in hand, two people holding "the" archive cannot tell
+whether they mean the same one.
 
 The script records `dirty_files`; sign with `--allow-dirty` only when that
 number is deliberate, because the receipt binds the commit's tree, not the
