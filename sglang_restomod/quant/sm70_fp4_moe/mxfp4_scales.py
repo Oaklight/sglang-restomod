@@ -17,12 +17,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from ..format_contract import E8M0_BIAS, MIN_EXACT_E4M3_EXPONENT
+
 if TYPE_CHECKING:
     import torch
-
-# E4M3 (e4m3fn) represents every power of two from 2**-9 (the subnormal step)
-# up to 2**8 exactly.
-_MIN_EXACT_EXPONENT = -9
 
 
 def _as_exponents(scale) -> torch.Tensor:
@@ -34,7 +32,7 @@ def _as_exponents(scale) -> torch.Tensor:
     if scale.dtype == torch.float8_e8m0fnu:
         return scale.view(torch.uint8).to(torch.int16)
     # float containers hold the numerical 2**e; recover the exponent.
-    return torch.log2(scale.to(torch.float32)).round().to(torch.int16) + 127
+    return torch.log2(scale.to(torch.float32)).round().to(torch.int16) + E8M0_BIAS
 
 
 def expand_mxfp4_scales(scale, dtype=None):
@@ -63,10 +61,10 @@ def expand_mxfp4_scales(scale, dtype=None):
     ratio_exp = exponents - global_exp.reshape(
         global_exp.shape + (1,) * len(reduce_dims)
     )
-    clamped = int((ratio_exp < _MIN_EXACT_EXPONENT).sum())
+    clamped = int((ratio_exp < MIN_EXACT_E4M3_EXPONENT).sum())
 
     values = torch.exp2(ratio_exp.to(torch.float32))
     e4 = values.to(out_dtype)
     expanded = e4.repeat_interleave(2, dim=-1).contiguous()
-    global_scale = torch.exp2(global_exp.to(torch.float32) - 127.0)
+    global_scale = torch.exp2(global_exp.to(torch.float32) - E8M0_BIAS)
     return expanded, global_scale, clamped
