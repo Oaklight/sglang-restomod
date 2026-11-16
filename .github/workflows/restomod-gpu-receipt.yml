@@ -87,14 +87,44 @@ jobs:
           # in PROVENANCE.md or a recipe note could never merge: the path prefix
           # matched, no run could produce the evidence, and the only way through
           # was to bundle an unrelated code change with it.
-          if gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files?per_page=100" \
-               --jq '.[].filename' \
+          # The rule is about GPU behaviour at serving time, so it names the
+          # trees that decide it rather than the whole package. A change to
+          # cli.py (the doctor command) or to tests cannot make a served kernel
+          # compute something else, and requiring a hardware run for it costs a
+          # window for evidence that has nothing to certify. plugins.py stays in
+          # the list: a component that fails to load there leaves a server that
+          # starts normally and serves on the engine's own kernels, which is the
+          # failure this gate exists for.
+          #
+          # The triggering files are printed into the job summary. Without that
+          # the check reports `unverified` with no way to see which path made
+          # the receipt required, which is the same opacity one level up.
+          files="$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files?per_page=100" \
+               --jq '.[].filename')"
+          triggering="$(printf '%s\n' "$files" \
                | grep -vE '\.md$' \
-               | grep -qE '^(sglang_restomod/|patches/|recipes/)'; then
+               | grep -E '^(sglang_restomod/(quant|attention|moe|models|spec|linear_attn_sm70)/|sglang_restomod/plugins\.py$|patches/|recipes/)' \
+               || true)"
+          if [ -n "$triggering" ]; then
             echo "requires=true" >> "$GITHUB_OUTPUT"
           else
             echo "requires=false" >> "$GITHUB_OUTPUT"
           fi
+          {
+            echo "### GPU receipt policy"
+            echo
+            if [ -n "$triggering" ]; then
+              echo "**requires=true** — these paths decide GPU behaviour:"
+              echo
+              echo '```'
+              printf '%s\n' "$triggering"
+              echo '```'
+            else
+              echo "**requires=false** — nothing in this change can alter what the GPU computes at serving time."
+            fi
+            echo
+            echo 'Rule: `sglang_restomod/{quant,attention,moe,models,spec,linear_attn_sm70}/`, `sglang_restomod/plugins.py`, `patches/`, `recipes/`; `.md` files are always exempt.'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   verified:
     needs: policy
