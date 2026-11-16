@@ -11,6 +11,21 @@ idempotent too, by accumulation. ``redaction.txt`` describes the bundle, not the
 last pass, so counts from an earlier pass are kept and a later pass that finds
 nothing leaves them standing. Rewriting the record with the current pass's
 zeros would erase the only account of what the published archive had removed.
+
+Two properties of this tool that the person running it needs to know, so they
+are here and not only in ``docs/gpu-receipts.md``:
+
+**Name redaction happens only when a denylist is supplied** (``--denylist`` or
+``$IDENTITY_DENYLIST``). Paths, serials, UUIDs, bus ids and the ``host=`` line
+are always redacted; a host name or an account name is redacted only if it is
+on the list. A default run can therefore produce a bundle that is path-clean and
+serial-clean and still carries the machine's name. Supply the list.
+
+**The walk is recursive and reports what it could not inspect.** Symlinks are
+reported, never followed: writing through one would edit a file outside the
+bundle. Files that are not text are reported, never skipped. A bundle that
+examined no files is an error, because an empty report reads exactly like a
+clean one.
 """
 
 from __future__ import annotations
@@ -263,6 +278,7 @@ def main(argv: list[str] | None = None) -> int:
         denylist = [p.strip() for p in re.split(r"[,\n]", args.denylist) if len(p.strip()) >= 3]
 
     this_pass = run(directory, denylist)
+    examined = len(bundle_files(directory))
     leaks = verify(directory, denylist)
     # The record describes the bundle, so it accumulates; a pass that finds
     # nothing must not overwrite what an earlier pass removed.
@@ -273,6 +289,12 @@ def main(argv: list[str] | None = None) -> int:
         + ("\n".join(lines) + "\n" if lines else "none\n")
     )
     print("redacted: " + (", ".join(f"{k}={v}" for k, v in sorted(this_pass.items())) or "none"))
+    # The other silent skip: a bundle with nothing in it produces no leaks and
+    # reads exactly like a clean one. Say what was looked at, and refuse zero.
+    print(f"examined: {examined} files")
+    if examined == 0:
+        print(f"error: no files to examine under {directory}", file=sys.stderr)
+        return 1
     if leaks:
         print("\nresidual identity in the evidence bundle:", file=sys.stderr)
         for leak in leaks:

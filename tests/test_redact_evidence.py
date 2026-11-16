@@ -122,3 +122,21 @@ def test_main_fails_when_something_is_left_uninspected(tmp_path):
     (tmp_path / "blob.bin").write_bytes(b"\x00\x01")
 
     assert redact.main([str(tmp_path)]) == 1
+
+
+def test_main_reports_what_it_examined(tmp_path, capsys):
+    (tmp_path / "a").mkdir()
+    (tmp_path / "a" / "one.txt").write_text("nothing to redact\n")
+    (tmp_path / "two.txt").write_text("nor here\n")
+
+    assert redact.main([str(tmp_path)]) == 0
+
+    assert "examined: 2 files" in capsys.readouterr().out
+
+
+def test_main_refuses_a_bundle_with_nothing_to_examine(tmp_path, capsys):
+    assert redact.main([str(tmp_path)]) == 1
+
+    captured = capsys.readouterr()
+    assert "examined: 0 files" in captured.out
+    assert "no files to examine" in captured.err
