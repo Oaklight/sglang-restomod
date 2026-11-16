@@ -42,6 +42,20 @@
       "reason": "fused_marlin_moe asserts the Marlin weight layout before it calls moe_wna16_marlin_gemm, which is the only seam sglang-restomod replaces, so a QPN2 expert bank can never reach the QPN2 reader. Derive E/K/N from the bank when w1 is a uint8 QPN2 tensor, and gate the path to the NVFP4, single-rank, gated envelope.",
       "source": "local, 2026-11-07 (issue #224)",
       "upstream_status": "pending"
+    },
+    "0004-deepseek-v4-lazy-deepgemm.patch": {
+      "paths": [
+        "python/sglang/kernels/ops/layernorm/mhc_mega.py"
+      ],
+      "site_hashes": {
+        "python/sglang/kernels/ops/layernorm/mhc_mega.py": {
+          "unpatched": "0563453c405a0b086def9b55c1b8df1952a5abbd5d84a330a73e67760331b625",
+          "patched": "85cf85bfd6489db646f34aa6bcc3f3a8ec73b9fd9385656f71e8741729477254"
+        }
+      },
+      "reason": "mhc_mega.py imports deep_gemm at module scope on any CUDA host, and deepseek_v4_mhc imports it at module scope, so the DeepSeek-V4 model class cannot be imported without DeepGEMM. The kernel it guards is only reached when _can_use_mega_mhc is true, which requires sm100, so on sm70 the import is the only thing that runs: the model registry skips deepseek_v4.py and the load fails in the generic HF wrapper with 'Unrecognized configuration class DeepseekV41Config'. Move the import into the function that calls it.",
+      "source": "local, 2026-11-16 (bluewhale bring-up on lambda4 4-7)",
+      "upstream_status": "pending"
     }
   }
 }
