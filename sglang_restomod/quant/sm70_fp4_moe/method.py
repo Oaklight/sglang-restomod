@@ -517,6 +517,14 @@ def moe_wna16_marlin_gemm(
         if out is not None:
             return out
 
+    # Unconditional: every dispatch that reaches Marlin counts, whether or not
+    # the GEMV path was even considered. A counter behind the eligibility guard
+    # cannot see the shape the guard refuses, and that is exactly the shape the
+    # census needed to find (``n=160`` had zero dispatches because of it).
+    from sglang_restomod.quant.sm70_fp4_moe import decode_gemv as _census
+
+    _census.note_marlin(size_n, size_m)
+
     op = ensure_loaded().gemm
     # The split-K value travels in a process-global variable that the extension
     # reads inside the call below, so the write and the call have to be atomic
