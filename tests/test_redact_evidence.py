@@ -211,3 +211,51 @@ def test_main_refuses_when_no_name_can_be_known(tmp_path, monkeypatch, capsys):
     assert redact.main([str(tmp_path)]) == 2
 
     assert "no denylist and no resolvable host name" in capsys.readouterr().err
+
+
+# --- the local account, and the generic ones it must leave alone -------------
+
+
+def test_local_account_is_redacted_without_a_denylist(tmp_path):
+    planted = _nested_bundle(tmp_path, "owned by benchuser here\n")
+
+    counts = redact.run(tmp_path, [], account="benchuser")
+
+    assert counts.get("account") == 1
+    assert planted.read_text() == "owned by <account> here\n"
+
+
+def test_verify_reports_a_surviving_account_name(tmp_path):
+    _nested_bundle(tmp_path, "owned by benchuser here\n")
+
+    leaks = redact.verify(tmp_path, [], account="benchuser")
+
+    assert any("residual account name" in leak for leak in leaks)
+
+
+def test_a_generic_account_is_not_redacted(monkeypatch):
+    import types
+
+    for generic in ("root", "user", "admin", "ubuntu", "runner", "nobody"):
+        monkeypatch.setattr(redact.getpass, "getuser", lambda g=generic: g)
+        monkeypatch.setattr(
+            redact.pwd,
+            "getpwuid",
+            lambda _uid, g=generic: types.SimpleNamespace(pw_name=g),
+        )
+        assert redact.local_account() is None
+
+
+def test_a_specific_account_is_discovered(tmp_path, monkeypatch):
+    monkeypatch.setattr(redact.getpass, "getuser", lambda: "benchuser")
+
+    assert redact.local_account() == "benchuser"
+
+
+def test_generic_account_leaves_ordinary_text_alone(tmp_path):
+    planted = _nested_bundle(tmp_path, "the user ran root\n")
+
+    # local_account() returns None for these, so nothing is rewritten.
+    redact.run(tmp_path, [], account=None)
+
+    assert planted.read_text() == "the user ran root\n"

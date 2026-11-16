@@ -193,11 +193,21 @@ mount, NVIDIA serial numbers, UUIDs and bus ids, the `host=` line, and every
 name in `IDENTITY_DENYLIST`. `redaction.txt` records the count per rule and
 never the replaced value.
 
-**The local host name is removed on every run.** The pass runs on the host that
-produced the bundle, so it redacts that host's own name without a flag or a
-list. A denylist is still needed for **other** hosts — the bundle builder and
-the packer are not always the same machine — and when none is supplied the pass
-says so inside `redaction.txt`, so the gap travels with the artifact instead of
+**The local host name and account are removed on every run.** The pass runs on
+the host that produced the bundle, so it redacts that host's own name and the
+account that ran it without a flag or a list. Generic accounts — `root`,
+`user`, `admin`, `test`, `ubuntu`, `runner`, `nobody`, `app`, `default` — are
+left alone, because rewriting an ordinary word would corrupt the bundle; a name
+such as `pding` cannot match prose and is removed.
+
+This covers the account that ran the pass, **not the colleagues named in `ps`
+output or a scheduler log**. Those need the structural rule tracked in #328;
+until it lands, `--denylist` is the only cover, and it covers only the names
+someone thought to list.
+
+A denylist is still needed for **other** hosts — the bundle builder and the
+packer are not always the same machine — and when none is supplied the pass says
+so inside `redaction.txt`, so the gap travels with the artifact instead of
 living only in a terminal. The pass also walks the whole directory and reports
 (rather than skips) symlinks and binary files it cannot inspect, and prints how
 many files it examined, so an empty bundle cannot read as a clean one.

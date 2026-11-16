@@ -20,6 +20,16 @@ this script runs on the host that produced the bundle, so it knows the name the
 host writes about itself. The host name is the commonest leak and needs no
 operator input.
 
+**The local account is redacted too, unless it is generic.** A name such as
+``pding`` is identity worth removing and cannot match prose; ``root``, ``user``,
+``admin`` and a handful of others are ordinary words, and rewriting them would
+corrupt the bundle. Generic accounts are named in ``_GENERIC_ACCOUNTS`` and are
+left alone rather than causing a refusal.
+
+This is the narrow half of the account problem: it covers the account that ran
+the pass, not the colleagues named in ``ps`` output or a scheduler log. Those
+need the structural rule tracked in #328 and, until it lands, a denylist.
+
 **A denylist is still needed for other hosts** (``--denylist`` or
 ``$IDENTITY_DENYLIST``): the bundle builder and the packer are not always the
 same machine, so a name that is not this host's cannot be discovered here. When
@@ -36,8 +46,10 @@ clean one.
 from __future__ import annotations
 
 import argparse
+import getpass
 import os
 import pathlib
+import pwd
 import re
 import socket
 import sys
@@ -121,9 +133,35 @@ def local_nodename() -> str | None:
     return None
 
 
-def nodename_pattern(name: str) -> re.Pattern[str]:
-    """The nodename as a bounded token, so ``lab`` does not rewrite ``label``."""
+def name_pattern(name: str) -> re.Pattern[str]:
+    """A name as a bounded token, so ``lab`` does not rewrite ``label``."""
     return re.compile(r"(?<![A-Za-z0-9])" + re.escape(name) + r"(?![A-Za-z0-9])", re.IGNORECASE)
+
+
+# Accounts that are ordinary words. Rewriting one would corrupt the bundle, and
+# missing the identity in a bundle produced under ``user`` is the cheaper error.
+_GENERIC_ACCOUNTS = frozenset(
+    {"root", "user", "admin", "test", "ubuntu", "runner", "nobody", "app", "default"}
+)
+
+
+def local_account() -> str | None:
+    """The account that ran the pass, or None when it has no useful name.
+
+    A generic account is reported as None: the caller has nothing to redact and
+    must not treat that as a failure.
+    """
+    for probe in (
+        getpass.getuser,
+        lambda: pwd.getpwuid(os.getuid()).pw_name,
+    ):
+        try:
+            name = probe().strip()
+        except Exception:  # noqa: BLE001 - no name is a state, not a crash
+            continue
+        if len(name) >= 3 and name.lower() not in _GENERIC_ACCOUNTS:
+            return name
+    return None
 
 
 def redact_text(
@@ -131,6 +169,7 @@ def redact_text(
     denylist: list[str],
     counts: dict[str, int],
     nodename: str | None = None,
+    account: str | None = None,
 ) -> str:
     for name, pattern in _REDACTIONS:
         if name == "path":
@@ -149,8 +188,11 @@ def redact_text(
     # The local host name first: it is the name most likely to be present, and
     # it needs no operator input. It is counted under its own rule.
     if nodename:
-        text, n = nodename_pattern(nodename).subn("<host>", text)
+        text, n = name_pattern(nodename).subn("<host>", text)
         counts["nodename"] = counts.get("nodename", 0) + n
+    if account:
+        text, n = name_pattern(account).subn("<account>", text)
+        counts["account"] = counts.get("account", 0) + n
     for item in denylist:
         pattern = re.compile(re.escape(item), re.IGNORECASE)
         text, n = pattern.subn("<redacted>", text)
@@ -224,7 +266,12 @@ def _relative(path: pathlib.Path, root: pathlib.Path) -> str:
         return path.name
 
 
-def verify(directory: pathlib.Path, denylist: list[str], nodename: str | None = None) -> list[str]:
+def verify(
+    directory: pathlib.Path,
+    denylist: list[str],
+    nodename: str | None = None,
+    account: str | None = None,
+) -> list[str]:
     """Return every residual identity marker left in the bundle.
 
     ``run`` calls it after rewriting; an empty list is the condition for
@@ -248,8 +295,10 @@ def verify(directory: pathlib.Path, denylist: list[str], nodename: str | None = 
             for name, pattern in _RESIDUAL
             if pattern.search(text)
         )
-        if nodename and nodename_pattern(nodename).search(text):
+        if nodename and name_pattern(nodename).search(text):
             leaks.append(f"{_relative(path, directory)}: residual host name")
+        if account and name_pattern(account).search(text):
+            leaks.append(f"{_relative(path, directory)}: residual account name")
         for item in denylist:
             if re.search(re.escape(item), text, re.IGNORECASE):
                 leaks.append(f"{_relative(path, directory)}: residual denylist name")
@@ -257,7 +306,10 @@ def verify(directory: pathlib.Path, denylist: list[str], nodename: str | None = 
 
 
 def run(
-    directory: pathlib.Path, denylist: list[str], nodename: str | None = None
+    directory: pathlib.Path,
+    denylist: list[str],
+    nodename: str | None = None,
+    account: str | None = None,
 ) -> dict[str, int]:
     counts: dict[str, int] = {}
     for path in bundle_files(directory):
@@ -267,7 +319,7 @@ def run(
             continue
         if "\0" in text:
             continue
-        updated = redact_text(text, denylist, counts, nodename)
+        updated = redact_text(text, denylist, counts, nodename, account)
         if updated != text:
             path.write_text(updated)
     return counts
@@ -320,15 +372,16 @@ def main(argv: list[str] | None = None) -> int:
         denylist = [p.strip() for p in re.split(r"[,\n]", args.denylist) if len(p.strip()) >= 3]
 
     nodename = local_nodename()
+    account = local_account()
     if not denylist and nodename is None:
         # Neither a list nor a resolvable local name: nothing about names can
         # be removed, so a bundle from here would certify what it cannot check.
         print("error: no denylist and no resolvable host name", file=sys.stderr)
         return 2
 
-    this_pass = run(directory, denylist, nodename)
+    this_pass = run(directory, denylist, nodename, account)
     examined = len(bundle_files(directory))
-    leaks = verify(directory, denylist, nodename)
+    leaks = verify(directory, denylist, nodename, account)
     # The record describes the bundle, so it accumulates; a pass that finds
     # nothing must not overwrite what an earlier pass removed.
     record = merge_counts(_read_counts(directory / "redaction.txt"), this_pass)
