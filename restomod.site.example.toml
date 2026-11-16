@@ -16,6 +16,11 @@ marlin_moe = "/path/to/marlin_v100/vllm/_moe_C.abi3.so"
 sgl_kernel_sm70 = "/path/to/site-packages/sgl_kernel/sm70/common_ops.abi3.so"
 cuda_image = "/path/to/cuda_12.8.0-devel-ubuntu24.04.sif"
 
+[engine]
+# The restomod commit this site is built from. `restomod doctor` fails when the
+# checkout does not match. Leave it unset only while bootstrapping.
+commit = "<40-hex-commit>"
+
 [build]
 # Source directories for artefacts whose produce.kind is "build".
 marlin-dense = "/path/to/marlin_v100"

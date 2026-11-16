@@ -145,15 +145,31 @@ def load_enabled(env: Mapping[str, str] | None = None) -> Sequence[str]:
         component = COMPONENTS[name]
         try:
             module = importlib.import_module(component.module)
-            register = getattr(module, "register", None)
-            if register is None:
-                raise AttributeError(
-                    f"component {name!r} ({component.module}) has no register()"
-                )
+        except Exception as exc:
+            # An import failure means the component cannot do anything, but it
+            # is not a crash. Record it in the inactive class with the module
+            # error, so a shadowed or stale tree is visible where the other
+            # "registered but inactive" cases are.
+            detail = f"import failed: {type(exc).__name__}: {exc}"
+            attest.inactive(name, detail)
+            logger.warning(
+                "sglang-restomod: component %s failed to import and is not active (%s)",
+                name,
+                detail,
+                exc_info=True,
+            )
+            continue
+        register = getattr(module, "register", None)
+        if register is None:
+            detail = f"imported {component.module} but it has no register()"
+            attest.inactive(name, detail)
+            logger.warning("sglang-restomod: component %s is not active (%s)", name, detail)
+            continue
+        try:
             register()
         except Exception as exc:
-            # Recorded rather than raised: the rest of the stack is still
-            # worth having, and a silent total failure is what this replaces.
+            # The module loaded but its registration raised. That is a hard
+            # failure, distinct from "loaded and does nothing".
             attest.record(name, False, f"{type(exc).__name__}: {exc}")
             logger.warning(
                 "sglang-restomod: component %s failed to register and is not active",
@@ -168,7 +184,7 @@ def load_enabled(env: Mapping[str, str] | None = None) -> Sequence[str]:
     # the exception text, and that is the most useful thing in the report.
     recorded = attest.snapshot()["components"]
     for name in sorted(set(selected) - set(recorded)):
-        attest.record(name, False, "selected but not loaded")
+        attest.inactive(name, "selected but never registered")
     logger.info(
         "sglang-restomod: %d/%d components active (%s)",
         len(loaded),
