@@ -102,6 +102,20 @@ pools, Marlin workspace, KV headroom — not another kernel and not another card
 it lands near 2.2 GB, 1.75 bpw is **fully resident on four cards with no tier at
 all**, and it is also the fastest set per token because it moves the fewest bytes.
 
+> **Superseded later the same day: the overhead was measured, and it is 7.70 GB, not
+> 2.2.** The four-card conclusion above is wrong. On lambda4 GPUs 4-7, with graphs on
+> and off and the server having served a request, the fixed footprint excluding
+> weights and KV is **7.17 GiB per card** — CUDA context 366 MiB, graph pool 716 MiB,
+> and 6.11 GiB of workspaces and allocator slack reported as a sum rather than a
+> split. Substituting it into the same budget: four cards hold **100.1 GB** of experts
+> (short of 117.42 by 17.3 GB), **five cards fit 1.75 bpw with 7.7 GB spare**, and
+> 2.25 bpw needs **6 cards with 1 GB to spare — too tight to ship — or 7 to be safe**.
+> The gap was never closeable by measuring; it is 4.1 GB per card of cost nobody was
+> counting. See [the overhead measurement](2026-11-16-per-card-overhead.md). The
+> sensitivity table above is left standing as the arithmetic the measurement refuted,
+> and the reduction work it implies — chunk size, draft-model scratch, allocator
+> fragmentation — now has to return about 4 GB per card.
+
 **Ordering, and it is deliberately not "buy a host tier first":** measure the
 overhead; fetch the 1.75 shards if the gap closes (the Engram and drafter are files
 already held, so it is ~120.7 GB rather than a second full download); and only then
