@@ -278,14 +278,16 @@ def install() -> str | None:
     # as the bug it now avoids. The finder is what covers those imports.
     _arm_rebind_finder()
     _INSTALLED = True
-    logger.info(
-        "sglang-restomod: EAGLE renorm kernels replaced for SM70 "
-        "(%d bindings already imported, %d flashinfer attributes); %s are "
-        "patched on import",
-        rebound,
-        patched,
-        ", ".join(_RENORM_MODULES),
+    # The count belongs in the attestation, not only in a log line: on these
+    # hosts plugin log lines do not reach the log file, so the JSON is the only
+    # place a launch can say what it bound. Zero now is normal -- the renorm
+    # modules import later -- and the finder is what covers them.
+    detail = (
+        f"armed: {rebound} binding(s) replaced at registration, {patched} "
+        f"flashinfer attribute(s); rebinds {', '.join(_RENORM_MODULES)} on import"
     )
+    attest.record("spec_sm70", True, detail)
+    logger.info("sglang-restomod: EAGLE renorm kernels replaced for SM70 (%s)", detail)
     return None
 
 
