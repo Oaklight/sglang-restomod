@@ -222,11 +222,18 @@ said: 0.199 ms on a 24.7 ms step. My earlier "~64 µs per hand-off" came from re
 the **12** `ncclDevKernel_AllReduce_RING` instances (63.0 µs) as if they were all of
 them; the 1-shot path dominates at 8.1 µs.
 
-**That does give the first evidence that custom allreduce is active** — the 1-shot
-kernel is the custom path, and it is what nearly every collective uses. It is not
-yet a clean answer: **12 RING calls in the window still need an explanation**, and
-the suite reports failure-absent-only, so "no failure line" was never evidence
-either way.
+**Custom allreduce is active at decode, and the NCCL ring path is prefill-only — a
+deliberate split, not a fallback.** Splitting every collective by whether it falls
+inside a verify span: inside, **973 `all_reduce_1shot_push_kernel<half>` at 8.1 µs**
+plus 10 bf16 at 5.4 µs, and the 12 calls flagged above are
+**`ncclDevKernel_AllGather_RING_LL` at 63.0 µs — AllGather, not a reduce**. So **983
+of 995 decode collectives (98.8%) run on the custom path**. Outside verify: 187
+1-shot calls at 1,482 µs and **100 `ncclDevKernel_AllReduce_Sum_f16_RING_LL` at
+520 µs** — the ring all-reduce is a prefill path entirely.
+
+That also accounts for the retracted 24.7%: 277 ms + 52 ms of prefill collectives
+is the whole of it. And it closes the `failure-absent-only` question in one line —
+the suite's silence was never evidence, but the kernel names are.
 
 **Directional, not a ratio: their step spends ~15 ms in communication where ours
 spends under one.** On their trace two cross-device reduce kernels take **10.96
@@ -425,7 +432,7 @@ which is the answer the transfer question was actually asking for.
 | item | owner | state |
 |---|---|---|
 | **a complete decode census (this one covers ~1/3)** | kernel-crafter | **open, next** — shares bound order only; the counter answers the shape split |
-| **the 12 RING all-reduce calls** | kernel-crafter | **open** — the 1-shot path is active, so these are an exception to explain, not a fallback |
+| the 12 flagged collective calls | kernel-crafter | **answered** — `AllGather_RING_LL`, not a reduce; custom allreduce carries 98.8% of decode collectives, ring AllReduce is prefill-only |
 | `f_res` realised + policy | multi-node | **answered** — 80.2%, §2.1; prefetch/eviction not printed |
 | duplicate prepared copy | coordinator | **refuted** — §5 |
 | GQA KV layer split | kernel-crafter2 | **dropped** — not the binding term |
