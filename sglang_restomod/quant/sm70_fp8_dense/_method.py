@@ -139,8 +139,9 @@ _SM70_FP8_PREFILL_DENSE_SHAPES = {
 # SGLANG_SM70_FP8_PREFILL_EXACT_DENSE_SHAPES=flashnext.
 #
 # Every shape is 128-aligned on both sides, which both the block-128 scale
-# layout and the dispatch require, and each is at most 4096 x 2560 in the
-# logical KxN form, so the 85 MiB workspace sized by the 27B entry still holds.
+# layout and the dispatch require. Each is smaller than the 27B table's largest
+# entry, so the shared workspace below is still sized by that one -- but it is
+# computed over both tables, not assumed from this one.
 _SM70_FP8_PREFILL_DENSE_SHAPES_FLASHNEXT = {
     # 12 full-attention layers, QKV fused by the loader. The first derivation
     # said 3328 from the config's q/k/v head counts; the checkpoint's fused
@@ -156,8 +157,33 @@ _SM70_FP8_PREFILL_DENSE_SHAPES_FLASHNEXT = {
 }
 ENV_EXACT_DENSE_SHAPES = "SGLANG_SM70_FP8_PREFILL_EXACT_DENSE_SHAPES"
 
+
+def _get_sm70_fp8_exact_dense_shape_set() -> str:
+    """Return the requested extra shape set, refusing a value we do not know.
+
+    A misspelt value used to read as "off": ``flash-next``, ``FLASHNEXT`` and
+    ``flashnextt`` all left the table disabled and the launch reported the
+    baseline as if the flag worked. That is the failure this module has already
+    paid for twice -- a configuration that is silently ignored still counts as
+    evidence. Raise on an unknown value, the way ``_env_flag`` does.
+    """
+    value = os.environ.get(ENV_EXACT_DENSE_SHAPES, "").strip().lower()
+    if value not in ("", "flashnext"):
+        raise ValueError(
+            f"{ENV_EXACT_DENSE_SHAPES} must be empty or 'flashnext'; got {value!r}."
+        )
+    return value
+
+
+# Sized over every table, not the 27B one alone: a smaller set today is how a
+# too-small buffer gets added tomorrow.
 _SM70_FP8_PREFILL_DENSE_WORKSPACE_ELEMENTS = max(
-    k * n for k, n in _SM70_FP8_PREFILL_DENSE_SHAPES.values()
+    k * n
+    for table in (
+        _SM70_FP8_PREFILL_DENSE_SHAPES,
+        _SM70_FP8_PREFILL_DENSE_SHAPES_FLASHNEXT,
+    )
+    for k, n in table.values()
 )
 _SM70_FP8_PREFILL_DENSE_WORKSPACE_BYTES = (
     _SM70_FP8_PREFILL_DENSE_WORKSPACE_ELEMENTS * torch.float16.itemsize
@@ -367,7 +393,7 @@ def _is_sm70_fp8_prefill_exact_dense_layer(layer: torch.nn.Module) -> bool:
     expected = _SM70_FP8_PREFILL_DENSE_SHAPES.get(suffix)
     if expected is not None and shape == expected:
         return True
-    if os.environ.get(ENV_EXACT_DENSE_SHAPES, "").strip().lower() != "flashnext":
+    if _get_sm70_fp8_exact_dense_shape_set() != "flashnext":
         return False
     extra = _SM70_FP8_PREFILL_DENSE_SHAPES_FLASHNEXT.get(suffix) if suffix else None
     # The TurboMind tensor is already in logical KxN here, the same layout the
@@ -574,7 +600,7 @@ def prepare_sm70_turbomind_fp8_linear(layer: torch.nn.Module) -> None:
                 getattr(layer, "prefix", "<no-prefix>"),
                 tuple(layer.weight.shape),
             )
-    if os.environ.get(ENV_EXACT_DENSE_SHAPES, "").strip().lower() == "flashnext":
+    if _get_sm70_fp8_exact_dense_shape_set() == "flashnext":
         # A zero admitted count must name its cause. Without this line "the
         # shapes are absent", "the suffix is empty" and "the tp guard refused"
         # all look the same in the log -- and on 2026-11-15 the third was the

@@ -186,3 +186,32 @@ def test_a_wrong_shape_is_refused(monkeypatch):
     )
     # A shape outside both tables stays on the TurboMind GEMM.
     assert not method._is_sm70_fp8_prefill_exact_dense_layer(_Layer(None, (4608, 1152)))
+
+
+def test_an_unknown_shape_set_raises_instead_of_meaning_off(monkeypatch):
+    """A misspelt flag must not report the baseline as if the table worked."""
+    method = _gate()
+    _mock_parallel(monkeypatch, 4)
+    layer = _Layer("model.layers.0.self_attn.qkv_proj", (2560, 3584))
+
+    monkeypatch.setenv(method.ENV_EXACT_DENSE_SHAPES, "flash-next")
+    with pytest.raises(ValueError, match="empty or 'flashnext'"):
+        method._is_sm70_fp8_prefill_exact_dense_layer(layer)
+
+    # Case folding still works; only a genuinely unknown value is refused.
+    monkeypatch.setenv(method.ENV_EXACT_DENSE_SHAPES, "FLASHNEXT")
+    assert method._is_sm70_fp8_prefill_exact_dense_layer(layer)
+
+
+def test_the_workspace_is_sized_over_every_table():
+    method = _gate()
+
+    needed = max(
+        k * n
+        for table in (
+            method._SM70_FP8_PREFILL_DENSE_SHAPES,
+            method._SM70_FP8_PREFILL_DENSE_SHAPES_FLASHNEXT,
+        )
+        for k, n in table.values()
+    )
+    assert method._SM70_FP8_PREFILL_DENSE_WORKSPACE_ELEMENTS >= needed
