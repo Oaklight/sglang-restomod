@@ -143,12 +143,14 @@ per 256 dispatches.
 
 Three things this settles:
 
-- **The two series are one shape each, and the pairing proves it.** Every w13 row
-  has a down row at exactly ten times its `m` (`4→40`, `5→50`, `8→80`, `12→120`,
-  … `4096→40960`), which is `top_k = 10`: down's `m` counts route rows, as the
-  eligibility note says. The counts match one for one, so the census sees the
-  same MoE applications through both projections rather than two populations
-  that happen to be the same size.
+- **The two series are one shape each, and the pairing proves it structurally.**
+  Every w13 row has a down row at exactly ten times its `m` (`4→40`, `5→50`,
+  `8→80`, `12→120`, … `4096→40960`), which is `top_k = 10`: down's `m` counts
+  route rows, as the eligibility note says. The counts match one for one. This
+  is a proof from the routing arithmetic rather than from a name or a family
+  label — the sampler is what makes the two widths the two projections of one
+  decision, and the counter merely observed it. It is the strongest form of
+  evidence in this thread, and it cost 2% of one step.
 - **The M cut is real and it is at 8.** GEMV serves `m` 4/5/8 and nothing above;
   the first Marlin w13 row is `m=12`. The eligibility arithmetic predicted this
   and the served rows confirm it, so `MAX_M` is a genuine threshold on this path
