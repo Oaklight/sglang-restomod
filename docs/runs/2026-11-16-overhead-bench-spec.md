@@ -67,6 +67,19 @@ chose to admit, which is exactly what the fixed footprint determines. **Do not c
 bytes/token by dividing one arm's KV by its token count** — that mixes in the allocator's
 own rounding.
 
+**Have an expected value before you look.** It turns a surprising slope into a diagnosis
+rather than a puzzle. For a compressed-KV MLA layout the engine states its own arithmetic
+in `srt/mem_cache/deepseek_v4_memory_pool.py`: qk_nope FP8 (448 B) + qk_rope BF16 (128 B)
++ nope FP8 scales and padding = **584 B/token**, and the indexer adds **68 B/token** with
+the FP4 indexer or **132 B/token** without, i.e. **652 to 716 B/token**. Against
+Flash-Next's 0.93 KB that is a quarter to a third further per token — a real advantage of
+the layout, not a measurement to be surprised by.
+
+A slope materially above that band means a different layout is live, not that the model
+is bigger: `SGLANG_OPT_USE_ONLINE_COMPRESS` and `--c128-page-size` both change it, so
+record both with the arm. A ring or pool allocated at startup for `max_running_requests`
+prints as its own line and belongs in M4's `accounted` term, not in the slope.
+
 ## M4 — engine accounting cross-check
 
 At steady state, with a request served:
@@ -118,6 +131,9 @@ Flash-Next number, check that the model has the component at all:
   different model — record every export and say which ones were not set.
 - Record tree identity with `git describe` in the SGLang tree, the repo commit, and the
   kernel `.so` hash. The banner lies; `git describe` does not.
+- Record the flags that change memory *layout*, not only the ones that change size:
+  online-compress and page-size settings move bytes per token, and two arms that differ in
+  them do not give a KV slope.
 - `nvidia-smi` attribution before every reading:
   `nvidia-smi --query-compute-apps=pid,gpu_uuid,used_memory`. A co-tenant on the card
   invalidates the arm, and the mean over ranks will not tell you.
