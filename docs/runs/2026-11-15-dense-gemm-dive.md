@@ -3,8 +3,8 @@
 Status: **measured, with one line closed negatively and one left open.** The
 decode dense cluster is byte-bound once it is on fp8 and launch-bound whatever
 its dtype; a per-call GEMV kernel is not worth writing in Triton; the
-exact-dense prefill dispatch showed no difference on the shape family that
-reached it.
+exact-dense prefill dispatch was worth 2.1% once every listed shape reached it,
+and nothing more than that was claimed for it.
 
 Everything here is one box (lambda4, 4x V100-32GB, TP4), one arm per
 configuration, no repeats unless stated. The prototype scripts for the GEMV
@@ -107,10 +107,32 @@ Flash-Next:
   group in the model** — plus 52 x `(2560, 3584)`, 8 x `(2560, 2560)`, 8 x the
   LM head, and two singletons.
 
-So the accurate statement is: **36 of the ~68 layers per rank that the table
-can cover took the dispatch and showed no difference.** The 49-per-rank
-`(1536, 2560)` group never took it, and nothing here says how that would
-behave. A later measurement with the shape fallback in place is what would.
+So the statement for that pair is narrow: **36 of the ~68 layers per rank
+that the table can cover took the dispatch and showed no difference.** The
+49-per-rank `(1536, 2560)` group never took it.
+
+### The follow-up, with the shape fallback in place
+
+The later measurement was run the same evening, on the head that admits by
+shape when the name is absent (#299), same protocol, one launch:
+
+| arm | admitted / rank | prefill |
+|---|---:|---|
+| base, site tree, no table | 0 | 1053 ms / 3912 tok/s, spread 1.5% |
+| name gate only | 36 | 1059 ms / 3893 tok/s, spread 1.5% |
+| head, shape fallback | 100 | **1031 ms / 3996 tok/s, spread 0.8%** |
+
+**2.1% faster than base**, and the separation is per run rather than on the
+median: the three head runs (1039, 1031, 1031) are each faster than the
+fastest base run (1051). Admitted per rank: 49 x `(1536, 2560)`, 36 x
+`(2560, 4096)`, 13 x `(2560, 3584)`, 2 x `(2560, 2560)`; three stay on
+`fp8_gemm`, all outside both tables.
+
+Two limits on that number. It is one launch per arm, so it is a small positive
+on per-run separation and not a repeated-measures result. And the finiteness is
+worth naming: the dispatch is now reached for every dense projection the table
+lists, so a 2% prefill gain at 4121 tokens is what this kernel is worth here —
+it is not the missing 8%, and the prefill question remains open beyond it.
 
 The candidate census also killed one entry in the table: `qkv_proj` is
 `(2560, 3584)` per rank, not the `(2560, 3328)` derived from the config's head
