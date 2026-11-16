@@ -65,14 +65,16 @@ negotiable by the new one:
 must not push it into `auto`. If the backend cannot be constructed it raises
 at startup, naming the profile it does not support.
 
-**Open question that can stop stage 1 before its own code runs:**
-`fused_store_cache` is a JIT Triton/CUDA module, and nobody has confirmed its
-source builds for sm70. KV writes precede every attention kernel, so if that
-JIT does not compile here, no decode kernel matters until there is a
-fallback. kernel-crafter2 is reading it; the answer (or the fact that it is
-still open) belongs here, not only in a session transcript. Check it before
-writing the decode path, and if it does not build, the first deliverable is
-the torch KV store, not the attention math.
+**The KV store is no longer an unknown**, closed by patch 0008
+(`patches/0008-dsv4-store-fp16-to-bf16-cast.patch`): the DSV4 store JIT writes
+its bf16 rope tail with `cast<bf16x2_t>(elems)`, `DTypeTrait<bf16x2_t>` has no
+`fp16x2_t` constructor, and CUDA 12.8 has no `__nv_bfloat162(__half2)`, so the
+kernel did not build for fp16 input — which is what SM70 forces. Casting
+through `fp32x2_t` fixes the build; that commit records nvcc 12.8 on
+`compute_70`/`SGL_CUDA_ARCH=700` with an unpatched rc=1 and a patched rc=0 plus
+a bit-exact read-back. Page sizes other than the one exercised change only
+`kPageBits` and are unexercised. So the component's remaining unknowns are the
+two terminal call sites it replaces, not the KV path.
 
 **After patch 0007, "it got further" is the expected traceback, not a
 regression.** The base backend's `flash_mla` import is deferred to its
