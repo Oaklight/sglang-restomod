@@ -20,20 +20,45 @@ match each other in either.
 
 | path | model | container | routed experts | dense | usable by |
 | --- | --- | --- | --- | --- | --- |
-| `models/bluewhale/base-fp8/` | V4.1 | safetensors, 510 GB | MXFP4: E2M1 two per byte, E8M0 scales on a block-32 grid (`weight_block_size [32,32]`, `expert_dtype fp4`) | fp8 e4m3, ue8m0, `[32,32]` | SGLang safetensors path (with work) |
-| `models/bluewhale/_upstream/bluewhale-gsq-iq1m/` | V4.1 | GGUF, 120.7 GB + 110.6 GB Engram | IQ1_M (1.75 bpw) | GGML in-file | Strata |
-| `models/bluewhale/_upstream/bluewhale-gsq-iq2xs/` | V4.1 | GGUF, 265.8 GB + Engram | IQ2_XS (2.25 bpw) | GGML in-file | Strata |
-| `models/bluewhale/iq2xs-pack/` | V4.1 | Strata pack (`ds4.txt`, `tensors.txt`, `engram.bin`, tokenizer) | by index | by index | Strata |
+| `models/bluewhale/base-fp8/` | V4.1 | safetensors, 510 GB | MXFP4: E2M1 two per byte, E8M0 scales on a block-32 grid (`weight_block_size [32,32]`, `expert_dtype fp4`) | fp8 e4m3, ue8m0, `[32,32]` | **sglang-restomod — the deployment** (our SM70 FP4 expert kernel; see "SGLang native MXFP4 method") |
+| `models/bluewhale/_upstream/bluewhale-gsq-iq1m/` | V4.1 | GGUF, 120.7 GB + 110.6 GB Engram | IQ1_M (1.75 bpw) | GGML in-file | Strata — **reference only** |
+| `models/bluewhale/_upstream/bluewhale-gsq-iq2xs/` | V4.1 | GGUF, 265.8 GB + Engram | IQ2_XS (2.25 bpw) | GGML in-file | Strata — **reference only** |
+| `models/bluewhale/iq2xs-pack/` | V4.1 | Strata pack (`ds4.txt`, `tensors.txt`, `engram.bin`, tokenizer) | by index | by index | Strata — **reference only** |
 
 The publisher offers three sizes — IQ1_M, IQ2_XXS, IQ2_XS — and **no MXFP4**
 GGUF (verified against the repository's file list on 2026-11-16).
 
 ## Engine paths and their gates
 
-### Strata — the artifact-engine pair that exists
+### Strata — a reference engine, not the deployment
 
-Takes the ISTA GGUF plus its pack and serves on V100 today. This is the path
-`iq2xs-pack/` was built for.
+Takes the ISTA GGUF plus its pack and serves on V100 today, which makes it the
+best available **measurement** of what this model costs on four cards: 97.1% of
+experts resident on four (1.75 bpw) and 74.6% (2.25 bpw), with a CPU lane for the
+rest. Those numbers are the reference in the capacity page's §6.1.4.
+
+**They are not the plan.** bluewhale is to run on sglang-restomod, and the artifact
+that engine path reads is `base-fp8`, not either GGUF set (see "SGLang safetensors"
+below). A residency fraction computed on an artifact the target loader refuses is
+a bound on the work, not a deployment.
+
+### SGLang native MXFP4 method — written for exactly our artifact, gated on its kernel
+
+`srt/layers/quantization/mxfp4_humming_moe.py` opens with: "MXFP4 (**E8M0
+scales**) MoE … Used for **DeepSeek-V4 FP8 checkpoints** when
+`--moe-runner-backend humming` is selected together with `SGLANG_DSV4_FP4_EXPERTS=1`
+(which sets `Fp8Config.is_fp4_experts`) … casts `w{13,2}_weight_scale_inv` to
+`float8_e8m0fnu`". The switch is in the pin (`environ.py:1578`, `model_config.py:656`),
+and E8M0-per-32 is the base checkpoint's own grid.
+
+So the engine has **a method for this artifact and a kernel that does not run on
+SM70**: the method dispatches to the external `humming` package
+(`humming_utils.py:5`), which is SM90-class and is not vendored here. **Replacing
+that kernel is our mod**, and there are three ways, cheapest first: re-encode the
+scales offline and reuse our SM70 NVFP4 Marlin (+18.3 GB, 5.9%); teach that kernel
+an E8M0-per-32 grid (no extra bytes); or write a new MXFP4 matcher. Our component
+`quant/sm70_fp4_moe` (`fp4_moe`, `plugins.py:79`) is the starting point — it gates
+on `(7,0)` and runs Flash-Next's experts on V100 today.
 
 ### SGLang expert pack — needs MXFP4 experts in a GGUF
 
@@ -79,17 +104,38 @@ deepseek2-ocr only, so `srt/model_loader/loader.py:3078` raises
 `Unknown gguf model_type: deepseek_v4`, and `GGUF_HF_NAME_MAP_BUILDERS` has no
 builder for it.
 
-## The three errors, reproduced
+## The errors, reproduced
 
-Each is a schema key, not a name, and each stops a load before any weight is
-read:
+Each is a schema key or a missing dependency, not a defect in our artifact, and
+each stops a load before any weight is read. **The first one an MXFP4 attempt will
+hit is the dependency**, because the method imports a package that is not here:
 
 ```
+ModuleNotFoundError: No module named 'humming'
 ValueError: The checkpoint you are trying to load has model type `bluewhale`
   but Transformers does not recognize this architecture.
 ValueError: expected GGUF architecture deepseek4, got 'deepseek41'
 ValueError: GGUF metadata is missing required field: general.sampling.temp
 ```
+
+Read the first line correctly: it appears **before** any dtype or capability check,
+so it says nothing about our artifact. The pin declares `humming-kernels[cu13]==0.1.12`
+(`python/pyproject.toml:44`), which is an external JIT GEMM library — Apache-2.0,
+`vllm-project/humming` — and it is simply not installed in our environment.
+
+## What `humming` is, and why SM70 is outside it
+
+Its own support matrix fixes the floor: **SM75+** for FP16 activations with any
+weight type under 8 bits (E2M1 included) and scale types including **UE8M0**, and
+**SM120+** for FP4 *activations*. Our case is FP4 weights with FP16 activations, so
+it sits in the SM75+ row — **one architecture generation above V100, not a
+different class of kernel**. The format is not the obstacle: an existing emitter
+already handles E2M1 weights with UE8M0 scales.
+
+That reframes the work. It is not "write an MXFP4 matcher"; it is either port an
+Apache-2.0 JIT emitter down to SM70, or keep our `fp4_moe` kernel and change its
+scale decode to E8M0-per-32. The `[cu13]` extra in the pin is a second sign that
+the pinned build targets newer cards.
 
 ## Rules that follow
 
