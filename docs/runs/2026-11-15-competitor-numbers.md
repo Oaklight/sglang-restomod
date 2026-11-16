@@ -248,7 +248,7 @@ serve, and they must not be read as our configured performance.
 on the box, on lambda4 with the dense FP8 path active, quoted in the headline;
 the trace below. QPN8 and the exact-dense prefill dispatch are **absent in
 effect because their TP guard reads `tp_size`, which no linear carries in this
-engine**: `sm70_fp8_dense/_method.py:229` and `:283` both test
+engine**: `sm70_fp8_dense/_method.py:251` and `:305` on `main` both test
 `getattr(layer, "tp_size", 1) != 4`, and `sglang/srt/layers/linear.py` has 54
 occurrences of `tp_size` and zero `self.tp_size =` assignments, so the default 1
 is what every layer returns and both gates fail before any shape comparison —
