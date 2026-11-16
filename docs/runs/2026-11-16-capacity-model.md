@@ -26,10 +26,21 @@ competitor single card against our TP4:
 | residence as a **fraction of pairs** | 25% (÷4) | **80.2%** (measured) | **3.2x** |
 | **cards to hold the whole model** | 4 | **2** (100% of pairs; 1 card holds 80.2%) | **2x** |
 | prefill, whole model | **4,001 tok/s** | 1,108 tok/s | **3.6x in ours** |
-| decode, **whole model** | **126.2 tok/s** | 55.9 tok/s | **2.26x in ours** |
-| decode, **per card** | **31.6 tok/s** (126.2 ÷ 4) | **55.9 tok/s** | **1.77x in their favour** |
-| decode, per **step** | 24.74 ms | 17.9 ms | 1.38x in their favour |
-| decode, per **accepted token** | **7.93 ms** (accept 3.12) | 17.9 ms | **2.26x in ours** |
+| decode, **whole model** | **155.1 tok/s** (slope) | 55.9 (per token) | **2.77x in ours** |
+| decode, **per card** | **38.8** (155.1 ÷ 4) | **55.9** on one card | **1.44x in their favour** |
+| decode, per **step** | 24.76 ms | 17.9 ms | 1.38x in their favour |
+| decode, per **accepted token** | **6.45 ms** (marginal accept 3.84) | 17.9 ms | **2.77x in ours** |
+
+**Retracted in this table: the 126.2 tok/s and 31.6-per-card figures it carried
+until 2026-11-16.** They were `accept_long / step` — one run's mean acceptance
+length divided by a step time differenced across two runs. Acceptance grows with
+output length, so those are two populations, and the product describes neither.
+`step` is unaffected (24.74 → 24.76 ms; it does not depend on accept) but the rate
+was **23% low**: the slope over two timed runs on the same arm is **155.1 tok/s**.
+Arms with constant acceptance are untouched (lambda1: 95.2 slope against 95.3
+printed), which is why the same-host comparison survives — **on one host we are
+1.36x behind**, 95.2 against 129.6, both slopes. Every cross-host ratio on this
+page is indicative only.
 
 **Two metrics, opposite directions, and sharding is the reason.** They fit the
 whole model on one card, so they pay no cross-card work per token; we pay 4-way
@@ -38,16 +49,18 @@ tensor parallelism, and the per-card figure is that bill — **though the census
 latency. What it is remains open.** This is how capacity converts into throughput
 — **not by reading fewer bytes, but by needing fewer cards.**
 
-Measured per-card ratio: **1.77x** on the realised single-card run, **2.11x** using
-the earlier 66.6 tok/s decode. The recorded **2.3–2.8x band sits above both** and is
-reproduced by neither, so the page quotes the measured pair and retires the band.
+Per-card ratio at the corrected basis: **1.44x** in their favour on the realised
+single-card run. The recorded **2.3–2.8x band is retired**; it sits above every
+measured per-card value.
 
-**At matched shard count the per-card gap disappears.** Their two-card arm — 100%
-of pairs resident, layers 0–23 on one card and 24–47 on the other — runs at
-**62.9–70.7 tok/s total, 31.5–35.4 per card**, against our **31.6 per card on
-four**. Per-card throughput is therefore set by **how many cards you shard
-across**, not by the engine, and the single-card 1.77x is one card measured against
-four. What survives as an engine difference is **capacity: 2 cards against our 4**
+**Comparing different card counts is not meaningful, and the honest rows are the
+two that hold the same number of cards.** Their two-card arm — 100% of pairs
+resident, layers 0–23 on one card and 24–47 on the other — runs **62.9–70.7 tok/s
+total, 31.5–35.4 per card**, against our **38.8 per card on four**. So at *their*
+shard count we are **ahead per card (1.10–1.23x)** and behind per model, because
+the model still costs us four cards. That is the whole finding: the per-card
+number follows the card count, and the engine difference lives in **capacity: 2
+cards against our 4**
 — and the second card buys only **+9–10% prefill and +12–21% decode** (56–63% of
 single-card throughput per card), so it is capacity with a small latency gain, not
 scaling.
@@ -509,6 +522,7 @@ from an older message.
 | collectives **24.7%** of the decode window | **retracted → 0.199 ms/step (~3.3%)** | the shares came from a capture holding two 4,096-token prefills despite `profile_stages=["decode"]` |
 | **7.22 GB** double-count in the expert class | **refuted → three MTP draft layers** | my hypothesis; the unique-name sum is 96,085 names, 0 duplicates, 510.29 GB |
 | **116 MB/token** of expert host traffic | **retracted → 4.51 GB/token** | the gross figure omitted the per-layer multiplier: top-k is per layer |
+| decode rate **126.2 tok/s** (and the 31.6 per card built on it) | **retracted → 155.1 tok/s** | `accept_long / step` mixed a long run's mean acceptance with a differenced step time; the slope over two timed runs is 23% higher. `step` was never affected |
 | **543.6 G** expert parameters | **deleted → 271.8 G weights, 288.8 GB with scales** | `2304` is w1's output; assuming `hidden_size` 5120 was the expert input invented a 2-way K-split |
 
 Two of the five were mine. Both are the same failure: a number that reconciled
