@@ -104,22 +104,72 @@ inside verify the two paths are 20.9 ms and 29.5 ms. Both paths run, at
 1.4:1 in Marlin's favour, which is a different statement from the 85% the
 whole-capture table implies.
 
-### Which shape each path serves — inference, and the instrument that would settle it
+### Which shape each path serves — what was inference, and what the counter settled
 
-Per rank after TP4 the routed shapes are **w13 n=320, k=2560** and **down n=160,
-k=2560**. Our kernel's admission (`decode_gemv.supports`) requires
-`n % 64 == 0` with an odd `n/64`, so w13 passes (5) and down fails
-(`160 % 64 = 32`); and it requires `size_m <= MAX_M = 8`, which at MTP4 admits
-batch sizes up to 2. The served log confirms the capture side
+Per rank after TP4 the routed shapes are **w13 n=320, k=2560** and **down
+n=2560, k=160**. (The `160` is down's K, not its N — `FF/tp = 640/4`; an earlier
+version of this page wrote it as down's N and read every downstream number off
+that error.) Our kernel's admission (`decode_gemv.supports`) requires
+`n % 64 == 0` with an odd `n/64`, so w13 passes (`320/64 = 5`) and down fails
+(`2560/64 = 40`, even); and it requires `size_m <= MAX_M = 8`, which at MTP4
+admits batch sizes up to 2. The served log confirms the capture side
 (`decode gemv skipped: unsupported m=32 n=320 k=2560 topk=10 block=8`, the w13
 call refused by the M cut at bs=8), and at runtime bs=1, m=4, so w13 is
 admitted.
 
-That the two 480-call series are one shape each is **inference from eligibility
-plus counts**, not from the trace. The cheap instrument is a counter, not
-another profile window: an `int[4]` incremented by `n` inside `maybe_call` and
-inside the Marlin dispatch, printed at teardown, answers which shape each path
-serves and what each costs per call.
+That the two 480-call series are one shape each was **inference from eligibility
+plus counts**, not from the trace. The counter that settles it was built and run
+(PR #313, `SM70_MOE_CENSUS=1`): one dict keyed `(path, n, m)`, incremented at the
+GEMV entry and unconditionally at the Marlin call site, printed as one INFO line
+per 256 dispatches.
+
+### What the counter found (lambda6 0-3, TP4, two served arms, 3328 dispatches each)
+
+**w13 (`n=320`), both arms, identical counts:**
+
+| path | m | calls |
+| --- | --- | --- |
+| `gemv` | 4 | 144 |
+| `gemv` | 5 | 176 |
+| `gemv` | 8 | 144 |
+| `marlin` | 12, 16, 20, 24, 28, 32 | 144 each |
+| `marlin` | 25 | 96 |
+| `marlin` | 122 | 48 |
+| `marlin` | 4096 | 192 |
+
+**down (`n=2560`), both arms, identical counts:** `m=40` (144), `m=50` (176),
+`m=80` (144), `m=120`, `m=160`, `m=200`, `m=240`, `m=250` (96), `m=280`,
+`m=320` (144 each), `m=1220` (48), `m=40960` (192) — every one on Marlin.
+
+Three things this settles:
+
+- **The two series are one shape each, and the pairing proves it.** Every w13 row
+  has a down row at exactly ten times its `m` (`4→40`, `5→50`, `8→80`, `12→120`,
+  … `4096→40960`), which is `top_k = 10`: down's `m` counts route rows, as the
+  eligibility note says. The counts match one for one, so the census sees the
+  same MoE applications through both projections rather than two populations
+  that happen to be the same size.
+- **The M cut is real and it is at 8.** GEMV serves `m` 4/5/8 and nothing above;
+  the first Marlin w13 row is `m=12`. The eligibility arithmetic predicted this
+  and the served rows confirm it, so `MAX_M` is a genuine threshold on this path
+  rather than a guess from the source.
+- **Down never runs our kernel, at any `m`, exactly as the N rule says.** It is
+  the `n=2560` series without exception. Its per-call cost is therefore a Marlin
+  cost at a shape our kernel refuses, and the lever there is an admission
+  decision (or a kernel that reads an even `n/64`), not `MAX_M`.
+
+**The GEMV path earns its place.** The two arms differ in exactly three rows —
+`m=4/5/8` on `n=320` — and nothing else: the down series is byte-identical in
+both. With `SM70_MOE_DECODE_GEMV=0` the step went from **25.29 ms to 27.36 ms
+(+2.07 ms, +8.2%)**, above the 3.8% drift floor between two serves. Deleting the
+path would cost about 8%, not save it. The accept rate moved with the arm (3.12
+against 2.74) because two implementations of the same GEMM round differently and
+the draft chain amplifies it; that is a numerics effect, so the step is the
+kernel result and the completion rate (123.4 against 100.3 tok/s) is not.
+
+The counter's own cost: the arm that carried it ran 25.29 ms per step against
+24.74 ms without it, accept equal at 3.12. That is ~2%, inside the 3.8% drift
+floor, so the instrument is not what moved the arm.
 
 ## Attribution: the M tile, not split-K, not the repack
 
@@ -138,15 +188,39 @@ tile, which is why its per-call cost is a fraction of ours.
 **Where the fix is cheap and where it is not.** w13 already runs the no-tile
 kernel at bs<=2, so raising `MAX_M` (with the workspace check that
 `decode_gemv._workspace_for` exists for — a resize inside a CUDA-graph capture
-is an illegal memory access) is the cheap half. Down cannot reach the kernel at
-all: `160 % 64 != 0`. The module records 49.3 us for our GEMV against Marlin's
-48.3 us on that shape, which was read as "a wash, not worth pursuing" — that
-reading is retired: Marlin is the slow path it has to beat, and in the verify
-window above Marlin spends 43.6 us per down call where our w13 call, twice the
-work, spends 61.4 us. So the wash says our kernel barely beat the slow path on
-that shape, not that the shape is hopeless. The constraint is `160 % 64 != 0`,
-so the fix is a build — a 192-wide padded tile or a different kernel — not a
-threshold change.
+is an illegal memory access) is the cheap half: the census shows the threshold is
+where the source says it is, and the rows above it are Marlin's 64-row tile at
+`m=12` and up.
+
+### Correction: which width is down's, and what that changes
+
+Two earlier versions of this section named the wrong quantity, and the census is
+what exposed it.
+
+- **The first version said down cannot reach our kernel because `160 % 64 = 32`.**
+  That used down's **K** (`FF/tp = 640/4 = 160`) as its **N**. Down's N is 2560,
+  and it fails the admission on the *other* half of the N rule: `2560/64 = 40`,
+  which is even, and `decode_gemv.supports` requires an odd `n/64`. The census
+  shows the consequence directly — every down call, at every `m` from 40 to
+  40960, is on Marlin, and there is no GEMV row at `n=2560` at all.
+- **The second version, written on the strength of "no `n=160` row anywhere",
+  read that absence as "down never reaches this call site" and withdrew the
+  attribution entirely.** There is no `n=160` row because no tensor in this
+  model has that width. The down rows were in the census all along, at
+  `n=2560`, paired one-for-one with the w13 rows at ten times their `m`.
+
+**What the retraction took away is therefore restored, with a better basis:** the
+down call is a Marlin call at `n=2560` at every served `m`, and its per-call
+cost is the 64-row tile's cost at that width, observed rather than inferred. The
+earlier 1.87x reading of it is a ratio between our w13 call and Marlin's down
+call, which is two different shapes and must not be quoted as a per-shape
+kernel gap.
+
+**What does not change:** the lever on down is not `MAX_M`. It is either an
+admission change (accept an even `n/64` at `n=2560`, which needs the kernel to
+be verified at that width — the recorded 49.3 us against Marlin's 48.3 us there
+says the win is not free) or a kernel that reads the shape well. Neither is a
+threshold edit.
 
 ## What closing the buckets is worth
 
@@ -167,8 +241,10 @@ two buckets' measured 5-8x per-call ratio makes plausible rather than proven.
 
 - It does not say the dense bucket can reach 2.2 ms on our stack. It says the
   precision is not the reason it does not.
-- It does not separate w13 from down in the trace; a wrapper counter settles
-  that faster than a join, and it is the next instrument.
+- Its per-call figures do not compose into a step: the 61.4 us GEMV call against
+  the 43.6 us Marlin call points the wrong way, while turning the GEMV path off
+  costs 8.2% per step. Any further expert-kernel proposal has to explain that
+  gap before it can use a per-call number as its case.
 - It does not rank the decode families reliably: the capture holds roughly a
   third of a step's kernels, so the shares bound the order, not the savings.
 - It does not touch capacity. The same policy inverts on `bluewhale`, where
@@ -339,8 +415,9 @@ and theirs pays for its own sharding far more than we pay for ours.
 ### What this addendum does not say
 
 - It does not say 1.70x is fixable. w13's gap is reachable today; w2's is not,
-  because `160 % 64 != 0` blocks the no-tile kernel and Marlin is a prebuilt
-  `.so`.
+  because `N=2560` gives `N/64 = 40`, an even multiple that the no-tile kernel's
+  admission refuses, and the alternative is a kernel that reads that width —
+  Marlin there is a prebuilt `.so` and stays the baseline.
 - It does not establish the MTP owner from the trace. That is inference from our
   own loader and from the reference's call count.
 - **It supersedes two figures in the page body above.** `bluewhale` residency is
