@@ -175,3 +175,180 @@ two buckets' measured 5-8x per-call ratio makes plausible rather than proven.
   residency is 18.4% and the host tier costs ~45 ms/token — that is the
   capacity page's result, and it is why decode is the part of this work that
   transfers.
+
+---
+
+## Addendum 2026-11-16: the reference's expert rate, and the 5-8x this page opened with
+
+Status: **the 5-8x per-call ratio is retracted.** Our side of it stands; the
+reference's side was measured through a window that holds 22% of a step's
+kernels. Corrected, the per-call gap is 1.59x and 1.87x, per step 1.70x, and the
+closing arithmetic in "What closing the buckets is worth" moves from 210-260
+tok/s on four cards to 196-221.
+
+### The measurement error, and the method that fixes it
+
+`decode_slice.py`, and everything derived from it, attributes kernels only inside
+a vLLM user annotation. The only decode annotation vLLM 1.5.1 emits on this
+stack is `execute_context_0(0)_generation_1(5)`, one piecewise-graph piece: it
+holds **8.4 ms of the 37.9 ms of kernels** that make up a step, 22%. This page
+already warns that our own capture holds about one step in three; the
+reference's number carried the same defect and nothing flagged it.
+
+Method to reuse: pick an annotation that repeats exactly once per step, sort by
+start, measure `[first.start, last.start]` and divide by `N-1`. Both ends are the
+same phase of a step, so the CPU-span/GPU-lag clipping cancels. Then convert to a
+per-step total with the structural launch count from the source and the mean
+per-call duration, which is the quantity that survives the misalignment
+(`sm70_fp4_moe/method.py`: "one decode step is 48 layers x 2 calls"). Tool:
+`kernelcmp/scripts/phaseattr.py`.
+
+### Per call, both sides
+
+Both are modelopt NVFP4 on V100-SXM2, TP4, bs=1, top-10 of 512 experts, in a
+CUDA-graphed decode.
+
+| projection | ours | reference | ratio |
+|---|---:|---:|---:|
+| w13 / gate_up | 62.5 us (`decode_moe_gemv_kernel`, 48 calls) | 39.3 us (`nvfp4_qpn_m1_sm70_kernel<4>`, 48 calls) | 1.59x |
+| w2 / down | 44.3 us (`sm70_marlin_moe_gemm_kernel`, 48 calls) | 23.7 us (`nvfp4_qpn_m1_sm70_kernel<1>`, 48 calls) | 1.87x |
+| per step, target | 5.13 ms | 3.02 ms | 1.70x |
+| per step, incl. the MTP layer | 6.61 ms | 3.88 ms | 1.70x |
+
+**Bucket share and ceiling, both required beside the ratio:** the expert bucket is
+**19.1% of a decode step**, so matching the reference's per-call times buys
+**1.13x** and deleting the bucket outright buys 1.33x. "1.70x" is not "70% to win".
+
+Our per-call figures are confirmed on an independent arm: this page's own
+verify-window census measured 61.4 us and 43.6 us on lambda4, within 2% of the
+62.5 and 44.3 above (lambda6). The reference's are means over 48 calls each, in
+its own trace.
+
+Two corrections to the attribution text above:
+
+- The reference's per-layer routed MoE is **not `fused_moe_kernel`**. That Triton
+  kernel appears 8.0 times per step in their trace and 5.3 in ours, which is the
+  MTP layer's two projections (in our stack `un.py` keeps `mtp.*` unquantized and
+  therefore on Triton, and the reference's count, 4 draft forwards x 2, fits the
+  same owner). Their per-layer path is the TurboMind qpn pair in the table.
+- `1 / 0.16 = 6.25` was the basis of the retired 5-8x. The M tile is real and it
+  is the whole of the w2 gap (1.87x); it cannot carry a 6x, and it does not apply
+  to w13, which already runs a no-tile kernel.
+
+### What it does to the closing arithmetic
+
+The expert term in "What closing the buckets is worth" was the reference's ~1.0
+ms/step. Measured, it is 3.88 ms. Replacing only that term, keeping the page's
+dense figures:
+
+- expert: 6.61 -> 3.88 ms, -2.73 ms
+- dense: 10.5-12.3 -> 2.2 ms, -8.3 to -10.1 ms
+- step: 26.8 -> 14.0-15.8 ms
+- at 3.10 tokens/step: 196-221 tok/s on four cards, 49-55 per card
+
+**That projection is withdrawn the same day, because its dense term is the same
+artifact as the expert term.** The reference's 2.2 ms for dense came from the 22%
+window. De-clipped, same trace, same divisor:
+
+| family, per step | ours (lambda6, QPN8 arm) | reference (lambda1) |
+|---|---:|---:|
+| **dense linears** | **7.90 ms** (709 launches, 11.2 us) | **12.41 ms** (843, 14.7 us) |
+| routed experts | 5.13 ms (96) | 3.02 ms (96) |
+| expert, third kernel | 1.48 ms | 0.86 ms |
+| collectives | 0.61 ms | 10.96 ms (profiler-inflated) |
+| memcpy / elementwise | 1.18 ms | 4.05 ms |
+
+**We spend 1.6x less GPU time on dense linears, not 5x more.** So the projection
+has no dense term: the end state is the expert-only 11.3%, about **1.11x**, and the
+honest summary is that there is **no kernel work available on our side that changes
+the step materially**.
+
+The divisor is pinned rather than assumed: the reference's
+`_sm70_qwen38_router_topk_kernel` fires **52.0 times per de-clipped step** — 48
+layers plus 4 MTP forwards — so the per-step normalisation is right to +-2%.
+
+**What is not established, and must not be written down yet: that the remaining
+difference is "overlap".** The tempting sentence is that the reference's 37.9 ms of
+kernels fit inside a 19.4-25.8 ms wall, hiding ~15 ms. **That wall is derived, not
+measured** — it is `7.71 ms/output-token x accept`, and the reference's accept is
+not separately measured, because their bench prints ms/output-token only. At the
+marginal acceptance our own arm reaches (3.84), the same product gives ~29.6 ms and
+the hidden time falls to ~8 ms. So overlap is **bounded between roughly 1.3x and
+2x by an unknown accept**: a live candidate, not a result. What settles it is their
+measured wall for a known output length, with no derivation in the chain.
+
+### Which side each number is on
+
+Three of the four arms below are ours, and an earlier draft of this addendum
+compared our step against our own step from a different arm. Pinned, four
+numbers per line:
+
+| arm | host | ms/output-token | step | accept | tok/s |
+|---|---|---:|---:|---:|---:|
+| ours, kernelcmp arm | lambda1 4-7 | 10.49 | 28.0 ms (marginal, corrected) | 2.67 (marginal) | 95.3 |
+| reference, wheel defaults | lambda1 4-7 | 7.71 (slope) | 19.7-25.8 (derived) | 2.55-3.34 (their metrics log) | 129.6 |
+| ours, fp8 dense on | lambda4 4-7 | 7.93 | 24.74 ms (measured) | 3.12 (measured) | 126.2 |
+| ours, the traced arm | lambda6 0-3 | 8.02 | 25.05 ms (measured); trace period 26.83 | 3.12 (measured) | 124.6 |
+
+The lambda1 row carries a correction of its own. That bench file prints
+`DECODE step 33.59 ms  accept 3.20 throughput 95.3 tok/s`, but it divided the
+timed runs' step time by a `spec_verify_ct` taken from a separate calibration
+request (40 steps). The timed runs had 48/36/48 steps, accept 2.67/3.56/2.67 and
+a marginal 28.0 ms; the rate is unaffected because it is 1/slope across the timed
+runs. So 33.59 / 3.20 describes no single request and is not used above.
+
+The reference's step and accept are not separately measured: their bench prints
+ms/output-token and their log prints a mean acceptance length per interval, so
+only the product is pinned, and 19.7-25.8 spans the intervals observed. Their
+accept range overlaps ours, so **no accept difference is established**. The one
+quantity measured on both sides of the same host is ms/output-token: 10.49
+against 7.71, **1.36x**. On our later arms it is 7.93-8.02, within 3-4% of the
+reference, cross-host and therefore indicative only.
+
+### Why the gap is 1.7x and not 6x: occupancy, not bandwidth
+
+Per launch there are ~10 route tiles of work. w13 is N=320 per rank with
+CTA_N=256, so the grid is ~2 CTAs wide by 10 routes: ~20 CTAs on 80 SMs.
+
+| | w13 | w2 |
+|---|---:|---:|
+| bytes read per launch per rank, at most (10 distinct experts) | 4.61 MB | 2.30 MB |
+| ours | 74 GB/s, 8.2% of 900 | 52 GB/s, 5.8% |
+| reference | 117 GB/s, 13.0% | 97 GB/s, 10.8% |
+
+Neither is bandwidth-bound, which closes the bandwidth hypothesis in one line and
+rules out a bandwidth-shaped fix. What the reference does better is delete work:
+its w2 has no M tile, and it fuses swiglu into w13 and the top-k reduce into w2,
+where we launch `moe_aux` separately (0.64 ms/step) plus a separate
+`act_and_mul`. Split-K is not the lever either: `_select_split_k` already picks
+per projection from measurement, and one value for the model costs 8.42-8.60 ms
+against 6.98-7.21.
+
+The same Marlin kernel runs at 34.2% of the prefill window and 53.8% of fp16 peak
+at M=4096, so the kernel is not the defect; small M is.
+
+### Collectives, cross-stack
+
+The reference's step spends **10.96 ms in two cross-device reduce kernels plus
+4.05 ms of memcpy**; ours spends **0.61 ms in the 1-shot allreduce**. Not a ratio
+and not comparable in isolation: spin-wait kernels are inflated by the profiler
+and by whatever the other rank is doing, so their absolute duration is an upper
+bound. What survives is the direction: our collective path is not the deficit,
+and theirs pays for its own sharding far more than we pay for ours.
+
+### What this addendum does not say
+
+- It does not say 1.70x is fixable. w13's gap is reachable today; w2's is not,
+  because `160 % 64 != 0` blocks the no-tile kernel and Marlin is a prebuilt
+  `.so`.
+- It does not establish the MTP owner from the trace. That is inference from our
+  own loader and from the reference's call count.
+- **It supersedes two figures in the page body above.** `bluewhale` residency is
+  **9.8%**, not 18.4%, and the host tier costs **~92 ms/token**, not ~45, per the
+  capacity page's per-tensor rebuild of the expert term. The original sentences
+  stand, quoted, rather than edited — the same rule this addendum applies to the
+  5-8x.
+- It does not rank the step from kernel sums. The reference's 37.9 ms of kernels
+  per step cannot fit its own 19.4-25.8 ms wall, so that step has multi-stream
+  overlap and only per-call durations and source-side launch counts may be
+  compared across the two traces.
