@@ -42,6 +42,22 @@ printed), which is why the same-host comparison survives — **on one host we ar
 1.36x behind**, 95.2 against 129.6, both slopes. Every cross-host ratio on this
 page is indicative only.
 
+**Both structural candidates are now closed, and the difference is step time times
+accept.** Overlap is the same on both stacks — **1.102 against 1.065** inside the
+drift band, with absolute overlap 1.36 ms/step on ours against 0.11 on theirs, and
+ours is compute-against-compute rather than collectives. And the reference's
+**`busy_union` is 35.64 ms/step inside its own trace**, so its wall cannot be
+shorter than that: against its measured 7.71 ms/output-token that implies a
+**marginal accept of ~4.6**, near the 5-token ceiling, against our 3.84. They take
+a longer step and get more tokens per step. Per output token that leaves us **8.02
+ms against 7.71 on comparable arms — level within 4%** — and 10.49 against 7.71,
+1.36x behind, on lambda1.
+
+**So the 2.77x per-model figure above is against the capacity reference's 2.25-bit
+model, not an engine comparison**, and must not be quoted as one. Against a
+same-format reference we are level to 1.36x behind, which is why no kernel work
+found today moved the step.
+
 **Two metrics, opposite directions, and sharding is the reason.** They fit the
 whole model on one card, so they pay no cross-card work per token; we pay 4-way
 tensor parallelism, and the per-card figure is that bill — **though the census in
