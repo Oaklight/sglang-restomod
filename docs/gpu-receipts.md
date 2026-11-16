@@ -200,10 +200,11 @@ account that ran it without a flag or a list. Generic accounts — `root`,
 left alone, because rewriting an ordinary word would corrupt the bundle; a name
 such as `pding` cannot match prose and is removed.
 
-This covers the account that ran the pass, **not the colleagues named in `ps`
-output or a scheduler log**. Those need the structural rule tracked in #328;
-until it lands, `--denylist` is the only cover, and it covers only the names
-someone thought to list.
+This covers the account that ran the pass, **not a co-tenant named in a process
+table or a scheduler log**. No collector here emits one today — the suite calls
+`nvidia-smi -q`, a GPU-only csv and `topo -m`, with no `ps`, `pgrep`, `who` or
+`--query-compute-apps` — so the structural rule in #328 is preventive, not
+urgent, and that issue names the change that would make it live.
 
 A denylist is still needed for **other** hosts — the bundle builder and the
 packer are not always the same machine — and when none is supplied the pass says

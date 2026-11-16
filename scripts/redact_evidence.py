@@ -27,8 +27,11 @@ corrupt the bundle. Generic accounts are named in ``_GENERIC_ACCOUNTS`` and are
 left alone rather than causing a refusal.
 
 This is the narrow half of the account problem: it covers the account that ran
-the pass, not the colleagues named in ``ps`` output or a scheduler log. Those
-need the structural rule tracked in #328 and, until it lands, a denylist.
+the pass, not a co-tenant named in a process table or a scheduler log. No
+collector in this repository emits one today -- ``gpu_suite.sh`` calls
+``nvidia-smi -q``, one GPU-only csv and ``topo -m``, and no ``ps``, ``pgrep``,
+``who`` or ``--query-compute-apps`` -- so the structural rule in #328 is
+preventive, and that issue names the change that would make it live.
 
 **A denylist is still needed for other hosts** (``--denylist`` or
 ``$IDENTITY_DENYLIST``): the bundle builder and the packer are not always the
