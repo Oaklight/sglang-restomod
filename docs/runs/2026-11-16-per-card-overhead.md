@@ -96,13 +96,13 @@ kernel change in the decode thread. Cheapest experiments, in order:
 
 ## Notes for whoever runs this next
 
-- **`/homes/pding` is not writable at serve time on this host** — a lambda6 arm died
-  with `OSError: [Errno 28] No space left on device` inside the SGLang JIT build under
-  `/homes/pding/.cache/sglang/jit/...`. `HOME` does not cross the singularity boundary
-  unless passed as `--env HOME=...`; the launcher now passes it, plus
-  `XDG_CACHE_HOME`.
+- **The operator's home directory is not writable inside the container on this host**
+  — a lambda6 arm died with `OSError: [Errno 28] No space left on device` in the
+  SGLang JIT build under the JIT cache beneath `$HOME`. `HOME` does not cross the
+  singularity boundary unless passed as `--env HOME=...`; the launcher now passes it,
+  plus `XDG_CACHE_HOME`.
 - **lambda6's root filesystem is 100% full** (1.7 T of 1.7 T, 0 available), so the
-  shipped recipe's `/tmp/pding-flashnext` fails before the model loads. lambda4 has
+  shipped recipe's scratch directory under `/tmp` fails before the model loads. lambda4 has
   1.2 TB free and works.
 - Both arms were single-variable: KV came out identical at 172,032 tokens, so the
   716 MiB delta is the graph pool and nothing else.
