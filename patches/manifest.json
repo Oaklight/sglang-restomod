@@ -56,6 +56,20 @@
       "reason": "On SM70 the platform block in model_hook.py turns the DeepGEMM-only knobs off for sm120 and for hip and has no arm for Volta, so SGLANG_OPT_DEEPGEMM_HC_PRENORM keeps its True default and SGLANG_FP8_PAGED_MQA_LOGITS_TORCH its False one. Both consumers import deep_gemm inside the function (deepseek_v4.py HC prenorm above 1024 prefill tokens, indexer.py nonpaged gather) and configurer.py leaves the module unimported below sm90, so the first large prefill raises NameError instead of taking the torch implementation that exists for each. The arm keys off device_sm because the pin's platform object has no is_sm70 fact. Both writes are guarded by is_set() like the sm120 arm, so each knob stays env-overridable; no capability or number changes.",
       "source": "local, 2026-11-16 (bluewhale SM70 bring-up)",
       "upstream_status": "pending"
+    },
+    "0006-mhc-prenorm-block-selection.patch": {
+      "paths": [
+        "python/sglang/kernels/ops/layernorm/mhc.py"
+      ],
+      "site_hashes": {
+        "python/sglang/kernels/ops/layernorm/mhc.py": {
+          "unpatched": "28897208a7b13f9e245678e1203890d5efe121ebb2da7a05ec5fc3e262be506b",
+          "patched": "d8c45428f3608c103d3d621c198db778bd5dd235fce16b77e483a3d83a46dd11"
+        }
+      },
+      "reason": "mhc_pre's split-K path selects hidden_block from a two-entry table of hc_hidden_size values (16384->256, 28672->128) and raises for anything else, so _prewarm_mhc_kernels in load_weights aborts any DeepSeek-V4 model whose hc_mult*hidden_size is another size -- V4.1-Flash-1017 is 4*5120=20480. The kernel is generic: mhc_pre_gemm_sqrsum_splitk_kernel asserts only that split_size = hc_hidden_size//split_k divides by hidden_block, and the two entries are the largest candidate block that divides (512->256, 896->128). Select the largest of {256,128} that divides split_size and raise a message naming hc_hidden_size, split_k and split_size when none does.",
+      "source": "local, 2026-11-16 (bluewhale SM70 bring-up)",
+      "upstream_status": "pending"
     }
   }
 }
