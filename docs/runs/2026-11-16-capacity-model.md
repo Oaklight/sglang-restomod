@@ -405,9 +405,23 @@ and 5120/160 = **32**, the `weight_block_size` K; `w2.scale` is `[5120, 72]` and
 effective K is 5120 and 2304 respectively — full width, one matrix per projection.
 543.58 G = 271.8 G × 2 is one parameter per byte becoming two, not a missing half.
 
+**A third witness, independent of both:** the nibble histogram of one expert
+weight is **E2M1 sign-magnitude**, not int8 — all 256 byte values present, and both
+nibble positions carry symmetric sign/magnitude pairs (codes 2 and 10 at 106,967 and
+106,394; codes 7 and 15 at 22,270 and 22,426). Three lines of evidence from three
+different tensors, all saying FP4.
+
 **So the published 510.29 GB checkpoint is runnable on its own.** The earlier
-alarm in this section is withdrawn; it was raised on the stored shape alone and the
-scale tensors were the evidence that settled it against the alarm.
+alarm in this section is withdrawn; it was raised on the stored shape alone, and
+both the scale grid and the nibble histogram settle it against the alarm.
+
+**But resident bytes do not shrink with the dtype, and that is the capacity number.**
+SM70 has **no FP4 tensor core**, so this checkpoint needs an **unpack-then-MMA**
+path: every expert read is 271.8 GB of packed weight plus 17.0 GB of scales, held at
+288.8 GB whether or not the multiply can consume them directly. The 4.25 bits/param
+is a *storage* density, not a compute format — the compute is W4A16 with an unpack
+in front of it. Anyone planning the 8×V100 layout against "17.69 M params/expert"
+will be out by 2x.
 
 **Both formats still need an offline pass.** Dense is block `[32,32]` ue8m0 and
 `can_use_sm70_turbomind_fp8` refuses anything but `[128,128]` (a refusal, not a
