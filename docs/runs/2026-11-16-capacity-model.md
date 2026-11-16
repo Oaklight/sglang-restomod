@@ -339,6 +339,52 @@ models the MTP question must be answered before a byte total means anything — 
 the first attempt at this page's own arithmetic got it wrong in the other
 direction, by omitting the draft entirely.
 
+#### The repack's own listing, and a factor of exactly two
+
+The IQ2_XS repack's GGUF headers, parsed metadata-only — no tensor data read, all
+five shards, 155.22 GB total:
+
+| class | tensors | bytes | params | bits/param |
+|---|---:|---:|---:|---:|
+| expert | 120 | **149.06 GB** | **543.58 G** | **2.19** |
+| attention | 515 | 3.82 GB | 5.15 G | 5.94 |
+| embed + head | 2 | 0.91 GB | 1.32 G | 5.50 |
+| **engram** | **4** | **0.22 GB** | 0.31 G | 5.50 |
+| other (norms, biases) | 401 | 1.21 GB | 1.51 G | 6.39 |
+
+**The table is not in the repack.** The base checkpoint's 204.15 GB Engram is
+represented by **four tensors totalling 0.22 GB** — `blk.1.engram_gate.weight`
+`[5120, 4]` F32 and `blk.1.engram_kv.weight` `[6144, 25600]` at 5.5 bits/param,
+plus their counterparts. A projection of a table is not the table, so the
+competitor's 155 GB is **experts plus an ordinary dense model**, and whatever
+serves their Engram lives outside the artifact. That is what an I/O tier predicts,
+but it is inferred here, not proven.
+
+**The expert rate is a per-layer mix, not a number.** GSQ-RCO assigns per-layer
+types — **2.06**, **2.31** and **2.56 bits/param**, one tensor carrying all 384
+experts of a layer, **2.19 weighted**. The earlier "2.28 bit from 155 GB ÷ params"
+was wrong twice over: the file mixes types, and it carries non-expert tensors too.
+Quote the per-tensor types with their bytes.
+
+**And the expert count disagrees with the base checkpoint by exactly 2.000.** The
+repack stores full-width experts — `[5120, 2304]` and `[2304, 5120]`, **543.58 G**
+params — while the base stores `[2304, 2560]` and `[5120, 1152]`, **half the K
+dimension**, 271.8 G. The config decides which is a shard: `moe_intermediate_size`
+**2304** matches the repack's down input exactly and is **twice** the base's 1152.
+
+Both readings are internally consistent and cannot both be true:
+
+- **the base is half-K** → one half per expert is published, the other exists only
+  where the repack's author found it, and **the 510.29 GB checkpoint is not runnable
+  on its own**;
+- **the repack padded or merged** → the experts really are 2560-wide and 543.58 G
+  is a conversion artefact.
+
+**The check needs only headers: count expert tensors per layer in the base.** Three
+weights plus three scales per expert means one half; six weights means both. Until
+it is answered, §6.1's 271.8 G is a **lower bound** and every residency figure in
+§6.4 is an **upper bound**.
+
 **Both formats still need an offline pass.** Dense is block `[32,32]` ue8m0 and
 `can_use_sm70_turbomind_fp8` refuses anything but `[128,128]` (a refusal, not a
 fallback); the shipped expert tensors are INT8 with ue8m0 block-16 scales, which
@@ -400,6 +446,13 @@ understates the host tier by 40x and would have made it look viable.
 
 So:
 
+**Sensitivity, because §6.1's expert count is contested by a factor of two.** At the
+repack's 35.39 M params per expert, per-expert bytes double to 35.4 MB, the same
+cache holds **804 slots (5.2%)** instead of 1,513, and the host cost roughly doubles
+again. So every number below is an upper bound on residency and a lower bound on
+cost; the direction of the conclusion does not move, which is why this is stated
+once rather than hedged throughout.
+
 - **The host tier is not a deployment option here.** At ~9.8% residency it costs
   ~92 ms/token against a 17.9 ms/token decode — two orders of magnitude, not a
   tuning knob.
@@ -436,9 +489,10 @@ which is the answer the transfer question was actually asking for.
 | `f_res` realised + policy | multi-node | **answered** — 80.2%, §2.1; prefetch/eviction not printed |
 | duplicate prepared copy | coordinator | **refuted** — §5 |
 | GQA KV layer split | kernel-crafter2 | **dropped** — not the binding term |
-| bluewhale expert bytes | coordinator | **resolved per tensor** — 18.80 MB/expert, 288.8 GB (§6.1); the 7.22 GB residual was three MTP layers, not a double-count |
+| **is the published base checkpoint half-K?** | multi-node | **open, blocking**: base 271.8 G against repack 543.58 G, exactly 2.000x, and the config matches the repack. One header count settles it (§6.1); if yes, the 510.29 GB artifact is not runnable alone |
+| bluewhale expert bytes | coordinator | **per-tensor** — 18.80 MB/expert, 288.8 GB (§6.1), a **lower bound** pending the row above; the 7.22 GB residual was three MTP layers |
 | bluewhale Engram table tier | — | per-token bytes answered (~530 B–2.1 KB); **open**: SSD random-read latency at that granularity, batched under chunked prefill |
-| does the IQ2_XS repack ship the Engram table at all | multi-node | **open** — 155 GB total against 204 GB of table alone, so it must quantize it far below 8 bits or omit it; one per-tensor dump settles it |
+| does the IQ2_XS repack ship the Engram table | multi-node | **answered: no** — four tensors, 0.22 GB, a projection of the table rather than the table (§6.1) |
 | MLA latent sharding under TP | — | **open**; moves the long-context answer by 4x (§6.2) |
 | per-card throughput attribution | kernel-crafter2 | **attributed to capacity and accept length, not kernels**: expert GEMM is 19.1% of a step at 1.70x, ceiling 1.13x, and our kernel volume is 21.6 ms against their 22.9. `docs/runs/2026-11-16-decode-gemm-gap.md` carries the superseded 5–8x and needs a correction |
 | kernel availability per expert format | kernel-crafter | ladder delivered; gating for bluewhale |
