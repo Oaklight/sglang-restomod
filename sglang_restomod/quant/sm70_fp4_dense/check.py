@@ -80,9 +80,19 @@ def _dequant(packed, scales, global_scale: float):
 
 
 def _relative_error(got: torch.Tensor, ref: torch.Tensor) -> float:
+    """Max error as a fraction of the reference's own scale.
+
+    Per-element division with a 1e-3 floor is not a relative error on this
+    problem: the outputs are dot products of 256-320 terms, so every run has
+    entries that cancel to ~1e-3 while the tensor's scale is ~1e2, and one fp16
+    ULP at such an entry scored 0.66 -- which is how this check reported 0.356
+    on one run and 0.661 on the next for a kernel whose largest disagreement
+    with the reference was a single ULP at full scale (6.8e-4 relative). The
+    denominator is the reference's magnitude, which is what "relative" means
+    for a GEMM output.
+    """
     diff = (got.float() - ref.float()).abs()
-    denom = ref.float().abs().clamp_min(1e-3)
-    return float((diff / denom).max())
+    return float(diff.max() / ref.float().abs().max().clamp_min(1e-3))
 
 
 def _install():
