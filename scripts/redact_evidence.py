@@ -124,38 +124,86 @@ _RESIDUAL = [
 ]
 
 
+def bundle_files(directory: pathlib.Path) -> list[pathlib.Path]:
+    """Every regular file in the bundle, at any depth, except the record.
+
+    ``iterdir()`` read only the top level, so a nested directory was neither
+    rewritten nor verified while ``verify()`` returned an empty list — the
+    condition that means "safe to pack" (issue #320). A gate that reports clean
+    on input it never examined is worse than no gate, so the walk is recursive
+    and the same filters apply at every depth.
+
+    Symlinks are not returned. Writing through one would modify a file outside
+    the bundle, and reading one can leave the directory entirely; ``verify``
+    reports them instead of following them.
+    """
+    files: list[pathlib.Path] = []
+    for root, dirs, names in os.walk(directory):
+        dirs.sort()
+        for name in sorted(names):
+            path = pathlib.Path(root) / name
+            if path.name == "redaction.txt" or path.is_symlink():
+                continue
+            files.append(path)
+    return files
+
+
+def bundle_symlinks(directory: pathlib.Path) -> list[pathlib.Path]:
+    """Every symlink in the bundle: not followed, and not silently dropped."""
+    found: list[pathlib.Path] = []
+    for root, dirs, names in os.walk(directory):
+        for name in sorted(dirs):
+            path = pathlib.Path(root) / name
+            if path.is_symlink():
+                found.append(path)
+        for name in sorted(names):
+            path = pathlib.Path(root) / name
+            if path.is_symlink():
+                found.append(path)
+    return found
+
+
+def _relative(path: pathlib.Path, root: pathlib.Path) -> str:
+    """Name a file by its path inside the bundle, so a leak names its file."""
+    try:
+        return str(path.relative_to(root))
+    except ValueError:  # pragma: no cover - every path comes from a walk of root
+        return path.name
+
+
 def verify(directory: pathlib.Path, denylist: list[str]) -> list[str]:
     """Return every residual identity marker left in the bundle.
 
     ``run`` calls it after rewriting; an empty list is the condition for
     packing. A non-empty list is a failure, not a warning.
     """
-    leaks: list[str] = []
-    for path in sorted(directory.iterdir()):
-        if not path.is_file() or path.name == "redaction.txt":
-            continue
+    leaks: list[str] = [
+        f"{_relative(path, directory)}: symlink, not inspected"
+        for path in bundle_symlinks(directory)
+    ]
+    for path in bundle_files(directory):
         try:
             text = path.read_text()
         except (UnicodeDecodeError, OSError):
+            leaks.append(f"{_relative(path, directory)}: unreadable, not inspected")
             continue
         if "\0" in text:
+            leaks.append(f"{_relative(path, directory)}: binary, not inspected")
             continue
         leaks.extend(
-            f"{path.name}: residual {name}"
+            f"{_relative(path, directory)}: residual {name}"
             for name, pattern in _RESIDUAL
             if pattern.search(text)
         )
         for item in denylist:
             if re.search(re.escape(item), text, re.IGNORECASE):
-                leaks.append(f"{path.name}: residual denylist name")
+                leaks.append(f"{_relative(path, directory)}: residual denylist name")
     return leaks
 
 
 def run(directory: pathlib.Path, denylist: list[str]) -> dict[str, int]:
     counts: dict[str, int] = {}
-    for path in sorted(directory.iterdir()):
-        if not path.is_file() or path.name == "redaction.txt":
-            continue
+    for path in bundle_files(directory):
         try:
             text = path.read_text()
         except (UnicodeDecodeError, OSError):
