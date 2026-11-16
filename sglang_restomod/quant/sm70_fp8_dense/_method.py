@@ -132,8 +132,58 @@ _SM70_FP8_PREFILL_DENSE_SHAPES = {
     "out_proj": (1536, 5120),
     "o_proj": (1536, 5120),
 }
+# Qwen3.8-Flash-Next TP4 shapes, per rank, as (K, N). Off by default: the
+# 27B table above is the one validated against real weights and bitwise gates,
+# and these have only been checked against the checkpoint and the launch, not
+# against an output comparison. Enable with
+# SGLANG_SM70_FP8_PREFILL_EXACT_DENSE_SHAPES=flashnext.
+#
+# Every shape is 128-aligned on both sides, which both the block-128 scale
+# layout and the dispatch require. Each is smaller than the 27B table's largest
+# entry, so the shared workspace below is still sized by that one -- but it is
+# computed over both tables, not assumed from this one.
+_SM70_FP8_PREFILL_DENSE_SHAPES_FLASHNEXT = {
+    # 12 full-attention layers, QKV fused by the loader. The first derivation
+    # said 3328 from the config's q/k/v head counts; the checkpoint's fused
+    # tensor is 3584 wide per rank, which is what the candidate log measured.
+    "qkv_proj": (2560, 3584),
+    # both attention families' output projections: K = 6144 / 4 = 1536
+    "o_proj": (1536, 2560),
+    "out_proj": (1536, 2560),
+    # 36 linear-attention layers, in_proj_qkv + in_proj_z fused per layer
+    "in_proj_qkvz": (2560, 4096),
+    "ple.key_proj": (2560, 2560),
+    "ple.value_proj": (2560, 2560),
+}
+ENV_EXACT_DENSE_SHAPES = "SGLANG_SM70_FP8_PREFILL_EXACT_DENSE_SHAPES"
+
+
+def _get_sm70_fp8_exact_dense_shape_set() -> str:
+    """Return the requested extra shape set, refusing a value we do not know.
+
+    A misspelt value used to read as "off": ``flash-next``, ``FLASHNEXT`` and
+    ``flashnextt`` all left the table disabled and the launch reported the
+    baseline as if the flag worked. That is the failure this module has already
+    paid for twice -- a configuration that is silently ignored still counts as
+    evidence. Raise on an unknown value, the way ``_env_flag`` does.
+    """
+    value = os.environ.get(ENV_EXACT_DENSE_SHAPES, "").strip().lower()
+    if value not in ("", "flashnext"):
+        raise ValueError(
+            f"{ENV_EXACT_DENSE_SHAPES} must be empty or 'flashnext'; got {value!r}."
+        )
+    return value
+
+
+# Sized over every table, not the 27B one alone: a smaller set today is how a
+# too-small buffer gets added tomorrow.
 _SM70_FP8_PREFILL_DENSE_WORKSPACE_ELEMENTS = max(
-    k * n for k, n in _SM70_FP8_PREFILL_DENSE_SHAPES.values()
+    k * n
+    for table in (
+        _SM70_FP8_PREFILL_DENSE_SHAPES,
+        _SM70_FP8_PREFILL_DENSE_SHAPES_FLASHNEXT,
+    )
+    for k, n in table.values()
 )
 _SM70_FP8_PREFILL_DENSE_WORKSPACE_BYTES = (
     _SM70_FP8_PREFILL_DENSE_WORKSPACE_ELEMENTS * torch.float16.itemsize
@@ -301,12 +351,57 @@ def _maybe_prepare_sm70_fp8_qpn8(layer: torch.nn.Module) -> None:
     )
 
 
+def _sm70_fp8_layer_tp_size(layer: torch.nn.Module) -> tuple[int | None, str]:
+    """Return ``(tp_size, source)`` for ``layer``.
+
+    ``LinearBase`` in the pinned engine carries no ``tp_size`` attribute: every
+    occurrence in ``sglang/srt/layers/linear.py`` is a local from
+    ``get_group_rank_size``, and nothing in ``sglang/srt`` assigns one to a
+    linear module. The gate below used ``getattr(layer, "tp_size", 1)``, so on
+    every site and every model it evaluated ``1 != 4`` and refused every layer.
+    Both exact-dense tables admitted nothing, silently, because the only log
+    line was the per-layer one this feature adds.
+
+    The process-wide value the engine does expose is ``get_parallel().tp_size``.
+    The source is returned with it so a log line can say which accessor
+    answered; ``None`` means both were unavailable and the caller should fall
+    back to the shape tables, which are TP4-specific already.
+    """
+    value = getattr(layer, "tp_size", None)
+    if value is not None:
+        return int(value), "layer.tp_size"
+    try:
+        from sglang.srt.runtime_context import get_parallel
+
+        return int(get_parallel().tp_size), "get_parallel().tp_size"
+    except Exception:  # noqa: BLE001 - a probe, not control flow
+        return None, "unavailable"
+
+
 def _is_sm70_fp8_prefill_exact_dense_layer(layer: torch.nn.Module) -> bool:
-    if getattr(layer, "tp_size", 1) != 4:
+    tp_size, _source = _sm70_fp8_layer_tp_size(layer)
+    if tp_size is not None and tp_size != 4:
         return False
+    shape = tuple(layer.weight.shape)
+    # Modules converted by ``fp8_dense_quant`` keep no ``prefix``, so the suffix
+    # is empty and a name-matched gate can never admit them. The dispatched
+    # kernel is bit-identical to the TurboMind GEMM on every admitted shape, so
+    # a shape match cannot change the result, only the kernel that computes it.
+    # This fallback is confined to the env-gated Flash-Next table: the default
+    # 27B path keeps its name-and-shape admission exactly as it was.
     suffix = getattr(layer, "prefix", "").rsplit(".", 1)[-1]
     expected = _SM70_FP8_PREFILL_DENSE_SHAPES.get(suffix)
-    return expected is not None and tuple(layer.weight.shape) == expected
+    if expected is not None and shape == expected:
+        return True
+    if _get_sm70_fp8_exact_dense_shape_set() != "flashnext":
+        return False
+    extra = _SM70_FP8_PREFILL_DENSE_SHAPES_FLASHNEXT.get(suffix) if suffix else None
+    # The TurboMind tensor is already in logical KxN here, the same layout the
+    # 27B table above is written in.
+    if extra is not None and shape == extra:
+        return all(dim % 128 == 0 for dim in extra)
+    admitted_shapes = set(_SM70_FP8_PREFILL_DENSE_SHAPES_FLASHNEXT.values())
+    return shape in admitted_shapes and all(dim % 128 == 0 for dim in shape)
 
 
 def _get_sm70_fp8_prefill_exact_dense_workspace(
@@ -496,6 +591,29 @@ def prepare_sm70_turbomind_fp8_linear(layer: torch.nn.Module) -> None:
         if workspace is not None:
             layer.sm70_fp8_prefill_exact_dense_workspace_ptr = workspace.data_ptr()
             layer.sm70_fp8_prefill_min_tokens = _get_sm70_fp8_prefill_min_tokens()
+            # The gate is silent by construction: a suffix or shape that misses
+            # admits nothing and says nothing, and the arm then measures the
+            # baseline again. One line per admitted layer makes the count
+            # greppable from the launch log.
+            logger.info(
+                "sm70_fp8_dense: exact-dense prefill layer admitted: %s %s",
+                getattr(layer, "prefix", "<no-prefix>"),
+                tuple(layer.weight.shape),
+            )
+    if _get_sm70_fp8_exact_dense_shape_set() == "flashnext":
+        # A zero admitted count must name its cause. Without this line "the
+        # shapes are absent", "the suffix is empty" and "the tp guard refused"
+        # all look the same in the log -- and on 2026-11-15 the third was the
+        # true one for 408 of 416 candidates on Flash-Next.
+        tp_size, tp_source = _sm70_fp8_layer_tp_size(layer)
+        logger.info(
+            "sm70_fp8_dense: candidate prefix=%s shape=%s tp=%s (%s) admitted=%s",
+            getattr(layer, "prefix", "<no-prefix>"),
+            tuple(layer.weight.shape),
+            tp_size,
+            tp_source,
+            _is_sm70_fp8_prefill_exact_dense_layer(layer),
+        )
     logger.info_once("SM70 (V100): using TurboMind W8A16 block-FP8 dense GEMM.")
     if is_gated_silu:
         logger.info_once(
