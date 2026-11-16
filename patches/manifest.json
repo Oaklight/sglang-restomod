@@ -70,6 +70,20 @@
       "reason": "mhc_pre's split-K path selects hidden_block from a two-entry table of hc_hidden_size values (16384->256, 28672->128) and raises for anything else, so _prewarm_mhc_kernels in load_weights aborts any DeepSeek-V4 model whose hc_mult*hidden_size is another size -- V4.1-Flash-1017 is 4*5120=20480. The kernel is generic: mhc_pre_gemm_sqrsum_splitk_kernel asserts only that split_size = hc_hidden_size//split_k divides by hidden_block, and the two entries are the largest candidate block that divides (512->256, 896->128). Select the largest of {256,128} that divides split_size and raise a message naming hc_hidden_size, split_k and split_size when none does. SM70 caveat, measured 2026-11-16: the generalized selection reaches the kernel but TileLang cannot compile it on Volta -- tilelang/tileop/gemm/gemm_mma_sm70.py:44 -> intrinsics/mma_sm70_macro_generator.py:359 make_mma_load_layout raises 'ValueError: Unsupported dtype float32', because this GEMM's fn operand is fp32 and the sm70 MMA macro generator has no fp32 load layout. So this patch is correct for other architectures and unusable on sm70; the SM70 route is the torch fallback that 0005 selects.",
       "source": "local, 2026-11-16 (bluewhale SM70 bring-up)",
       "upstream_status": "pending"
+    },
+    "0007-dsv4-lazy-flash-mla.patch": {
+      "paths": [
+        "python/sglang/srt/layers/attention/deepseek_v4_backend.py"
+      ],
+      "site_hashes": {
+        "python/sglang/srt/layers/attention/deepseek_v4_backend.py": {
+          "unpatched": "49af6e1e7f6f2f6f58f2f2db983e0b84243dbf114cdecae68f396a66271a094f",
+          "patched": "ec81d6a017143941cd9bc5923a9f0fad58b7edefbf3e34cb280e15756417bbd2"
+        }
+      },
+      "reason": "DeepseekV4AttnBackend.__init__ imports flash_mla_interface under `if is_cuda():`, and flash_mla is built only for the architectures it targets, so on sm70 the import raises ModuleNotFoundError at construction -- before any subclass can replace the decode path. All three --dsv4-attn-backend choices subclass this class, so no flag avoids it. Defer the import: compute the SWA layout unconditionally, resolve flash_mla inside a try and, when absent, bind a callable that raises a named error at the terminal call instead of a ModuleNotFoundError at construction. Behaviour is unchanged wherever flash_mla exists.",
+      "source": "local, 2026-11-16 (bluewhale SM70 bring-up)",
+      "upstream_status": "pending"
     }
   }
 }

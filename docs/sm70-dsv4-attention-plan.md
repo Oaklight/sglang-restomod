@@ -71,6 +71,13 @@ code in `deepseek_v4_backend.py` is `_low_ratio_compress_torch` (`:3761`),
 one sub-step of the compression. The paged KV addressing, the sparse top-k
 selection, the SWA window and the ratio-1/2 paths all have to be written.
 
+**Stage 1 must force `SGLANG_OPT_FLASHMLA_SPARSE_PREFILL=0`.** The sparse
+prefill path is on by default, and `_use_sparse_prefill`
+(`deepseek_v4_backend.py:2917`) is consulted at `:2950`, `:4043` and `:4263`
+before any dense fallback. A backend that supplies no sparse implementation
+would take the sparse branch and never reach its own code, so the switch is
+part of stage 1, not a tuning knob.
+
 Acceptance, both required:
 
 1. **One token.** `models/bluewhale/mini-real` serves a prompt and returns

@@ -1,0 +1,47 @@
+diff --git a/python/sglang/srt/layers/attention/deepseek_v4_backend.py b/python/sglang/srt/layers/attention/deepseek_v4_backend.py
+--- a/python/sglang/srt/layers/attention/deepseek_v4_backend.py
++++ b/python/sglang/srt/layers/attention/deepseek_v4_backend.py
+@@ -1260,16 +1260,36 @@
+         self.req_to_token_pool = model_runner.req_to_token_pool
+         self.token_to_kv_pool: DeepSeekV4TokenToKVPool = model_runner.token_to_kv_pool
+         if is_cuda():
+-            from sglang.kernels.ops.attention import flash_mla_interface
+-
+             self._swa_interleaved = (
+                 self.token_to_kv_pool.get_swa_key_layout().is_interleaved
+             )
+-            self._flash_mla_with_kvcache = functools.partial(
+-                flash_mla_interface.flash_mla_with_kvcache,
+-                use_legacy=not self._swa_interleaved,
+-            )
+-            self._flashmla_split_kv_min_topk = flash_mla_interface.SPLIT_KV_MIN_TOPK
++            # flash_mla has a build for the architectures it targets and none
++            # for others (sm70 among them), so the import is deferred to the
++            # call that needs it. A platform without flash_mla can then still
++            # construct a backend that does not use it, and a backend that
++            # does use it fails at the terminal call with the reason below
++            # instead of at construction with ModuleNotFoundError.
++            try:
++                from sglang.kernels.ops.attention import flash_mla_interface
++            except ImportError:
++
++                def _flash_mla_unavailable(*_args, **_kwargs):
++                    raise RuntimeError(
++                        "flash_mla is not available on this platform; the DSV4 "
++                        "attention path that calls it cannot run here. Use a "
++                        "backend that does not depend on flash_mla."
++                    )
++
++                self._flash_mla_with_kvcache = _flash_mla_unavailable
++                self._flashmla_split_kv_min_topk = 0
++            else:
++                self._flash_mla_with_kvcache = functools.partial(
++                    flash_mla_interface.flash_mla_with_kvcache,
++                    use_legacy=not self._swa_interleaved,
++                )
++                self._flashmla_split_kv_min_topk = (
++                    flash_mla_interface.SPLIT_KV_MIN_TOPK
++                )
+         # The C4 state ring is addressed per SWA page, so a page holds whole windows.
+         assert self.token_to_kv_pool.swa_page_size % SWA_WINDOW == 0
+         self.hisparse_coordinator = model_runner.hisparse_coordinator
