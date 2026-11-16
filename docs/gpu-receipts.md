@@ -228,6 +228,29 @@ and bus ids, and the absolute checkpoint path. Each is bound by the receipt
 that cites it, so none were rewritten; read them as disclosing that much about
 the host that produced them.
 
+The 2026-11-16 bundles `evidence-d2f6a802`, `evidence-1343479` and
+`evidence-cc24ae7` are the same class of case for a different reason: they were
+redacted with whatever copy of this script the packer's checkout held, which was
+cut before the account and node rules landed, and the packer supplied no
+denylist, so the GPU host name travelled with them. Their release notes disclose
+it. They were not rewritten, for the reason above.
+
+**Pack with `scripts/pack_evidence.sh`.** It takes the redaction script from
+`origin/main` at pack time, refuses without an `IDENTITY_DENYLIST`, refuses if
+the bundle already records a different script hash, runs the redaction, writes
+`redaction-script.txt` (ref, commit, script sha256) into the bundle, and only
+then calls `oob pack`:
+
+```sh
+IDENTITY_DENYLIST="host-a,host-b" scripts/pack_evidence.sh evidence/<sha> /tmp/evidence.tgz
+```
+
+It prints `manifest digest` and `archive sha256` as two labelled numbers. They
+are not the same number: a receipt binds the manifest digest, and a downloader
+can check the archive hash. Quoting the wrong one is a silent mismatch that
+only the verifier catches.
+
+
 Copy `/tmp/evidence.tgz` to the operator host, and upload it to an HTTPS
 location the verifier can reach (a release asset, an internal static host, or
 any signed public URL).
