@@ -228,11 +228,15 @@ yet a clean answer: **12 RING calls in the window still need an explanation**, a
 the suite reports failure-absent-only, so "no failure line" was never evidence
 either way.
 
-**A cross-stack comparison makes that concrete:** their trace spends **10.96 ms
-per step in two cross-device reduce kernels plus 4.05 ms of memcpy**, while ours
-spends **0.61 ms in the 1-shot all-reduce**. Different stacks and different
-models, so it is not a ratio — but it says our collective path is not the problem
-and supports the reading that the custom kernel is doing its job.
+**Directional, not a ratio: their step spends ~15 ms in communication where ours
+spends under one.** On their trace two cross-device reduce kernels take **10.96
+ms/step** plus **4.05 ms of memcpy**; on ours a single 1-shot all-reduce takes
+**0.61 ms**. The mechanism is the point — two cross-device reduces plus a copy
+against one fused allreduce — and it puts the communication cost on their side of
+the ledger. **It must not become "we win comm by 20x":** different stacks,
+different models, and **collective durations are the least trustworthy numbers a
+profiler produces**, with spin-wait inflated on both sides. Direction and
+mechanism are recorded; the magnitude is not.
 
 **The capture is partial, so these shares bound the order of the families and
 nothing else.** 12 GEMV + 12 Marlin calls per step against ~36 expert layers, and
@@ -431,6 +435,23 @@ which is the answer the transfer question was actually asking for.
 | MLA latent sharding under TP | — | **open**; moves the long-context answer by 4x (§6.2) |
 | per-card throughput attribution | kernel-crafter2 | **attributed to capacity and accept length, not kernels**: expert GEMM is 19.1% of a step at 1.70x, ceiling 1.13x, and our kernel volume is 21.6 ms against their 22.9. `docs/runs/2026-11-16-decode-gemm-gap.md` carries the superseded 5–8x and needs a correction |
 | kernel availability per expert format | kernel-crafter | ladder delivered; gating for bluewhale |
+
+### 7.1 Corrections in the record, 2026-11-16
+
+Five numbers moved today. They are listed together so a reader of the run notes
+sees the churn rather than a tidy history, and so no one quotes a superseded value
+from an older message.
+
+| claim | status | what it was |
+|---|---|---|
+| decode expert deficit **5–6x** per call | **retracted → 1.70x per step** | attribution covered one piecewise-graph annotation holding 22% of the reference's kernels, so their bucket was under-counted ~4.5x. A denominator error, not a near miss. |
+| collectives **24.7%** of the decode window | **retracted → 0.199 ms/step (~3.3%)** | the shares came from a capture holding two 4,096-token prefills despite `profile_stages=["decode"]` |
+| **7.22 GB** double-count in the expert class | **refuted → three MTP draft layers** | my hypothesis; the unique-name sum is 96,085 names, 0 duplicates, 510.29 GB |
+| **116 MB/token** of expert host traffic | **retracted → 4.51 GB/token** | the gross figure omitted the per-layer multiplier: top-k is per layer |
+| **543.6 G** expert parameters | **deleted → 271.8 G weights, 288.8 GB with scales** | `2304` is w1's output; assuming `hidden_size` 5120 was the expert input invented a 2-way K-split |
+
+Two of the five were mine. Both are the same failure: a number that reconciled
+with something nearby, so it was not checked against the artifact.
 
 ## 8. What this page does not say
 
