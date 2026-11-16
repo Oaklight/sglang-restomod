@@ -26,18 +26,18 @@ validated on hardware.
 
 - `attest` records a component whose module fails to import as `inactive` with
   the import error; the loader can no longer report "loaded" while the engine
-  serves its own backend (#TBD).
+  serves its own backend (#297).
 - `restomod doctor` fails when the checkout's recorded commit does not match
   the declared `[engine].commit`; a stale site tree is an error, not a
-  configuration choice (#TBD).
+  configuration choice (#297).
 - `BINARIES.toml`, `restomod doctor`, and `scripts/fetch_binaries.py` /
   `scripts/build_binaries.py`: pin the out-of-repo artefacts (prebuilt
   libraries, flashinfer fork, container image) by sha256 and provenance, and
   fail loudly when a selected component's artefact is missing or mismatched
-  (#TBD).
+  (#295)†.
 - The hand-tuned V100 MoE tiles (E=512, N=160) and the QPN8 decode source now
   travel with the wheel; `SGLANG_SM70_QPN8_SRC` is an override, not a
-  requirement (#TBD).
+  requirement (#295)†.
 - Opt-in component loading through `SGLANG_RESTOMOD_COMPONENTS`; with the
   variable unset the plugin loads and changes nothing (#56).
 - `fp8_moe`: block-FP8 expert GEMM bound from the prebuilt TurboMind library
@@ -91,13 +91,13 @@ validated on hardware.
 
 - `restomod doctor` says what a failed check found instead of reusing the label
   for the passing state, so a commit mismatch prints "does not match" rather
-  than "matches" (#TBD).
+  than "matches" (#303).
 - `scripts/redact_evidence.py` keeps the bundle's redaction record across
   passes: a second pass that removes nothing no longer rewrites every counter
-  to zero, and the rules no longer re-match their own output (#TBD).
+  to zero, and the rules no longer re-match their own output (#303).
 - A suite pack reports the archive's own sha256 beside the manifest digest
   `oob pack` prints, because the manifest digest cannot say which directory a
-  person means (#TBD).
+  person means (#303).
 - The GDN tail chunk is padded and trimmed instead of refused, so prompts whose
   token count is not a multiple of 64 stay on TileLang (#287)†.
 - A decode-GEMV skip is logged once per shape instead of once per layer (#269)†.
