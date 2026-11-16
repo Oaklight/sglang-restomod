@@ -189,3 +189,23 @@ Both official checkpoints declare `weight_block_size=[128,128]`, and the SM70
 TurboMind kernel accepts exactly that granularity. A per-tensor FP8 checkpoint
 would need a different kernel; requantizing to block FP8 offline is cheaper than
 adding one.
+
+## SM70: the packed MXFP8 (W8A16) dense route is fork-only
+
+`dg1kjd/sglang-sxm2` carries a dense MXFP8 path that keeps e4m3 weights
+packed and expands UE8M0 32x32 scales to `[N, K/32]` for a decode GEMV
+(`prepare_mxfp8_layer_for_sm70_marlin`, `expand_mxfp8_ue8m0_row_scales`,
+`_unpack_mxfp8_layer_to_fp16` in its `marlin_utils_fp8.py`; two layer markers
+read by its `fp8.py` forward). **None of it is at the pin**, and the fast half
+is not a patch: its decode GEMV is a fork-side JIT kernel, so adopting the
+packed route is a kernel port wearing a dispatch patch's clothes.
+
+Before porting it, know that the pin already has a route for the same
+checkpoint shape. `mxfp8_block_convert_required()`
+(`srt/utils/common.py:4685`) converts MXFP8 to block-fp8 `[128,128]` at load,
+and it is HIP-only by default — but `fp8.py:145` ORs it with
+`SGLANG_FORCE_MXFP8_BLOCK_CONVERT`, which is platform-independent. So on SM70
+the untested-but-supported path is that environment variable, not a patch:
+it turns a 32x32 UE8M0 dense layer into `[128,128]` block fp8, which is the
+group size marlin_v100's FP8 kernel accepts. Unverified on this hardware as
+of 2026-11-16; until an arm runs it, neither route is known to work.
