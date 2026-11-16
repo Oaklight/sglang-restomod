@@ -100,10 +100,14 @@ Flash-Next number, check that the model has the component at all:
   Measure with M3; do not import the number.
 - **Engram / embedding tables** — Flash-Next offloads PLE to host. A model with a large
   sparse lookup table pays **host** memory and I/O, not card memory. Report it
-  separately and keep it out of the card budget, or the plan double-counts.
+  separately and keep it out of the card budget entirely, or the plan double-counts.
+  The asymmetry is deliberate: **host-side tables stay out of `fixed`, the drafter stays
+  in.** One is a tier, the other is resident.
 - **Drafter** — with speculative decoding the second model's static cost lands inside
-  M4's residual unless it is named. Measure the SPEC=0 arm if it matters, and say which
-  arm the residual belongs to.
+  M4's residual unless it is named, and it *belongs* in the card budget, so it must be
+  measured rather than excluded. Take a SPEC=0 arm on the new model specifically to size
+  it: the difference between the two residuals is the drafter's static cost. Report
+  which arm every residual belongs to.
 
 ## Invariants that make the numbers comparable
 
