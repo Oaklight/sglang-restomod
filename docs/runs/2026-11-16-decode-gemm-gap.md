@@ -1,10 +1,12 @@
 # 2026-11-16 — The decode GEMM gap: where it is, and what removing it is worth
 
-Status: **measured.** The per-card decode deficit is a kernel gap, not a
-capacity gap: two GEMM families hold 52-62% of our verify step and run 5-8x
-slower per call than the reference's, and the expert half of it localises to
-the projection our fast kernel cannot read. One arm was served for this page
-and one decode window was traced; the capacity model is a separate page
+Status: **measured, with one partial capture.** The per-card decode deficit is
+a kernel gap, not a capacity gap: dense and expert GEMM hold **63% of the
+recorded verify-window kernel time** and run 5-8x slower per call than the
+reference's, and the expert half localises to the projection our fast kernel
+cannot read. One arm was served and one decode window was traced for this page;
+the window records about one step in three, and every share below says so. The
+capacity model is a separate page
 ([`2026-11-16-capacity-model.md`](2026-11-16-capacity-model.md)) and nothing
 here restates it.
 
@@ -42,56 +44,82 @@ precision choice, and turning the conversion off costs decode. Greedy decode
 carries a content-dependent accept (3.12 vs 2.72), so the step and per-token
 rows are the comparison; the tok/s row is not.
 
-## The decode-window census
+## The decode-window census, and the correction it needed
 
-`profile_decode.py` (`/start_profile` with `profile_stages=["decode"]`, warm
-4096-token prompt with a full cache hit) on the same arm; one TP-0 trace,
-34,107 kernel instances, 1389.5 ms of kernel time.
+One `profile_decode.py` run (`/start_profile` with `profile_stages=["decode"]`,
+warm 4096-token prompt with a full cache hit) on the same arm; one TP-0 trace.
 
-| family | instances | ms | % |
+**Window totals, so every share below converts to milliseconds:** 34,107 kernel
+instances totalling **1389.5 ms**, holding 40 `step[VERIFY bs=1]` spans of
+**522.5 ms** wall. Of that kernel time only **238.3 ms / 23,897 instances** fall
+inside the verify spans.
+
+### Whole-capture shares — prefill-weighted, and not quotable as decode
+
+| family | ms | % |
+|---|---:|---:|
+| collective | 343.4 | 24.7 |
+| dense GEMM | 322.8 | 23.2 |
+| expert GEMM (Marlin) | 299.6 | 21.6 |
+| other | 279.6 | 20.1 |
+| expert GEMM (other) | 104.3 | 7.5 |
+| linear-attn (GDN) | 28.9 | 2.1 |
+| attention | 10.8 | 0.8 |
+
+**This table is not the decode window, and it was first reported as one.** The
+capture also holds two `step[EXTEND bs=1 toks=4096]` spans (1536 ms) and two
+`step[DRAFT toks=4096]` spans, despite the decode-only staging, and the large-M
+prefill kernels dominate several families inside it: the Marlin calls average
+0.48 ms across the capture but 43.6 us inside verify, and the 1-shot all-reduce
+accounts for 285.1 ms across the capture against 8.0 ms inside verify.
+
+### Verify-spans only, with per-step rates
+
+| family | ms | % of 238.3 | per step (40) |
 |---|---:|---:|---:|
-| collective | 1316 | 343.4 | 24.7 |
-| dense GEMM | 7576 | 322.8 | 23.2 |
-| **expert GEMM (Marlin)** | 624 | **299.6** | **21.6** |
-| other | 21428 | 279.6 | 20.1 |
-| expert GEMM (other) | 1777 | 104.3 | 7.5 |
-| linear-attn (GDN) | 625 | 28.9 | 2.1 |
-| attention | 761 | 10.8 | 0.8 |
+| dense GEMM | 95.8 | 40.2 | 2.40 ms |
+| other | 59.9 | 25.1 | 1.50 ms |
+| expert GEMM (other: ours, Triton, reduce) | 34.1 | 14.3 | 0.85 ms |
+| expert GEMM (Marlin) | 20.9 | 8.8 | 0.52 ms |
+| linear-attn (GDN) | 11.9 | 5.0 | 0.30 ms |
+| collective | 8.7 | 3.7 | 0.22 ms |
+| attention | 6.9 | 2.9 | 0.17 ms |
 
-The expert families, by kernel name:
+Per name inside the verify spans: our `decode_moe_gemv_kernel` 480 calls at
+**61.4 us**, `sm70_marlin_moe_gemm_kernel` 480 calls at **43.6 us**,
+`all_reduce_1shot` 983 calls at **8.1 us**, NCCL ring 12 calls at 63.0 us.
 
-| kernel | calls | ms | ms/call |
-|---|---:|---:|---:|
-| `sm70_marlin_moe_gemm_kernel` (two instantiations) | 48 + 576 | 156.9 + 142.7 | 0.48 |
-| `decode_moe_gemv_kernel` (ours, no M tile) | 528 | 32.3 | **0.061** |
-| `fused_moe_kernel` (Triton, draft model) | 64 | 51.4 | 0.80 |
-| `moe_sum_reduce_kernel` | 577 | 17.1 | 0.03 |
-| `moe_align_block_size_kernel` | 608 | 3.6 | 0.01 |
+**The capture is partial and the shares are upper bounds, not a census.** Twelve
+GEMV calls and twelve Marlin calls per step against roughly 36 expert layers
+(the module's own note), and 24.6 collectives per step against the ~96 a 48-layer
+TP4 step issues, say one step in three is recorded. So the family table can rank
+what is large, not what a fix would save — those savings need the ms totals
+above plus a complete window.
 
-**Both paths run, and Marlin carries 85% of the expert time** (299.6 of
-352.5 ms), at **8x the per-call cost of our own kernel**. The window held 40
-verify steps (`step[VERIFY bs=1]`, 13.1 ms span each); the trace also holds two
-`step[EXTEND bs=1 toks=4096]` spans totalling 1536 ms, so it is **not
-decode-pure** despite the staging and those spans are excluded from every
-statement above.
+**Two readings this replaces.** The collectives are **not** the largest decode
+family: at bs=1 they are 8.1 us per call and 0.22 ms per captured step, i.e.
+latency per hand-off rather than bandwidth, and the whole-capture 24.7% is the
+4096-token prefills. And the expert time is **not** Marlin-dominated at decode:
+inside verify the two paths are 20.9 ms and 29.5 ms. Both paths run, at
+1.4:1 in Marlin's favour, which is a different statement from the 85% the
+whole-capture table implies.
 
-### Which shape each path serves — inference, stated as such
+### Which shape each path serves — inference, and the instrument that would settle it
 
-Per rank after TP4 the routed shapes are **w13 n=320, k=2560** and **down
-n=160, k=2560**. Our kernel's admission (`decode_gemv.supports`) requires
-`n % 64 == 0` and an odd `n/64`, so w13 passes (5) and down fails
-(`160 % 64 = 32`); and it requires `size_m <= MAX_M = 8`, which at MTP4 means
-batch sizes up to 2.
+Per rank after TP4 the routed shapes are **w13 n=320, k=2560** and **down n=160,
+k=2560**. Our kernel's admission (`decode_gemv.supports`) requires
+`n % 64 == 0` with an odd `n/64`, so w13 passes (5) and down fails
+(`160 % 64 = 32`); and it requires `size_m <= MAX_M = 8`, which at MTP4 admits
+batch sizes up to 2. The served log confirms the capture side
+(`decode gemv skipped: unsupported m=32 n=320 k=2560 topk=10 block=8`, the w13
+call refused by the M cut at bs=8), and at runtime bs=1, m=4, so w13 is
+admitted.
 
-The served log settles the capture side: at bs=8 capture,
-`decode gemv skipped: unsupported m=32 n=320 k=2560 topk=10 block=8` — the w13
-call, refused by the M cut, **at capture time**. At runtime in this window
-bs=1, m=4, so w13 is admitted. The instance counts agree with that reading
-(528 = 48 layers x 11 windows for one shape; Marlin's two instantiations cover
-the other), but **the census counts kernels, not shapes**: without a
-correlation-to-shape join the split is inferred from eligibility plus counts.
-That join, or a counter inside the kernel wrapper, is the one measurement that
-would close it.
+That the two 480-call series are one shape each is **inference from eligibility
+plus counts**, not from the trace. The cheap instrument is a counter, not
+another profile window: an `int[4]` incremented by `n` inside `maybe_call` and
+inside the Marlin dispatch, printed at teardown, answers which shape each path
+serves and what each costs per call.
 
 ## Attribution: the M tile, not split-K, not the repack
 
@@ -111,15 +139,23 @@ tile, which is why its per-call cost is a fraction of ours.
 kernel at bs<=2, so raising `MAX_M` (with the workspace check that
 `decode_gemv._workspace_for` exists for — a resize inside a CUDA-graph capture
 is an illegal memory access) is the cheap half. Down cannot reach the kernel at
-all: `160 % 64 != 0`, and the module records a measured wash for the even-N
-shape (49.3 us against Marlin's 48.3 us) from before the sharding made that
-case moot. A down fix is a different kernel or a padded/repacked 192-wide tile.
+all: `160 % 64 != 0`. The module records 49.3 us for our GEMV against Marlin's
+48.3 us on that shape, which was read as "a wash, not worth pursuing" — that
+reading is retired: Marlin is the slow path it has to beat, and in the verify
+window above Marlin spends 43.6 us per down call where our w13 call, twice the
+work, spends 61.4 us. So the wash says our kernel barely beat the slow path on
+that shape, not that the shape is hopeless. The constraint is `160 % 64 != 0`,
+so the fix is a build — a 192-wide padded tile or a different kernel — not a
+threshold change.
 
 ## What closing the buckets is worth
 
-Per verify step, from the traced arm and the clean-box dense measurement:
-expert 5.8-6.8 ms (17-20%) and dense 10.5-12.3 ms (31-37%); on the clean box
-the dense cluster is 9.5-11.3 ms of a 26.8-28.6 ms step (35-42%). Replacing
+Per verify step, from the **earlier traced arm** (lambda1 4-7, profiler on
+both engines) and the clean-box dense measurement: expert 5.8-6.8 ms (17-20%)
+and dense 10.5-12.3 ms (31-37%); on the clean box the dense cluster is
+9.5-11.3 ms of a 26.8-28.6 ms step (35-42%). Today's window is consistent in
+order after its one-in-three scaling (1.26 ms/step recorded for the two expert
+paths, ~3.8 ms scaled) but is not precise enough to replace those figures. Replacing
 both rates with the reference's (1.0 and 2.2 ms) removes 12.1-14.9 ms of a
 26.8 ms step: 3.10 tokens/step at 11.9-14.7 ms is **210-260 tok/s on four
 cards, 52-65 per card**, against the reference's measured 55.9 (and 66.6 in
@@ -131,7 +167,10 @@ two buckets' measured 5-8x per-call ratio makes plausible rather than proven.
 
 - It does not say the dense bucket can reach 2.2 ms on our stack. It says the
   precision is not the reason it does not.
-- It does not separate w13 from down in the trace; that is the open join.
+- It does not separate w13 from down in the trace; a wrapper counter settles
+  that faster than a join, and it is the next instrument.
+- It does not rank the decode families reliably: the capture holds roughly a
+  third of a step's kernels, so the shares bound the order, not the savings.
 - It does not touch capacity. The same policy inverts on `bluewhale`, where
   residency is 18.4% and the host tier costs ~45 ms/token — that is the
   capacity page's result, and it is why decode is the part of this work that
