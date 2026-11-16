@@ -353,7 +353,7 @@ Config (cited): 40 layers, 384 routed experts, top-6, `moe_intermediate_size`
 | **embedding table, 204 GB** | **yes, and it changes tier** | a sparse gather of ~530 B to ~2.1 KB per token from a 204 GB table — an **I/O term, not a VRAM term** |
 | PLE, hicache, mamba floor, `hc` replication | **no** | Flash-Next only; re-derive per model |
 
-### 6.1 Measured class split, and three expert numbers that do not reconcile
+### 6.1 Measured class split, and what the tensors actually are
 
 All 48 shards' headers parsed — **510.29 GB of tensor data**, matching the file
 count, so this is the whole checkpoint:
