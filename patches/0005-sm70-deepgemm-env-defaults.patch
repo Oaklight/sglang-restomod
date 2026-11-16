@@ -1,28 +1,25 @@
 diff --git a/python/sglang/srt/arg_groups/model_hook.py b/python/sglang/srt/arg_groups/model_hook.py
 --- a/python/sglang/srt/arg_groups/model_hook.py
 +++ b/python/sglang/srt/arg_groups/model_hook.py
-@@ -500,6 +500,24 @@
+@@ -500,6 +500,21 @@
                  envs.SGLANG_FP8_PAGED_MQA_LOGITS_TORCH.set(True)
              if not envs.SGLANG_OPT_USE_TILELANG_INDEXER.is_set():
                  envs.SGLANG_OPT_USE_TILELANG_INDEXER.set(True)
 +        elif get_platform().is_cuda and get_platform().device_sm == 70:
-+            # Volta has no DeepGEMM, and the consumers of these knobs import it
-+            # inside the function rather than at module import: the HC prenorm
-+            # dispatch in deepseek_v4 (first prefill chunk of 1024+ tokens) and
-+            # the nonpaged DSV4 indexer in indexer.py. The TileLang MHC pre and
-+            # post kernels are the fast path on this model class; their torch
-+            # implementations are the other side of the swap. Every write keeps
-+            # the is_set() guard the sm120 arm above uses, so an operator can
-+            # still opt in and compare. device_sm rather than an is_sm70 fact:
-+            # the platform object has no sm70 predicate at this pin.
++            # Volta has no DeepGEMM, and both consumers of these knobs import
++            # it inside the function rather than at module import: the HC
++            # prenorm dispatch in deepseek_v4 (first prefill chunk of 1024+
++            # tokens) and the nonpaged DSV4 indexer in indexer.py. With the
++            # defaults a large prefill raises NameError rather than reaching
++            # the torch implementation that exists for each. The guards keep
++            # both knobs env-overridable, as the sm120 arm above them does, so
++            # a DeepGEMM build that later supports sm70 can opt in and be
++            # compared. `device_sm` rather than an `is_sm70` fact: the platform
++            # object has no sm70 predicate at this pin.
 +            if not envs.SGLANG_OPT_DEEPGEMM_HC_PRENORM.is_set():
 +                envs.SGLANG_OPT_DEEPGEMM_HC_PRENORM.set(False)
 +            if not envs.SGLANG_FP8_PAGED_MQA_LOGITS_TORCH.is_set():
 +                envs.SGLANG_FP8_PAGED_MQA_LOGITS_TORCH.set(True)
-+            if not envs.SGLANG_OPT_USE_TILELANG_MHC_PRE.is_set():
-+                envs.SGLANG_OPT_USE_TILELANG_MHC_PRE.set(False)
-+            if not envs.SGLANG_OPT_USE_TILELANG_MHC_POST.is_set():
-+                envs.SGLANG_OPT_USE_TILELANG_MHC_POST.set(False)
          elif get_platform().is_hip:
              envs.SGLANG_OPT_DEEPGEMM_HC_PRENORM.set(False)
              _configure_rocm_fp8_wo_a_gemm(model_config, cfg.download_dir)

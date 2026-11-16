@@ -50,10 +50,10 @@
       "site_hashes": {
         "python/sglang/srt/arg_groups/model_hook.py": {
           "unpatched": "ef3220ba4329f58fe4cdd22b2a3211f5bef87163bec2ffb683bd0ae5434c11c6",
-          "patched": "d46b8b8130ed22d1d5748468a97a7ac1dd639e3765314d1581360d1716320783"
+          "patched": "d7a0bed56faec482e38e9fa59d4b9fde7571ea00c226acaf51f9ca6dcfd0be7e"
         }
       },
-      "reason": "The platform block in model_hook.py turns DeepGEMM-only knobs off for sm120 and for hip and has no arm for Volta, so on sm70 the defaults select paths that need deep_gemm, which configurer.py leaves unimported below sm90. Four writes, each with a reachable consumer read at the pin: DEEPGEMM_HC_PRENORM False (deepseek_v4 HC prenorm dispatch above 1024 prefill tokens, else hc_pre_torch_impl), FP8_PAGED_MQA_LOGITS_TORCH True (indexer.py nonpaged gather imports deep_gemm; the paged torch path also vetoes the nonpaged route), USE_TILELANG_MHC_PRE False and USE_TILELANG_MHC_POST False (skips the split-K prewarm that refuses hc_hidden_size other than 16384/28672, and routes to hc_pre_torch_impl / post_torch_impl). All guarded by is_set() like the sm120 arm; FP8_WO_A_GEMM is deliberately absent because serving_hook.py:475-495 already unsets it when the runtime cannot run it.",
+      "reason": "On SM70 the platform block in model_hook.py turns the DeepGEMM-only knobs off for sm120 and for hip and has no arm for Volta, so SGLANG_OPT_DEEPGEMM_HC_PRENORM keeps its True default and SGLANG_FP8_PAGED_MQA_LOGITS_TORCH its False one. Both consumers import deep_gemm inside the function (deepseek_v4.py HC prenorm above 1024 prefill tokens, indexer.py nonpaged gather) and configurer.py leaves the module unimported below sm90, so the first large prefill raises NameError instead of taking the torch implementation that exists for each. The arm keys off device_sm because the pin's platform object has no is_sm70 fact. Both writes are guarded by is_set() like the sm120 arm, so each knob stays env-overridable; no capability or number changes.",
       "source": "local, 2026-11-16 (bluewhale SM70 bring-up)",
       "upstream_status": "pending"
     },
