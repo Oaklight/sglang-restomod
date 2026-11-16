@@ -323,11 +323,14 @@ w2  I8 [5120, 1152]  5,898,240 B      w2.scale F8_E8M0 [5120,  72]  368,640 B
 w3  I8 [2304, 2560]  5,898,240 B      w3.scale F8_E8M0 [2304, 160]  368,640 B
 ```
 
-**17,694,720 weight params + 1,105,920 scale bytes = 18.80 MB per expert**, and
-× 15,360 pairs = **288.8 GB including scales** (weights alone 271.8 GB at 8.00
-bit/param). The config-arithmetic reading of 543.6 G is **deleted**: 2304 is w1's
-*output* and 2560 its stored input, so there is no 2-way K-split and no doubled
-union — that came from assuming `hidden_size` 5120 is the expert input width.
+**17,694,720 stored I8 elements + 1,105,920 scale bytes = 18.80 MB per expert**,
+× 15,360 pairs = **288.8 GB including scales**. Those are **not** parameter counts:
+`expert_dtype` is **fp4** and the storage is I8, so each byte carries two FP4
+values and the logical width is **double** the stored shape. The base checkpoint's
+experts are therefore **543.58 G parameters in 271.8 GB of weight bytes**, i.e.
+**4.25 bits/param** after scale overhead — within 1.5% of our own 4.19 on routed
+experts. The "2x our expert bytes" reading earlier in this section was **wrong**
+and is withdrawn: it assumed int8, when the artifact is packed FP4.
 
 **The 7.22 GB residual is a third namespace, not a double-count — checked and
 refuted.** Summing **unique tensor names** gives **96,085 names, 0 duplicates,
@@ -365,13 +368,23 @@ five shards, 155.22 GB total:
 | **engram** | **4** | **0.22 GB** | 0.31 G | 5.50 |
 | other (norms, biases) | 401 | 1.21 GB | 1.51 G | 6.39 |
 
-**The table is not in the repack.** The base checkpoint's 204.15 GB Engram is
-represented by **four tensors totalling 0.22 GB** — `blk.1.engram_gate.weight`
-`[5120, 4]` F32 and `blk.1.engram_kv.weight` `[6144, 25600]` at 5.5 bits/param,
-plus their counterparts. A projection of a table is not the table, so the
-competitor's 155 GB is **experts plus an ordinary dense model**, and whatever
-serves their Engram lives outside the artifact. That is what an I/O tier predicts,
-but it is inferred here, not proven.
+**The table is not in the repack, and the base's shape explains why.** Two layers,
+matching `engram_layer_ids` [1, 14]:
+
+| tensor | shape | dtype | bytes |
+|---|---|---|---:|
+| `layers.1.engram.embed.weight` | `[384006168, 256]` | F8_E4M3 | 98.31 GB |
+| `layers.1.engram.embed.scale` | `[384006168, 8]` | F8_E8M0 | 3.07 GB |
+| `layers.14.engram.embed.*` | `[384016682, ...]` | same | 101.38 GB |
+
+**256 bytes per entry, one entry per layer, ~530 B/token** — the coefficient §6.4
+uses, now read from the header rather than estimated. Both layers are ~40% of the
+checkpoint. The repack's four engram tensors (0.22 GB) are the **`k_weight`,
+`q_weight` and `wkv` projections** that sit alongside the table, not the table: its
+weights are absent from the repack entirely. So the competitor's artifact is
+**experts plus an ordinary dense model plus those projections**, and their source of
+Engram weights is outside it — which is exactly what an I/O tier implies, now stated
+from the tensor list rather than inferred.
 
 **The expert rate is a per-layer mix, not a number.** GSQ-RCO assigns per-layer
 types — **2.06**, **2.31** and **2.56 bits/param**, one tensor carrying all 384
@@ -379,24 +392,36 @@ experts of a layer, **2.19 weighted**. The earlier "2.28 bit from 155 GB ÷ para
 was wrong twice over: the file mixes types, and it carries non-expert tensors too.
 Quote the per-tensor types with their bytes.
 
-**And the expert count disagrees with the base checkpoint by exactly 2.000.** The
-repack stores full-width experts — `[5120, 2304]` and `[2304, 5120]`, **543.58 G**
-params — while the base stores `[2304, 2560]` and `[5120, 1152]`, **half the K
-dimension**, 271.8 G. The config decides which is a shard: `moe_intermediate_size`
-**2304** matches the repack's down input exactly and is **twice** the base's 1152.
+**The count differs from the base checkpoint by exactly 2.000, and the answer is
+FP4 packing — the base is self-contained.** Six tensors per expert in every one of
+the 40 layers (`w1/w2/w3` weights plus scales), no suffix variant, no second copy.
+The stored I8 shape is half the logical width because two FP4 values share a byte:
+`w1` `[2304, 2560]` is logically `[2304, 5120]`, `w2` `[5120, 1152]` is `[5120,
+2304]`.
 
-Both readings are internally consistent and cannot both be true:
+**The scale grid is a second, independent witness.** `w1.scale` is `[2304, 160]`
+and 5120/160 = **32**, the `weight_block_size` K; `w2.scale` is `[5120, 72]` and
+2304/72 = **32**. A scale grid cannot span a width the weights do not have, so the
+effective K is 5120 and 2304 respectively — full width, one matrix per projection.
+543.58 G = 271.8 G × 2 is one parameter per byte becoming two, not a missing half.
 
-- **the base is half-K** → one half per expert is published, the other exists only
-  where the repack's author found it, and **the 510.29 GB checkpoint is not runnable
-  on its own**;
-- **the repack padded or merged** → the experts really are 2560-wide and 543.58 G
-  is a conversion artefact.
+**A third witness, independent of both:** the nibble histogram of one expert
+weight is **E2M1 sign-magnitude**, not int8 — all 256 byte values present, and both
+nibble positions carry symmetric sign/magnitude pairs (codes 2 and 10 at 106,967 and
+106,394; codes 7 and 15 at 22,270 and 22,426). Three lines of evidence from three
+different tensors, all saying FP4.
 
-**The check needs only headers: count expert tensors per layer in the base.** Three
-weights plus three scales per expert means one half; six weights means both. Until
-it is answered, §6.1's 271.8 G is a **lower bound** and every residency figure in
-§6.4 is an **upper bound**.
+**So the published 510.29 GB checkpoint is runnable on its own.** The earlier
+alarm in this section is withdrawn; it was raised on the stored shape alone, and
+both the scale grid and the nibble histogram settle it against the alarm.
+
+**But resident bytes do not shrink with the dtype, and that is the capacity number.**
+SM70 has **no FP4 tensor core**, so this checkpoint needs an **unpack-then-MMA**
+path: every expert read is 271.8 GB of packed weight plus 17.0 GB of scales, held at
+288.8 GB whether or not the multiply can consume them directly. The 4.25 bits/param
+is a *storage* density, not a compute format — the compute is W4A16 with an unpack
+in front of it. Anyone planning the 8×V100 layout against "17.69 M params/expert"
+will be out by 2x.
 
 **Both formats still need an offline pass.** Dense is block `[32,32]` ue8m0 and
 `can_use_sm70_turbomind_fp8` refuses anything but `[128,128]` (a refusal, not a
@@ -459,13 +484,6 @@ understates the host tier by 40x and would have made it look viable.
 
 So:
 
-**Sensitivity, because §6.1's expert count is contested by a factor of two.** At the
-repack's 35.39 M params per expert, per-expert bytes double to 35.4 MB, the same
-cache holds **804 slots (5.2%)** instead of 1,513, and the host cost roughly doubles
-again. So every number below is an upper bound on residency and a lower bound on
-cost; the direction of the conclusion does not move, which is why this is stated
-once rather than hedged throughout.
-
 - **The host tier is not a deployment option here.** At ~9.8% residency it costs
   ~92 ms/token against a 17.9 ms/token decode — two orders of magnitude, not a
   tuning knob.
@@ -502,7 +520,7 @@ which is the answer the transfer question was actually asking for.
 | `f_res` realised + policy | multi-node | **answered** — 80.2%, §2.1; prefetch/eviction not printed |
 | duplicate prepared copy | coordinator | **refuted** — §5 |
 | GQA KV layer split | kernel-crafter2 | **dropped** — not the binding term |
-| **is the published base checkpoint half-K?** | multi-node | **open, blocking**: base 271.8 G against repack 543.58 G, exactly 2.000x, and the config matches the repack. One header count settles it (§6.1); if yes, the 510.29 GB artifact is not runnable alone |
+| is the published base checkpoint half-K? | multi-node | **answered: no** — FP4 packing, two values per I8 byte, with the E8M0 scale grid as the independent witness (32-column blocks spanning the full K). The 510.29 GB artifact is runnable on its own |
 | bluewhale expert bytes | coordinator | **per-tensor** — 18.80 MB/expert, 288.8 GB (§6.1), a **lower bound** pending the row above; the 7.22 GB residual was three MTP layers |
 | bluewhale Engram table tier | — | per-token bytes answered (~530 B–2.1 KB); **open**: SSD random-read latency at that granularity, batched under chunked prefill |
 | does the IQ2_XS repack ship the Engram table | multi-node | **answered: no** — four tensors, 0.22 GB, a projection of the table rather than the table (§6.1) |
