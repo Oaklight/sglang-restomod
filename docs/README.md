@@ -10,6 +10,7 @@ question, so a reader does not have to guess.
 | Question | Document |
 |---|---|
 | What does the layer contain, and which components ship? | [`../README.md`](../README.md) |
+| Which model is supported today, and at what performance? | [`flashnext.md`](flashnext.md) |
 | How is it built, and how does a component get added? | [`../RESTMOD.md`](../RESTMOD.md) |
 | Which hardware and stack is validated, and with what receipt? | [`../COMPATIBILITY.md`](../COMPATIBILITY.md) |
 | Which launch profile produced a number? | [`../recipes/README.md`](../recipes/README.md) |
