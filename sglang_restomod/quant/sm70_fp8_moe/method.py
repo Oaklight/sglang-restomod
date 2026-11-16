@@ -18,12 +18,12 @@ import logging
 import os
 from pathlib import Path
 
-from sglang_restomod import attest
-
 import torch
 from sglang.srt.layers.moe.token_dispatcher import StandardCombineInput
 from sglang.srt.layers.quantization.fp8 import Fp8MoEMethod
 from torch.nn.parameter import Parameter
+
+from sglang_restomod import attest
 
 from . import apply as fp8_apply
 from . import available, ensure_loaded, prepare_experts
@@ -324,7 +324,9 @@ def install() -> bool:
         return True
     mode = _mode()
     if mode == "off":
-        attest.inactive("fp8_moe", f"{ENV_MODE}=off")
+        # Not recorded as inactive: the flag is a declaration, and the
+        # attestation's inactive class is for a component that cannot apply
+        # itself when it was meant to. `restomod doctor` fails on inactive.
         return False
     if mode not in ("auto", "on"):
         raise ValueError(f"{ENV_MODE} must be auto, on or off; got {mode!r}")

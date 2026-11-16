@@ -640,7 +640,8 @@ def install() -> bool:
         return True
     mode = _mode()
     if mode == "off":
-        attest.inactive("fp4_moe", f"{ENV_MODE}=off")
+        # Not inactive: `=off` is a declaration, not a silent miss, and an
+        # A/B control arm sets it while keeping the component selected.
         return False
     if mode not in ("auto", "on"):
         raise ValueError(f"{ENV_MODE} must be auto, on or off; got {mode!r}")
