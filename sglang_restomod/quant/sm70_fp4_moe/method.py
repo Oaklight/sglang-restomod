@@ -733,6 +733,15 @@ def install() -> bool:
     except ImportError:
         pass
 
+    # An FP8 checkpoint with FP4 experts selects its quant method from
+    # ``Fp8Config``, not from ``modelopt_fp4``, so the hooks above never see it.
+    # The MXFP4 Marlin method is the right shape for that checkpoint; this
+    # points its prepare at our kernel (see mxfp4_hook).
+    from . import mxfp4_hook
+
+    if mxfp4_hook.install():
+        logger.info("SM70 NVFP4 MoE: FP8-with-FP4-experts hook installed")
+
     _INSTALLED = True
     logger.info("SM70 NVFP4 MoE method installed (marlin_v100)")
     return True
