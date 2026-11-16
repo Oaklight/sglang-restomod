@@ -65,6 +65,22 @@ negotiable by the new one:
 must not push it into `auto`. If the backend cannot be constructed it raises
 at startup, naming the profile it does not support.
 
+**Open question that can stop stage 1 before its own code runs:**
+`fused_store_cache` is a JIT Triton/CUDA module, and nobody has confirmed its
+source builds for sm70. KV writes precede every attention kernel, so if that
+JIT does not compile here, no decode kernel matters until there is a
+fallback. kernel-crafter2 is reading it; the answer (or the fact that it is
+still open) belongs here, not only in a session transcript. Check it before
+writing the decode path, and if it does not build, the first deliverable is
+the torch KV store, not the attention math.
+
+**After patch 0007, "it got further" is the expected traceback, not a
+regression.** The base backend's `flash_mla` import is deferred to its
+terminal call, so an arm on this hardware now fails in
+`init_forward_metadata_*` or the first `forward_decode` — both of which are
+the component's own code, and therefore ours to fix rather than the
+platform's.
+
 **Stage 1 — torch reference: paged decode and sparse prefill.** Correctness
 only. There is almost no in-tree torch material to borrow: the only torch
 code in `deepseek_v4_backend.py` is `_low_ratio_compress_torch` (`:3761`),
