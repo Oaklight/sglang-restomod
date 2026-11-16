@@ -86,3 +86,4 @@ reasoning is still referenced.
 |---|---|
 | [`engine-diff.md`](engine-diff.md) | One-time comparison of `dg1kjd/sglang-sxm2` against `v0.5.22`: which fork pieces the two target models need, and which can live here |
 | [`engineering-plan.md`](engineering-plan.md) | The early work plan. Its layout tree predates most components; read `RESTMOD.md` and `sglang_restomod/plugins.py` for the current structure |
+| [`sm70-tilelang-dtypes.md`](sm70-tilelang-dtypes.md) | What TileLang can emit on SM70: fp32 operands have no MMA load layout, so a size table cannot rescue an fp32 kernel. |
