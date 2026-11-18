@@ -101,6 +101,11 @@ COMPONENTS: dict[str, Component] = {
         module="sglang_restomod.linear_attn_sm70",
         description="SM70 TileLang GDN chunked prefill, replacing the Triton chunk kernels",
     ),
+    "deep_gemm_sm70": Component(
+        name="deep_gemm_sm70",
+        module="sglang_restomod.kernels.deep_gemm_sm70",
+        description="Stand-in for an absent DeepGEMM on SM70; unimplemented entries raise",
+    ),
 }
 
 

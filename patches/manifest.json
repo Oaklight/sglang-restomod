@@ -98,6 +98,20 @@
       "reason": "The DSV4 KV store JIT kernel casts its RoPE tail with cast<bf16x2_t>(elems) from the input dtype's pair, but DTypeTrait<bf16x2_t> registers only from(fp32x2_t) plus a generic static_cast, and CUDA 12.8 has no __nv_bfloat162(__half2) conversion. The failure is at compile time: the kernel never builds, so the symptom is a JIT build error, not a wrong write. It is specific to fp16 activations, which is what SM70 forces; bf16 inputs compile unpatched. Diagnostic: 'type.cuh(167): error: no suitable user-defined conversion from const sglang::fp16x2_t to __nv_bfloat162 exists', instantiated through DTypeTrait<bf16x2_t>::from [S=fp16x2_t] at store.cuh:76. One line, cast through fp32x2_t, which is the registered path. Verified on V100-SXM2-32GB cap(7,0), torch 2.9.1+cu128, nvcc 12.8, -gencode=arch=compute_70,code=sm_70 -DSGL_CUDA_ARCH=700, kPageBits=8 (page 256) only: unpatched rc=1 with that diagnostic, patched rc=0 and a write of fp16 input at token 259 reads back scale bytes [119,119,119,119,119,119,119,0], fp8 nope and bf16 rope both max abs err 0.0, 256-byte page tail zero. Other page sizes are unexercised; they change only kPageBits.",
       "source": "local, 2026-11-16 (DSV4 SM70 store-cache probe; kernel-crafter observed the flash_mla import failure that led here)",
       "upstream_status": "pending"
+    },
+    "0009-deepgemm-enable-with-substitute.patch": {
+      "paths": [
+        "python/sglang/srt/layers/deep_gemm_wrapper/configurer.py"
+      ],
+      "site_hashes": {
+        "python/sglang/srt/layers/deep_gemm_wrapper/configurer.py": {
+          "unpatched": "d22936de0461a1d5d45a319ef9b57a0e235b4a13e25e302c370c47d8e81aba2b",
+          "patched": "4e04d478f9e74f9a6ab226e9937e4c5bc026aec5e31fb8f6e4e7c0d72752624b"
+        }
+      },
+      "reason": "Below SM90 _compute_enable_deep_gemm returns False unconditionally, so a registered stand-in (sglang_restomod.kernels.deep_gemm_sm70) is unreachable by any flag. Narrow it to require TWO independent opt-ins: the module's __restomod_substitute__ mark AND SGLANG_SM70_DEEPGEMM_SUBSTITUTE=1. With either absent every platform below SM90 behaves exactly as before -- the env alone enables nothing, the module alone enables nothing. The env opt-in is deliberate: flipping ENABLE_JIT_DEEPGEMM moves dispatch onto DeepGEMM branches that a partially implemented substitute cannot answer (deepseek_v2 fused down, the MoE scale layout, ep_moe's assert, fp8_utils' backend selection), and those must not move until the bodies exist. Note this is not sm70-specific in the patch itself: any sm<90 with both opt-ins flips, and the sm70-only guarantee comes from the shim's own device == 70 guard, not from this hunk. Verified by executing the pristine and patched _compute_enable_deep_gemm against stubbed globals, no GPU: all 16 combinations of sm in {70,80,90,100} x marked x optin are identical to the pristine result except sm<90 with marked=1 and optin=1, which is True by design. SM90+ and MUSA never evaluate the branch.",
+      "source": "local, 2026-11-17 (SM70 DeepGEMM substitute, scaffold in sglang_restomod/kernels/deep_gemm_sm70)",
+      "upstream_status": "pending"
     }
   }
 }

@@ -1,0 +1,30 @@
+diff --git a/python/sglang/srt/layers/deep_gemm_wrapper/configurer.py b/python/sglang/srt/layers/deep_gemm_wrapper/configurer.py
+--- a/python/sglang/srt/layers/deep_gemm_wrapper/configurer.py
++++ b/python/sglang/srt/layers/deep_gemm_wrapper/configurer.py
+@@ -1,4 +1,6 @@
+ import logging
++import os
++import sys
+ 
+ from sglang.srt.environ import envs
+ from sglang.srt.runtime_context import get_platform
+@@ -37,7 +39,18 @@
+ 
+     sm_version = get_device_sm()
+     if (_is_cuda and sm_version < 90) or (_is_musa and sm_version < 31):
+-        return False
++        # Below SM90 this used to return False unconditionally, which made a
++        # registered stand-in (sglang_restomod.kernels.deep_gemm_sm70)
++        # unreachable by any flag. It now requires two independent opt-ins: the
++        # module's own mark, and SGLANG_SM70_DEEPGEMM_SUBSTITUTE=1. With either
++        # absent, every platform below SM90 behaves exactly as before -- the
++        # env alone cannot enable anything, and neither can the module alone.
++        # The opt-in exists because flipping this flag moves dispatch onto
++        # DeepGEMM branches (deepseek_v2, the MoE scale layout, ep_moe's assert)
++        # that a partially implemented substitute cannot yet answer.
++        substitute = getattr(sys.modules.get("deep_gemm"), "__restomod_substitute__", False)
++        if not (substitute and os.environ.get("SGLANG_SM70_DEEPGEMM_SUBSTITUTE") == "1"):
++            return False
+     # SM120/SM121 support (mma.sync block-scale, no TMEM) landed in DeepGEMM#324;
+     # probe every API used by the SM120 DSV4 paths since installed builds may
+     # expose fp8_einsum but still predate the SM120 kernels.
