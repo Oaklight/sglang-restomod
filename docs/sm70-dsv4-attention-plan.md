@@ -119,12 +119,15 @@ memory floor, not parity with the CUDA path.
 
 `docs/runs/2026-11-17-fallback-microbench.md` measures the two torch fallbacks
 this component would sit on. At decode shapes `hc_pre_torch_impl` costs
-~0.117 ms per call — launch overhead, flat from M=1 to M=32 — i.e. **~4.7
-ms/step across 40 layers**, and `fp8_paged_mqa_logits_torch` costs ~0.29 ms
-per call regardless of cache size, i.e. **~11.6 ms/step across 40 layers**.
-Both are overhead-bound, not bandwidth-bound, so the first kernel worth
-writing is the indexer, not the prenorm. Stage 2's target is those numbers,
-not the CUDA path's.
+~0.117 ms per call — launch overhead, flat from M=1 to M=32 — and `hc_mult`
+is global, so that is **~4.7 ms/step across all 40 layers**.
+`fp8_paged_mqa_logits_torch` costs ~0.29 ms per call regardless of cache size,
+but V4.1-Flash names **8 index layers** (`index_source_layer_ids`), so it is
+**~2.3 ms/step**, not 40 calls. Both are overhead-bound, not bandwidth-bound.
+The prenorm is the larger per-step cost; the indexer is the first kernel worth
+writing because its fixed cost is easiest to remove (one launch replaces
+[gather, view, cast, bmm, relu, scale, mask, pad]). Stage 2's target is those
+numbers, not the CUDA path's.
 
 ## Cost, and how it will be reported
 

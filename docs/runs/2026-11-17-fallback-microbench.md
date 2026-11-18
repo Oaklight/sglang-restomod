@@ -30,10 +30,12 @@ four kernel launches, not arithmetic. Above M=256 it scales linearly at
 cuBLAS-only floor reaches 523 GB/s and is itself short of peak because a
 24-output GEMM reads a large matrix for very little math.
 
-**The number that matters for a serve:** MHC prenorm runs once per layer. At
-decode shapes (M <= 48) 0.117 ms x 40 layers = **~4.7 ms per step** in torch,
-all of it launch overhead. One fused kernel could plausibly reach the floor's
-0.027 ms, i.e. ~1.1 ms/step for the model.
+**The number that matters for a serve:** `hc_mult` is global in the config
+(`hc_mult 4`), so the prenorm runs on **all 40 layers**. At decode shapes
+(M <= 48) 0.117 ms x 40 = **~4.7 ms per step** in torch (pre step only; the
+post step is a separate call not measured here), all of it launch overhead.
+One fused kernel could plausibly reach the floor's 0.027 ms, i.e. ~1.1
+ms/step.
 
 ## `fp8_paged_mqa_logits_torch`
 
@@ -47,9 +49,16 @@ num_heads 32, weight `[1, 32]`, page_table contiguous.
 
 4x the cache pages, 0.7% more time: the cost is per call, not per byte. The
 fallback reads at 0.9-3.7 GB/s, three orders below the part's bandwidth.
-**At one call per layer this is ~11.6 ms/step across 40 layers** — larger than
-the prenorm cost and entirely overhead, which makes a fused indexer the first
-kernel worth writing if this path is used at all.
+
+**It is not 40 calls per step.** V4.1-Flash's config names
+`index_source_layer_ids [2, 8, 14, 20, 24, 28, 32, 36]` — **8 index layers**
+out of 40 (`kv_source_layer_ids` names 4, and `compress_ratios` is 20x ratio 1,
+18x ratio 2, 5x ratio 0 including the head/tail). So the indexer is
+8 x 0.287 = **~2.3 ms/step**, against **~4.7 ms/step** for the prenorm on all
+40 layers. An earlier version of this page said 11.6 ms/step by multiplying by
+40; that was wrong — it assumed every layer runs the indexer. Retracted here
+and in the plan: the prenorm is the larger per-step cost in torch, and both
+are still overhead-bound.
 
 ## What this does not say
 

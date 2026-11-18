@@ -88,3 +88,4 @@ reasoning is still referenced.
 | [`engineering-plan.md`](engineering-plan.md) | The early work plan. Its layout tree predates most components; read `RESTMOD.md` and `sglang_restomod/plugins.py` for the current structure |
 | [`sm70-tilelang-dtypes.md`](sm70-tilelang-dtypes.md) | What TileLang can emit on SM70: fp32 operands have no MMA load layout, so a size table cannot rescue an fp32 kernel. |
 | [`sm70-dsv4-attention-plan.md`](sm70-dsv4-attention-plan.md) | Plan for the DSV4 attention component on SM70: no in-tree CUDA route avoids flash_mla, so it is a component with a torch-first staged sequence. |
+| [`sm70-indexer-kernel-design.md`](sm70-indexer-kernel-design.md) | Design for the DSV4 paged MQA logits kernel on SM70: one launch, bf16 operands, and a speed/agreement gate fixed before any run. |
