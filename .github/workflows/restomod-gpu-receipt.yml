@@ -87,23 +87,34 @@ jobs:
           # in PROVENANCE.md or a recipe note could never merge: the path prefix
           # matched, no run could produce the evidence, and the only way through
           # was to bundle an unrelated code change with it.
-          # The rule is about GPU behaviour at serving time, so it names the
-          # trees that decide it rather than the whole package. A change to
-          # cli.py (the doctor command) or to tests cannot make a served kernel
-          # compute something else, and requiring a hardware run for it costs a
-          # window for evidence that has nothing to certify. plugins.py stays in
-          # the list: a component that fails to load there leaves a server that
-          # starts normally and serves on the engine's own kernels, which is the
-          # failure this gate exists for.
+          # A rule about GPU behaviour at serving time, written as an exclusion
+          # rather than an allow-list. An allow-list fails open on a directory
+          # nobody thought of: this file has opened the same hole twice, first
+          # by demanding evidence for cli.py and tests, then by silently
+          # exempting sglang_restomod/kernels/ and overrides.py -- the kernels
+          # themselves and the swap that installs them. The safe default for a
+          # file in this package is that it might decide what the GPU computes,
+          # so the exemptions are named and everything else under
+          # sglang_restomod/ triggers.
           #
-          # The triggering files are printed into the job summary. Without that
-          # the check reports `unverified` with no way to see which path made
-          # the receipt required, which is the same opacity one level up.
+          # Exempt: cli.py (the doctor command: it reports state, it cannot set
+          # it), sglang_restomod/tests/, and any .md file. Everything else in the
+          # package triggers, including configs/ (dispatch and tiling tables),
+          # _sm70_paths.py (which binary resolves), overrides.py (the swap) and
+          # attest.py (what the receipt chain reports) -- a change to any of
+          # those can change behaviour or the evidence about it, and a receipt
+          # is cheaper than finding out afterwards.
+          #
+          # The triggering files are printed into the job summary. With an
+          # exclusion rule the summary matters more, not less: `requires=false`
+          # must read as "we looked and found nothing that decides behaviour",
+          # not as "the path was not on a list".
           files="$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files?per_page=100" \
                --jq '.[].filename')"
           triggering="$(printf '%s\n' "$files" \
                | grep -vE '\.md$' \
-               | grep -E '^(sglang_restomod/(quant|attention|moe|models|spec|linear_attn_sm70)/|sglang_restomod/plugins\.py$|patches/|recipes/)' \
+               | grep -E '^(sglang_restomod/|patches/|recipes/)' \
+               | grep -vE '^sglang_restomod/(tests/|cli\.py$)' \
                || true)"
           if [ -n "$triggering" ]; then
             echo "requires=true" >> "$GITHUB_OUTPUT"
@@ -123,7 +134,7 @@ jobs:
               echo "**requires=false** — nothing in this change can alter what the GPU computes at serving time."
             fi
             echo
-            echo 'Rule: `sglang_restomod/{quant,attention,moe,models,spec,linear_attn_sm70}/`, `sglang_restomod/plugins.py`, `patches/`, `recipes/`; `.md` files are always exempt.'
+            echo 'Rule: any file under `sglang_restomod/`, in `patches/` or in `recipes/` requires a receipt; `.md` files, `sglang_restomod/cli.py` and `sglang_restomod/tests/` are exempt. `requires=false` means nothing in the change can alter what the GPU computes at serving time.'
           } >> "$GITHUB_STEP_SUMMARY"
 
   verified:
