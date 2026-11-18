@@ -64,3 +64,33 @@ retune — the gate is aimed at B=32, where the money is (10.74 ms/step).
 - No claim about the CUDA flash_mla path's numbers, only the fallback's.
 - Nothing about the shim: `fp8_paged_mqa_logits` still routes to the torch twin,
   and no `fused` arm was added, since nothing passed.
+
+## The batch band, measured against the second gate
+
+After the first run, a second gate was declared for the small-batch band
+(`>= 2x at B <= 8`, same tolerance and same top-64 equality). The band was then
+measured with the same kernel and harness, captured, replay-only, 10 discards,
+50 medians, card 4 (claim `port-31413`, closed):
+
+| B | torch ms | kernel ms | ratio | >= 2x | max abs diff | top-64 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | 0.1403 | 0.0399 | 3.51x | yes | 1.2e-7 | yes |
+| 2 | 0.1751 | 0.0707 | 2.48x | yes | 1.2e-7 | yes |
+| 4 | 0.2647 | 0.1178 | 2.25x | yes | 1.2e-7 | yes |
+| 8 | 0.4362 | 0.2232 | **1.95x** | **no** | 1.2e-7 | yes |
+| 16 | 0.7199 | 0.3758 | 1.92x | no | 1.2e-7 | yes |
+| 32 | 1.3414 | 0.6881 | 1.95x | no | 1.2e-7 | yes |
+
+**The second gate is not met at its upper edge.** B=8 is 1.95x against a 2x bar,
+and B=8 has now measured 2.04x and 1.95x in two runs a few minutes apart — a
+4% run-to-run spread on a bar exactly at 2.0, so B=8 is not decidable by this
+measurement. The band that does clear 2x unambiguously is **B <= 4** (2.25x at
+B=4, 2.48 at B=2, 3.51 at B=1). Choosing between "declare the band at B<=4" and
+"treat B=8 as inside the noise and declare B<=8" is the plan owner's call; this
+record states the measurement, not the resolution.
+
+At B=32 the same run puts the kernel at 0.6881 ms against torch's 1.3414, i.e.
+51% of the call, so the eight index layers would go **10.74 -> 5.51 ms/step
+(~5.2 ms/step saved)** if the large-batch arm were shipped. That is a single-op
+inference from a synthetic call, not a served step measurement, and it is the
+number a TileLang round should be weighed against.

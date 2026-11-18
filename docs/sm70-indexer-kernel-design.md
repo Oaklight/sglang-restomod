@@ -169,3 +169,22 @@ function, and the top-64 set check is what would catch it.
 10.74 ms/step exists only at a real batch. At B=1 the op is 1.12 ms/step and a
 3x kernel buys 0.7 ms; at B=32 it buys ~7 ms. Both are stated so the number is
 not read as a per-request cost.
+
+## Second gate, declared for the small-batch band
+
+The served decode batch is small (`m~4` in the census), so a gate aimed only at
+B=32 prices the wrong shape. This gate is stated beside the B=32 one, not in
+place of it: **the B=32 gate stays failed and unmet until a run meets it.**
+
+1. **Speed.** >= 2x the captured torch fallback at **B <= 8**, same arm
+   (one V100-SXM2-32GB, captured, replay-only, 10 discards, 50 medians).
+2. **Agreement.** Unchanged: `max |dlogit| <= 2e-2` absolute, top-64 index set
+   identical on every row.
+3. **Failure rule.** Unchanged. Agreement passing with speed under the bar is
+   reported as "not worth it"; the bar is not moved after seeing results.
+
+**Status when declared: not met at the edge.** The band was measured and B=8 is
+1.95x (it measured 2.04x in the run before), inside a ~4% run-to-run spread on a
+2.0 bar; B <= 4 clears it unambiguously (2.25x at B=4). See
+`docs/runs/2026-11-17-indexer-kernel-first-run.md`. Nothing is wired until the
+band's edge is settled by its owner and met by a run.
