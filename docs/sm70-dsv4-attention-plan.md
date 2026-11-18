@@ -115,6 +115,17 @@ memory floor, not parity with the CUDA path.
 
 **Stage 3 — real kernels** only if stage 2's numbers justify a window.
 
+## Where the time goes before any of this exists
+
+`docs/runs/2026-11-17-fallback-microbench.md` measures the two torch fallbacks
+this component would sit on. At decode shapes `hc_pre_torch_impl` costs
+~0.117 ms per call — launch overhead, flat from M=1 to M=32 — i.e. **~4.7
+ms/step across 40 layers**, and `fp8_paged_mqa_logits_torch` costs ~0.29 ms
+per call regardless of cache size, i.e. **~11.6 ms/step across 40 layers**.
+Both are overhead-bound, not bandwidth-bound, so the first kernel worth
+writing is the indexer, not the prenorm. Stage 2's target is those numbers,
+not the CUDA path's.
+
 ## Cost, and how it will be reported
 
 Stage 1 will be slow, and the number decides whether stage 2 earns a window.
