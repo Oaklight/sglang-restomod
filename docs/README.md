@@ -9,6 +9,7 @@ question, so a reader does not have to guess.
 
 | Question | Document |
 |---|---|
+| **Where does the work stand right now?** | [`status.md`](status.md) |
 | What does the layer contain, and which components ship? | [`../README.md`](../README.md) |
 | Which model is supported today, and at what performance? | [`flashnext.md`](flashnext.md) |
 | How is it built, and how does a component get added? | [`../RESTMOD.md`](../RESTMOD.md) |
