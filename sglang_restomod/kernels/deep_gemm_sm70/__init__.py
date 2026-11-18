@@ -38,13 +38,30 @@ would mean a re-pack plus a scale-format conversion *inside* the entry: a
 second implementation of the quantisation, which is how two paths drift apart.
 They stay refusals unless someone accepts that duplication deliberately.
 
-The entry that does earn its place is ``tf32_hc_prenorm_gemm``. It has two arms,
-selected by ``SGLANG_SM70_HC_PRENORM``: ``torch`` (default) is the
-``hc_pre_torch_impl`` math, and ``fused`` calls a kernel registered with
-``install_fused_hc_prenorm()``. The fused arm raises when nothing is registered
-rather than falling back, so an A/B cannot silently measure the same arm twice.
-That switch is how the engine reaches a fused prenorm through a DeepGEMM-shaped
-entry; its acceptance gate belongs to the kernel's own design document.
+The entry that does earn its place is ``tf32_hc_prenorm_gemm``, selected by
+``SGLANG_SM70_HC_PRENORM``: ``torch`` (default) is the ``hc_pre_torch_impl``
+math, ``fused`` calls a kernel registered with ``install_fused_hc_prenorm()``,
+and ``auto`` dispatches on row count. ``fused`` raises when nothing is
+registered, because it is an A/B arm and a silent fallback would make the two
+arms equal and the difference read as a speedup. ``auto`` degrades to torch
+instead, because it is a dispatch, not an A/B: an unregistered kernel under
+``auto`` is a missing optimisation, not a broken experiment.
+
+``auto`` switches at ``HC_PRENORM_AUTO_MIN_M`` = 1024 rows. That number is
+measured, not guessed, and it is measured in the regime each arm will run in:
+under CUDA-graph capture (the decode regime) torch costs 0.0266 ms at M=1 and
+0.0461 at M=32 against the kernel's 0.189, and they **tie at M=256** (0.1997
+vs 0.1956); eagerly, which is how prefill runs, torch is still ahead at 256
+(0.2212 vs 0.2304) and the kernel only leads from 1024 (1.11x, 1.28x at 4096).
+So 256 is the captured tie, not a win, and a threshold there would run a new
+kernel where an eager measurement says it loses. If the kernel's geometry
+changes, this constant moves with it.
+
+One lesson belongs here because it will be re-learned: **an eager
+microbenchmark overstates a torch fallback inside a captured decode step** —
+4.3x at M=1 for this op — because a handful of tiny launches become inter-launch
+gap, which a graph removes. Any "the fallback costs X ms/step" figure taken
+eagerly needs the captured number beside it before it justifies kernel work.
 
 The two logits entries route to the pin's torch twins first. Measured on
 2026-11-16, ``fp8_paged_mqa_logits_torch`` costs 0.287 ms per call and is flat
@@ -147,6 +164,9 @@ def bf16_gemm_nt(lhs, rhs, out) -> None:
 
 HC_PRENORM_ENV = "SGLANG_SM70_HC_PRENORM"
 
+# Measured crossover for the ``auto`` arm; see the module docstring.
+HC_PRENORM_AUTO_MIN_M = 1024
+
 _fused_hc_prenorm = None
 
 
@@ -179,18 +199,27 @@ def _hc_prenorm_reference(x, fn, out, sqrsum) -> None:
 
 
 def tf32_hc_prenorm_gemm(x, fn, out, sqrsum, num_splits=None) -> None:
-    """Two arms, chosen by ``SGLANG_SM70_HC_PRENORM``.
+    """Arms chosen by ``SGLANG_SM70_HC_PRENORM``: ``torch`` | ``fused`` | ``auto``.
 
-    ``torch`` (the default) runs the reference above; ``fused`` calls the kernel
-    registered through :func:`install_fused_hc_prenorm`. A ``fused`` request with
-    no kernel registered raises: a silent fallback would make an A/B measure the
-    same arm twice and report it as a speedup.
+    ``torch`` (the default) runs the reference above. ``fused`` calls the kernel
+    registered through :func:`install_fused_hc_prenorm`, and **raises** when none
+    is: it is an A/B arm, and a silent fallback would make both arms equal and
+    the difference read as a speedup. ``auto`` dispatches on row count at
+    :data:`HC_PRENORM_AUTO_MIN_M` and **degrades to torch** when nothing is
+    registered, because a dispatch with a missing kernel is a lost optimisation,
+    not a broken experiment.
     """
     import os
 
     arm = os.environ.get(HC_PRENORM_ENV, "torch").strip().lower()
     if arm in ("", "torch", "reference"):
         _hc_prenorm_reference(x, fn, out, sqrsum)
+        return
+    if arm == "auto":
+        if _fused_hc_prenorm is not None and x.shape[0] >= HC_PRENORM_AUTO_MIN_M:
+            _fused_hc_prenorm(x, fn, out, sqrsum, num_splits=num_splits)
+        else:
+            _hc_prenorm_reference(x, fn, out, sqrsum)
         return
     if arm in ("fused", "kernel"):
         if _fused_hc_prenorm is None:
@@ -203,7 +232,7 @@ def tf32_hc_prenorm_gemm(x, fn, out, sqrsum, num_splits=None) -> None:
         _fused_hc_prenorm(x, fn, out, sqrsum, num_splits=num_splits)
         return
     raise ValueError(
-        f"deep_gemm_sm70: {HC_PRENORM_ENV}={arm!r}; expected 'torch' or 'fused'"
+        f"deep_gemm_sm70: {HC_PRENORM_ENV}={arm!r}; expected 'torch', 'fused' or 'auto'"
     )
 
 

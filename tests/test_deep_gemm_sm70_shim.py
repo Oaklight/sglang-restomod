@@ -191,7 +191,52 @@ def test_prenorm_fused_arm_calls_the_registered_kernel(installed, monkeypatch):
 def test_prenorm_rejects_an_unknown_arm(installed, monkeypatch):
     torch = pytest.importorskip("torch")
     monkeypatch.setenv(shim.HC_PRENORM_ENV, "fast-ish")
-    with pytest.raises(ValueError, match="expected 'torch' or 'fused'"):
+    with pytest.raises(ValueError, match="expected 'torch', 'fused' or 'auto'"):
         installed.tf32_hc_prenorm_gemm(
             torch.zeros(1, 8), torch.zeros(1, 8), torch.zeros(1, 1), torch.zeros(1)
         )
+
+
+def test_auto_below_the_threshold_uses_the_reference(installed, monkeypatch):
+    torch = pytest.importorskip("torch")
+    monkeypatch.setenv(shim.HC_PRENORM_ENV, "auto")
+    called = []
+    monkeypatch.setattr(shim, "_fused_hc_prenorm", lambda *a, **k: called.append("fused"))
+    m = shim.HC_PRENORM_AUTO_MIN_M - 1
+    x = torch.randn(m, 8, dtype=torch.bfloat16)
+    fn = torch.randn(2, 8)
+    out, sqrsum = torch.empty(m, 2), torch.empty(m)
+    installed.tf32_hc_prenorm_gemm(x, fn, out, sqrsum)
+    assert not called
+    assert torch.allclose(out, x.float() @ fn.t(), atol=1e-4)
+
+
+def test_auto_at_the_threshold_uses_the_kernel(installed, monkeypatch):
+    torch = pytest.importorskip("torch")
+    monkeypatch.setenv(shim.HC_PRENORM_ENV, "auto")
+    called = []
+
+    def fake(x, fn, out, sqrsum, num_splits=None):
+        called.append(tuple(x.shape))
+        out.fill_(3.0)
+
+    monkeypatch.setattr(shim, "_fused_hc_prenorm", fake)
+    m = shim.HC_PRENORM_AUTO_MIN_M
+    out = torch.zeros(m, 2)
+    installed.tf32_hc_prenorm_gemm(
+        torch.zeros(m, 8), torch.zeros(2, 8), out, torch.zeros(m)
+    )
+    assert called == [(m, 8)] and float(out[0, 0]) == 3.0
+
+
+def test_auto_degrades_to_the_reference_without_a_kernel(installed, monkeypatch):
+    """A dispatch with a missing kernel is a lost optimisation, not a broken A/B."""
+    torch = pytest.importorskip("torch")
+    monkeypatch.setenv(shim.HC_PRENORM_ENV, "auto")
+    monkeypatch.setattr(shim, "_fused_hc_prenorm", None)
+    m = shim.HC_PRENORM_AUTO_MIN_M
+    x = torch.randn(m, 8, dtype=torch.bfloat16)
+    fn = torch.randn(2, 8)
+    out, sqrsum = torch.empty(m, 2), torch.empty(m)
+    installed.tf32_hc_prenorm_gemm(x, fn, out, sqrsum)  # must not raise
+    assert torch.allclose(out, x.float() @ fn.t(), atol=1e-4)
