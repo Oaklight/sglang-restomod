@@ -18,8 +18,9 @@ peers that belong to other work on this machine.
 
 `agentabi` must be importable:
 
-    PYTHONPATH=/home/pding/projects/agentabi/src python scripts/agent_sessions.py list
-    # or: pip install agentabi
+    pip install agentabi
+    # or, from a source checkout, with the checkout on the path:
+    PYTHONPATH=<agentabi-checkout>/src python scripts/agent_sessions.py list
 """
 
 from __future__ import annotations
@@ -73,10 +74,8 @@ def _client(state_dir: Path):
         from agentabi.peers.client import PeerClient
     except ImportError as exc:  # pragma: no cover - environment guard
         raise SystemExit(
-            "agentabi is not importable. Either\n"
-            "  PYTHONPATH=/home/pding/projects/agentabi/src "
-            "python scripts/agent_sessions.py ...\n"
-            "or `pip install agentabi`.\n"
+            "agentabi is not importable. Either `pip install agentabi`, or put a "
+            "source checkout's src/ directory on PYTHONPATH and re-run.\n"
             f"({exc})"
         )
     return PeerClient(state_dir)
