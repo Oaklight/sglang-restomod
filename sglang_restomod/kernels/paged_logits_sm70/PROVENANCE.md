@@ -26,3 +26,10 @@
 - **Not A/B'd in an engine**: no served step measurement exists for this op on
   this hardware. Every ratio here, and the ~1.2 ms/step worth at B <= 4, is a
   single-op inference from a synthetic call.
+
+- **Receipt note (2026-11-17)**: a PR touching `sglang_restomod/kernels/` needs a
+  GPU receipt, but the policy job in `.github/workflows/restomod-gpu-receipt.yml`
+  reports `requires=false` for it — the path alternation at line 106 lists
+  `(quant|attention|moe|models|spec|linear_attn_sm70)` and omits `kernels/`.
+  Until that list is fixed, a green `gpu-receipt` is **not** evidence for this
+  component; treat the receipt as required.

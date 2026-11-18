@@ -20,3 +20,10 @@
   ratio in this component is a single-op measurement, not a serving number.
   When a bluewhale serve exists, this kernel and the indexer should be A/B'd in
   one window, on the same prompts, with the switch arms declared.
+
+- **Receipt note (2026-11-17)**: a PR touching `sglang_restomod/kernels/` needs a
+  GPU receipt, but the policy job in `.github/workflows/restomod-gpu-receipt.yml`
+  reports `requires=false` for it — the path alternation at line 106 lists
+  `(quant|attention|moe|models|spec|linear_attn_sm70)` and omits `kernels/`.
+  Until that list is fixed, a green `gpu-receipt` is **not** evidence for this
+  component; treat the receipt as required.
