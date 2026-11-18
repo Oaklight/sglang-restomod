@@ -144,3 +144,54 @@ def test_empty_prenorm_is_a_noop(installed):
     sqrsum = torch.full((0,), 7.0)
     installed.tf32_hc_prenorm_gemm(x, fn, out, sqrsum)
     assert out.numel() == 0 and sqrsum.numel() == 0
+
+
+def test_prenorm_defaults_to_the_reference(installed, monkeypatch):
+    torch = pytest.importorskip("torch")
+    monkeypatch.delenv(shim.HC_PRENORM_ENV, raising=False)
+    x = torch.randn(4, 8, dtype=torch.bfloat16)
+    fn = torch.randn(2, 8)
+    out, sqrsum = torch.empty(4, 2), torch.empty(4)
+    installed.tf32_hc_prenorm_gemm(x, fn, out, sqrsum)
+    assert torch.allclose(out, x.float() @ fn.t(), atol=1e-4)
+
+
+def test_prenorm_fused_without_a_kernel_raises(installed, monkeypatch):
+    """Silent fallback would make an A/B measure the same arm twice."""
+    torch = pytest.importorskip("torch")
+    monkeypatch.setenv(shim.HC_PRENORM_ENV, "fused")
+    monkeypatch.setattr(shim, "_fused_hc_prenorm", None)
+    with pytest.raises(NotImplementedError) as err:
+        installed.tf32_hc_prenorm_gemm(
+            torch.zeros(2, 8), torch.zeros(1, 8), torch.zeros(2, 1), torch.zeros(2)
+        )
+    assert shim.HC_PRENORM_ENV in str(err.value)
+    assert "install_fused_hc_prenorm" in str(err.value)
+
+
+def test_prenorm_fused_arm_calls_the_registered_kernel(installed, monkeypatch):
+    torch = pytest.importorskip("torch")
+    monkeypatch.setenv(shim.HC_PRENORM_ENV, "fused")
+    seen = {}
+
+    def fake(x, fn, out, sqrsum, num_splits=None):
+        seen["args"] = (tuple(x.shape), tuple(fn.shape), num_splits)
+        out.fill_(1.0)
+        sqrsum.fill_(2.0)
+
+    monkeypatch.setattr(shim, "_fused_hc_prenorm", fake)
+    out, sqrsum = torch.zeros(3, 2), torch.zeros(3)
+    installed.tf32_hc_prenorm_gemm(
+        torch.zeros(3, 8), torch.zeros(2, 8), out, sqrsum, num_splits=4
+    )
+    assert seen["args"] == ((3, 8), (2, 8), 4)
+    assert float(out[0, 0]) == 1.0 and float(sqrsum[0]) == 2.0
+
+
+def test_prenorm_rejects_an_unknown_arm(installed, monkeypatch):
+    torch = pytest.importorskip("torch")
+    monkeypatch.setenv(shim.HC_PRENORM_ENV, "fast-ish")
+    with pytest.raises(ValueError, match="expected 'torch' or 'fused'"):
+        installed.tf32_hc_prenorm_gemm(
+            torch.zeros(1, 8), torch.zeros(1, 8), torch.zeros(1, 1), torch.zeros(1)
+        )

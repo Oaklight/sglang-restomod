@@ -27,9 +27,24 @@ Implemented here (semantics from the pin's own fallbacks):
 ``set_compile_mode``/``get_compile_mode``,
 ``get_mk_alignment_for_contiguous_layout``).
 
-Everything else raises. The messages say what the component-side equivalent is,
-when one exists, so the next reader knows whether the fix is a shim body or a
-kernel.
+Everything else raises. Three of those refusals are permanent, not pending:
+``fp8_gemm_nt``, the grouped pair and ``fp8_fp4_gemm_nt``. A kernel-level entry
+does exist under each of them — ``torch.ops.sglang_sm70_turbomind.fp8_gemm``
+for the dense case, ``torch.ops.sgl_kernel.moe_wna16_marlin`` and
+``torch.ops._C.marlin_gemm`` for the grouped ones — but those take pre-packed
+W8A16 weights with per-layer leading dimensions, or routing metadata, while
+DeepGEMM's signature is ``(A fp8 + scale, B fp8 + scale, recipe)``. Forwarding
+would mean a re-pack plus a scale-format conversion *inside* the entry: a
+second implementation of the quantisation, which is how two paths drift apart.
+They stay refusals unless someone accepts that duplication deliberately.
+
+The entry that does earn its place is ``tf32_hc_prenorm_gemm``. It has two arms,
+selected by ``SGLANG_SM70_HC_PRENORM``: ``torch`` (default) is the
+``hc_pre_torch_impl`` math, and ``fused`` calls a kernel registered with
+``install_fused_hc_prenorm()``. The fused arm raises when nothing is registered
+rather than falling back, so an A/B cannot silently measure the same arm twice.
+That switch is how the engine reaches a fused prenorm through a DeepGEMM-shaped
+entry; its acceptance gate belongs to the kernel's own design document.
 
 The two logits entries route to the pin's torch twins first. Measured on
 2026-11-16, ``fp8_paged_mqa_logits_torch`` costs 0.287 ms per call and is flat
@@ -130,7 +145,23 @@ def bf16_gemm_nt(lhs, rhs, out) -> None:
     torch.mm(lhs.to(out.dtype), rhs.t(), out=out)
 
 
-def tf32_hc_prenorm_gemm(x, fn, out, sqrsum, num_splits=None) -> None:
+HC_PRENORM_ENV = "SGLANG_SM70_HC_PRENORM"
+
+_fused_hc_prenorm = None
+
+
+def install_fused_hc_prenorm(op) -> None:
+    """Register the fused prenorm kernel for the ``fused`` arm of the switch.
+
+    Called by whichever component ships the kernel, at its ``register()``. The
+    signature it must accept is the entry's own:
+    ``op(x, fn, out, sqrsum, num_splits=...)``.
+    """
+    global _fused_hc_prenorm
+    _fused_hc_prenorm = op
+
+
+def _hc_prenorm_reference(x, fn, out, sqrsum) -> None:
     """The math of the pin's ``hc_pre_torch_impl`` (``deepseek_v4.py:3358``).
 
     ``out = x @ fn.T`` in fp32 and ``sqrsum = sum(x**2, -1)``; the caller turns
@@ -145,6 +176,35 @@ def tf32_hc_prenorm_gemm(x, fn, out, sqrsum, num_splits=None) -> None:
     xf = x.float()
     torch.mm(xf, fn.float().t(), out=out)
     torch.sum(xf * xf, dim=-1, out=sqrsum)
+
+
+def tf32_hc_prenorm_gemm(x, fn, out, sqrsum, num_splits=None) -> None:
+    """Two arms, chosen by ``SGLANG_SM70_HC_PRENORM``.
+
+    ``torch`` (the default) runs the reference above; ``fused`` calls the kernel
+    registered through :func:`install_fused_hc_prenorm`. A ``fused`` request with
+    no kernel registered raises: a silent fallback would make an A/B measure the
+    same arm twice and report it as a speedup.
+    """
+    import os
+
+    arm = os.environ.get(HC_PRENORM_ENV, "torch").strip().lower()
+    if arm in ("", "torch", "reference"):
+        _hc_prenorm_reference(x, fn, out, sqrsum)
+        return
+    if arm in ("fused", "kernel"):
+        if _fused_hc_prenorm is None:
+            raise NotImplementedError(
+                f"deep_gemm_sm70: {HC_PRENORM_ENV}=fused, but no fused prenorm kernel "
+                "is registered. The component that ships it must call "
+                "sglang_restomod.kernels.deep_gemm_sm70.install_fused_hc_prenorm(op) "
+                "from its register()."
+            )
+        _fused_hc_prenorm(x, fn, out, sqrsum, num_splits=num_splits)
+        return
+    raise ValueError(
+        f"deep_gemm_sm70: {HC_PRENORM_ENV}={arm!r}; expected 'torch' or 'fused'"
+    )
 
 
 def fp8_paged_mqa_logits(
