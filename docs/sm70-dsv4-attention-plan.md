@@ -124,10 +124,11 @@ is global, so that is **~4.7 ms/step across all 40 layers**.
 `fp8_paged_mqa_logits_torch` costs ~0.29 ms per call regardless of cache size,
 but V4.1-Flash names **8 index layers** (`index_source_layer_ids`), so it is
 **~2.3 ms/step**, not 40 calls. Both are overhead-bound, not bandwidth-bound.
-The prenorm is the larger per-step cost; the indexer is the first kernel worth
-writing because its fixed cost is easiest to remove (one launch replaces
-[gather, view, cast, bmm, relu, scale, mask, pad]). Stage 2's target is those
-numbers, not the CUDA path's.
+The prenorm is the larger per-step cost **and** the first kernel to write: ~5
+launches x 40 layers = 200 launches per step against the indexer's ~10 x 8 = 80
+(`docs/sm70-prenorm-kernel-design.md` argues it; the indexer design is
+docs/sm70-indexer-kernel-design.md). Stage 2's target is those numbers, not
+the CUDA path's.
 
 ## Cost, and how it will be reported
 
