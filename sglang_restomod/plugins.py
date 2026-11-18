@@ -101,6 +101,11 @@ COMPONENTS: dict[str, Component] = {
         module="sglang_restomod.linear_attn_sm70",
         description="SM70 TileLang GDN chunked prefill, replacing the Triton chunk kernels",
     ),
+    "hc_prenorm_sm70": Component(
+        name="hc_prenorm_sm70",
+        module="sglang_restomod.kernels.hc_prenorm_sm70",
+        description="Fused DSV4 HC prenorm for the deep_gemm_sm70 shim's fused arm",
+    ),
     "deep_gemm_sm70": Component(
         name="deep_gemm_sm70",
         module="sglang_restomod.kernels.deep_gemm_sm70",

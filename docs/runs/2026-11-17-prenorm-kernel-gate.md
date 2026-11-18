@@ -112,3 +112,30 @@ the scoping number said. The remaining floor is data, not launches: 40 layers
 x 1.97 MB of `hc_fn` = 79 MB per step, which at V100 bandwidth is ~0.1 ms. A
 win that large needs one kernel reading many layers' `hc_fn` at once — fewer
 calls, per the coordinator's note — not a faster single-layer kernel.
+
+## Third run: the shipped kernel against the arm the engine actually calls
+
+The first two runs compared against a harness `torch_ref` that carries 6-7
+launches (cast, square, mean, add, rsqrt, linear, mul). The arm the engine
+reaches is the shim's `_hc_prenorm_reference`: cast, `mm`, mul+sum -- 3
+launches, writing into caller-allocated `out` and `sqrsum`. That is a lower bar,
+so it is the one the shipped kernel has to beat. Eager, replay not applicable
+(prefill is not graph-captured), 10 warm-up, 50 reps, median, kernel as shipped
+in `sglang_restomod/kernels/hc_prenorm_sm70`.
+
+| M | reference ms | kernel ms | kernel/reference | rel err (out) | rel err (sqrsum) |
+| --- | --- | --- | --- | --- | --- |
+| 256 | 0.2089 | 0.2499 | **0.84x** | 1.1e-6 | 1.8e-7 |
+| 1024 | 0.7444 | 0.7107 | **1.05x** | 1.3e-6 | 1.8e-7 |
+| 4096 | 2.6378 | 1.9932 | **1.32x** | 1.2e-6 | 1.8e-7 |
+| 8192 | 5.1610 | 3.6511 | **1.41x** | 1.4e-6 | 2.8e-7 |
+
+So the prefill win survives against the leaner arm, and shrinks less than the
+launch-count argument predicted: at M=4096 the reference is 2.64 ms for three
+launches, i.e. its cost was never mostly launches either, it was the fp32 cast
+of a 335 MB tensor plus the square-and-sum over it. The kernel's gain is
+removing that intermediate, not saving launches.
+
+That fixes the auto threshold: below 256 the kernel loses, at 1024 it is a
+tie, and it leads from there. `HC_PRENORM_AUTO_MIN_M = 1024` is the right
+line, and at M=1024 the cost of choosing the kernel is measurable but ~5%.

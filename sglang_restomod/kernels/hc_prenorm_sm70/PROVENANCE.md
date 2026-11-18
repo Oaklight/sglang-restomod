@@ -1,0 +1,16 @@
+# Provenance: hc_prenorm_sm70
+
+- **Origin**: authored in this repository for the SM70 target. No third-party
+  code is vendored; the math is the pin's own `hc_pre_torch_impl`
+  (`deepseek_v4.py:3358`), restated as `_hc_prenorm_reference` in
+  `sglang_restomod/kernels/deep_gemm_sm70/__init__.py`.
+- **Kernel**: Triton 3.5.1 source in `kernel.py`, written here. No external
+  repository, commit, or license applies.
+- **Selected files**: `sglang_restomod/kernels/hc_prenorm_sm70/__init__.py`,
+  `kernel.py`. Registration point: the shim's `install_fused_hc_prenorm()`,
+  reached from `register()`; the dispatch switch (`SGLANG_SM70_HC_PRENORM`) is
+  the shim's, not this component's.
+- **Hardware**: measured on one Tesla V100-SXM2-32GB (SM70, cap 7.0), CUDA 12.8,
+  torch 2.9.1+cu128. Evidence: `docs/runs/2026-11-17-prenorm-kernel-gate.md`.
+- **Status**: `local-only`. It is the large-M arm only. Decode shapes lose by
+  4-7x inside a captured graph, so it must not be the default arm.
