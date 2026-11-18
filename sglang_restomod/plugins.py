@@ -61,6 +61,11 @@ COMPONENTS: dict[str, Component] = {
         module="sglang_restomod.attention.v100",
         description="V100 full-attention backend and its CUDA graph metadata hooks",
     ),
+    "attention_dsv4_sm70": Component(
+        name="attention_dsv4_sm70",
+        module="sglang_restomod.attention.dsv4_sm70",
+        description="DSV4 paged attention on SM70 in torch, replacing flash_mla",
+    ),
     "lsa_sm70": Component(
         name="lsa_sm70",
         module="sglang_restomod.attention.lsa_sm70",
