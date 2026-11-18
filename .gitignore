@@ -14,3 +14,5 @@ __pycache__/
 
 # Local environment
 .env
+# Per-machine inventory: hostnames, slots, credentials paths. Never commit.
+machines.md
