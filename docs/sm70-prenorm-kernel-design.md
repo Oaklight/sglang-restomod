@@ -92,3 +92,12 @@ number would be arbitrary; the top-k structure the indexer feeds is what made
 - Correctness of the torch fallback itself is unverified on this hardware — no
   forward has run, because the DSV4 attention backend stops at its terminal
   flash_mla call.
+
+## First gate run: missed
+
+`docs/runs/2026-11-17-prenorm-kernel-gate.md` records the first implementation
+against this gate: agreement passes (rel err ~1e-6, two-run delta 0.0), speed
+misses at every shape — 0.22 ms against a 0.040 ms gate below M=32, 1.28x torch
+at M=4096. The kernel is not landed. The diagnosis (grid of 8 programs at
+small M, `MIX=24` padded to 32, fp32 having no tensor cores on sm70) and the
+three next things to try are in that page.
