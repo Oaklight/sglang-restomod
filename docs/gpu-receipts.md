@@ -228,6 +228,29 @@ and bus ids, and the absolute checkpoint path. Each is bound by the receipt
 that cites it, so none were rewritten; read them as disclosing that much about
 the host that produced them.
 
+The 2026-11-16 bundles `evidence-d2f6a802`, `evidence-1343479` and
+`evidence-cc24ae7` are the same class of case for a different reason: they were
+redacted with whatever copy of this script the packer's checkout held, which was
+cut before the account and node rules landed, and the packer supplied no
+denylist, so the GPU host name travelled with them. Their release notes disclose
+it. They were not rewritten, for the reason above.
+
+**Pack with `scripts/pack_evidence.sh`.** It takes the redaction script from
+`origin/main` at pack time, refuses without an `IDENTITY_DENYLIST`, refuses if
+the bundle already records a different script hash, runs the redaction, writes
+`redaction-script.txt` (ref, commit, script sha256) into the bundle, and only
+then calls `oob pack`:
+
+```sh
+IDENTITY_DENYLIST="host-a,host-b" scripts/pack_evidence.sh evidence/<sha> /tmp/evidence.tgz
+```
+
+It prints `manifest digest` and `archive sha256` as two labelled numbers. They
+are not the same number: a receipt binds the manifest digest, and a downloader
+can check the archive hash. Quoting the wrong one is a silent mismatch that
+only the verifier catches.
+
+
 Copy `/tmp/evidence.tgz` to the operator host, and upload it to an HTTPS
 location the verifier can reach (a release asset, an internal static host, or
 any signed public URL).
@@ -269,8 +292,27 @@ Pull request and comment events always require the archive.
 
 ## Policy
 
-- Pull requests that touch `sglang_restomod/`, `patches/`, or `recipes/`
-  require a receipt.
+- Any pull request that touches `sglang_restomod/`, `patches/`, or `recipes/`
+  requires a receipt, **except** `.md` files, `sglang_restomod/cli.py` (the
+  doctor command) and `sglang_restomod/tests/`.
+- The rule is written as an exclusion, not an allow-list of directories, and
+  that is deliberate: an allow-list fails open on a path nobody thought of.
+  It has already failed twice — once by demanding hardware evidence for
+  `cli.py` and tests, once by silently exempting `sglang_restomod/kernels/`
+  (the replacement kernels) and `sglang_restomod/overrides.py` (the swap that
+  installs them), so a PR could have added a GPU kernel and passed with a green
+  `gpu-receipt` and no hardware evidence at all. Under the exclusion rule
+  `configs/` (dispatch and tiling tables), `_sm70_paths.py` (which binary
+  resolves), `overrides.py`, `attest.py` and every future directory in the
+  package require evidence by default.
+- `kernels/` is named here only because it is the case that motivated the
+  change. What needs evidence is the set of components and each one's
+  PROVENANCE, tests and `gpu`-marked regression; do not restate that list in
+  this document, it drifts. The component's own `PROVENANCE.md` says what its
+  evidence is.
+- The policy job prints the triggering files and the rule in words. With an
+  exclusion rule, `requires=false` means "we looked and found nothing that
+  decides behaviour", not "the path was not on a list".
 - Documentation-only pull requests pass as `not applicable`.
 - A comment or a manual dispatch is an explicit request to verify, so it is
   always required.
