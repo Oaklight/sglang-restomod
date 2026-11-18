@@ -183,8 +183,29 @@ place of it: **the B=32 gate stays failed and unmet until a run meets it.**
 3. **Failure rule.** Unchanged. Agreement passing with speed under the bar is
    reported as "not worth it"; the bar is not moved after seeing results.
 
-**Status when declared: not met at the edge.** The band was measured and B=8 is
-1.95x (it measured 2.04x in the run before), inside a ~4% run-to-run spread on a
-2.0 bar; B <= 4 clears it unambiguously (2.25x at B=4). See
-`docs/runs/2026-11-17-indexer-kernel-first-run.md`. Nothing is wired until the
-band's edge is settled by its owner and met by a run.
+**Status when declared: not met at the edge, and the edge is set at B <= 4.**
+The band was measured and B=8 is 1.95x (it measured 2.04x in the run before),
+inside a ~4% run-to-run spread on a 2.0 bar. That makes the B=8 point
+**noise-limited, not resolved**: a threshold at the edge of the noise band means
+the optimisation is a wash in half the runs, and a dispatch that has to be
+re-litigated per run is not a dispatch. B=4 clears with margin (2.25x), B=1 at
+3.51x, and the census's served arm measured `m~4`, so the wired band covers the
+regime we run. More repeats could move the edge to 8 later; that is a
+re-measurement, not a re-reading of this gate.
+
+The wired arm is therefore `SGLANG_SM70_PAGED_LOGITS=auto` with
+`PAGED_LOGITS_AUTO_MAX_B = 4`, registered by the `paged_logits_sm70` component
+through the shim's `install_fused_paged_mqa_logits`.
+
+**Worth, labelled by arm — two numbers, not one.** Both are single-op
+inferences from a synthetic call, not served measurements:
+
+- **B <= 4 (wired):** 0.2647 -> 0.1178 ms per call, ~0.147 ms across the eight
+  index layers, **~1.2 ms/step**.
+- **B = 32 (not wired):** 10.74 -> 5.51 ms/step, ~5.2 ms/step. This needs the
+  TileLang rewrite; the Triton kernel is 1.95x there and cannot reach 3x.
+
+**Retirement condition.** If a TileLang version clears 3x at B=32, the two gates
+collapse into one, the crossover disappears and the dispatch should be retired
+in favour of a single arm. Until then the dispatch stands: torch above B=4,
+kernel at or below it.

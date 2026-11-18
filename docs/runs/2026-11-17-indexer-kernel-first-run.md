@@ -94,3 +94,23 @@ At B=32 the same run puts the kernel at 0.6881 ms against torch's 1.3414, i.e.
 (~5.2 ms/step saved)** if the large-batch arm were shipped. That is a single-op
 inference from a synthetic call, not a served step measurement, and it is the
 number a TileLang round should be weighed against.
+
+## The wired arm, and its worth
+
+The band edge was set at **B <= 4** and the kernel is wired as the shim's
+`auto` arm for paged logits (component `paged_logits_sm70`,
+`PAGED_LOGITS_AUTO_MAX_B = 4`). The edge is **noise-limited, not resolved**:
+B=8 measured 2.04x and 1.95x on the same 2.0x bar, so a threshold there would be
+a wash in half the runs; B=4 clears at 2.25x and the census's served arm
+measured `m~4`.
+
+**Two worth figures, each labelled by its arm, both single-op inferences from a
+synthetic call rather than served numbers:**
+
+- **B <= 4, wired:** 0.2647 -> 0.1178 ms per call, ~0.147 ms over the eight
+  index layers, **~1.2 ms/step**.
+- **B = 32, not wired:** 10.74 -> 5.51 ms/step, **~5.2 ms/step**, reachable only
+  through a TileLang rewrite — the Triton kernel is 1.95x there, short of 3x.
+
+If TileLang clears 3x at B=32, the two gates collapse, the crossover
+disappears, and the dispatch should be retired in favour of a single arm.

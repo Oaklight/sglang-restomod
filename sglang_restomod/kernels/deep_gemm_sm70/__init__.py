@@ -38,6 +38,27 @@ would mean a re-pack plus a scale-format conversion *inside* the entry: a
 second implementation of the quantisation, which is how two paths drift apart.
 They stay refusals unless someone accepts that duplication deliberately.
 
+``fp8_paged_mqa_logits`` carries the same three-way switch
+(``SGLANG_SM70_PAGED_LOGITS``). Its kernel is a small-batch arm only: captured
+and replay-only it is 3.51x at B=1, 2.25x at B=4, ~1.95x from B=8 up, with
+agreement at 1.2e-7 and an identical top-64 set. ``auto`` therefore dispatches
+at ``PAGED_LOGITS_AUTO_MAX_B`` = 4, an edge that is **noise-limited, not
+resolved** — B=8 measured 2.04x then 1.95x on a 2.0x bar — and the large-batch
+3x gate is **not met**: Triton emits no MMA on sm70, so a TileLang rewrite is
+the route. Two worth figures, each labelled by its arm and each a single-op
+inference rather than a served number: **~1.2 ms/step at B<=4** (0.2647 ->
+0.1178 ms per call over eight index layers), and **~5.2 ms/step at B=32**
+(10.74 -> 5.51) which needs that rewrite. If a TileLang version clears 3x at
+B=32, the two gates collapse, the crossover disappears and this dispatch should
+be retired in favour of a single arm.
+
+One property of this target is worth stating where a kernel author will read
+it: **under Triton on sm70, fp32 operands are the fast path for ``tl.dot``** —
+fp16 lands within noise of fp32 (0.87 against 0.86 ms for this op) and bf16 is
+10x slower (9.2-9.9 ms). That is the inverse of every other GPU, and it is why
+the original design's "16-bit MMA" assumption did not survive contact with the
+toolchain.
+
 The entry that does earn its place is ``tf32_hc_prenorm_gemm``, selected by
 ``SGLANG_SM70_HC_PRENORM``: ``torch`` (default) is the ``hc_pre_torch_impl``
 math, ``fused`` calls a kernel registered with ``install_fused_hc_prenorm()``,
@@ -236,7 +257,28 @@ def tf32_hc_prenorm_gemm(x, fn, out, sqrsum, num_splits=None) -> None:
     )
 
 
-def fp8_paged_mqa_logits(
+PAGED_LOGITS_ENV = "SGLANG_SM70_PAGED_LOGITS"
+
+# The dispatch edge is noise-limited, not resolved: B=8 measured 2.04x and 1.95x
+# on the same 2.0x bar, while B<=4 clears it with margin (2.25x at B=4, 3.51x at
+# B=1). The served decode batch measured m~4. See
+# docs/runs/2026-11-17-indexer-kernel-first-run.md.
+PAGED_LOGITS_AUTO_MAX_B = 4
+
+_fused_paged_logits = None
+
+
+def install_fused_paged_mqa_logits(op) -> None:
+    """Register the one-launch kernel for the ``fused`` arm of this switch.
+
+    Called by ``sglang_restomod.kernels.paged_logits_sm70`` at its
+    ``register()``. The signature it must accept is this entry's own.
+    """
+    global _fused_paged_logits
+    _fused_paged_logits = op
+
+
+def _paged_logits_reference(
     q_fp8, kvcache_fp8, weight, seq_lens, page_table, metadata, max_seq_len, clean_logits=False
 ):
     """Forward to the pin's torch paged-logits twin (``dsv4/indexer.py:82``)."""
@@ -244,6 +286,54 @@ def fp8_paged_mqa_logits(
 
     return fp8_paged_mqa_logits_torch(
         q_fp8, kvcache_fp8, weight, seq_lens, page_table, metadata, max_seq_len, clean_logits
+    )
+
+
+def fp8_paged_mqa_logits(
+    q_fp8, kvcache_fp8, weight, seq_lens, page_table, metadata, max_seq_len, clean_logits=False
+):
+    """Arms chosen by ``SGLANG_SM70_PAGED_LOGITS``: ``torch`` | ``fused`` | ``auto``.
+
+    ``torch`` (the default) is the reference. ``fused`` calls the kernel
+    registered through :func:`install_fused_paged_mqa_logits` and **raises** when
+    none is: it is an A/B arm, and a silent fallback would make both arms equal
+    and the difference read as a speedup. ``auto`` dispatches on batch size at
+    :data:`PAGED_LOGITS_AUTO_MAX_B`, and degrades to torch when nothing is
+    registered, because a dispatch with a missing kernel is a lost optimisation,
+    not a broken experiment.
+    """
+    import os
+
+    arm = os.environ.get(PAGED_LOGITS_ENV, "torch").strip().lower()
+    if arm in ("", "torch", "reference"):
+        return _paged_logits_reference(
+            q_fp8, kvcache_fp8, weight, seq_lens, page_table, metadata,
+            max_seq_len, clean_logits,
+        )
+    if arm == "auto":
+        if _fused_paged_logits is not None and q_fp8.shape[0] <= PAGED_LOGITS_AUTO_MAX_B:
+            return _fused_paged_logits(
+                q_fp8, kvcache_fp8, weight, seq_lens, page_table, metadata,
+                max_seq_len, clean_logits,
+            )
+        return _paged_logits_reference(
+            q_fp8, kvcache_fp8, weight, seq_lens, page_table, metadata,
+            max_seq_len, clean_logits,
+        )
+    if arm in ("fused", "kernel"):
+        if _fused_paged_logits is None:
+            raise NotImplementedError(
+                f"deep_gemm_sm70: {PAGED_LOGITS_ENV}=fused, but no paged logits kernel "
+                "is registered. The component that ships it must call "
+                "sglang_restomod.kernels.deep_gemm_sm70.install_fused_paged_mqa_logits(op) "
+                "from its register()."
+            )
+        return _fused_paged_logits(
+            q_fp8, kvcache_fp8, weight, seq_lens, page_table, metadata,
+            max_seq_len, clean_logits,
+        )
+    raise ValueError(
+        f"deep_gemm_sm70: {PAGED_LOGITS_ENV}={arm!r}; expected 'torch', 'fused' or 'auto'"
     )
 
 

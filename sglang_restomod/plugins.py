@@ -116,6 +116,11 @@ COMPONENTS: dict[str, Component] = {
         module="sglang_restomod.kernels.deep_gemm_sm70",
         description="Stand-in for an absent DeepGEMM on SM70; unimplemented entries raise",
     ),
+    "paged_logits_sm70": Component(
+        name="paged_logits_sm70",
+        module="sglang_restomod.kernels.paged_logits_sm70",
+        description="One-launch fp8 paged MQA logits for the shim's small-batch arm",
+    ),
 }
 
 

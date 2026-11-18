@@ -240,3 +240,65 @@ def test_auto_degrades_to_the_reference_without_a_kernel(installed, monkeypatch)
     out, sqrsum = torch.empty(m, 2), torch.empty(m)
     installed.tf32_hc_prenorm_gemm(x, fn, out, sqrsum)  # must not raise
     assert torch.allclose(out, x.float() @ fn.t(), atol=1e-4)
+
+
+def _fake_batch(b):
+    class _T:
+        shape = (b, 1, 32, 128)
+
+    return _T()
+
+
+class _Recorder:
+    def __init__(self, value):
+        self.value = value
+        self.calls = 0
+
+    def __call__(self, *args, **kwargs):
+        self.calls += 1
+        return self.value
+
+
+def test_paged_logits_defaults_to_the_reference(installed, monkeypatch):
+    ref = _Recorder("torch")
+    kern = _Recorder("kernel")
+    monkeypatch.delenv(shim.PAGED_LOGITS_ENV, raising=False)
+    monkeypatch.setattr(shim, "_paged_logits_reference", ref)
+    monkeypatch.setattr(shim, "_fused_paged_logits", kern)
+    out = installed.fp8_paged_mqa_logits(_fake_batch(2), None, None, None, None, None, 128)
+    assert out == "torch" and ref.calls == 1 and kern.calls == 0
+
+
+def test_paged_logits_fused_without_a_kernel_raises(installed, monkeypatch):
+    monkeypatch.setenv(shim.PAGED_LOGITS_ENV, "fused")
+    monkeypatch.setattr(shim, "_fused_paged_logits", None)
+    with pytest.raises(NotImplementedError) as err:
+        installed.fp8_paged_mqa_logits(_fake_batch(1), None, None, None, None, None, 128)
+    assert shim.PAGED_LOGITS_ENV in str(err.value)
+    assert "install_fused_paged_mqa_logits" in str(err.value)
+
+
+def test_paged_logits_auto_dispatches_at_the_wired_band(installed, monkeypatch):
+    ref, kern = _Recorder("torch"), _Recorder("kernel")
+    monkeypatch.setenv(shim.PAGED_LOGITS_ENV, "auto")
+    monkeypatch.setattr(shim, "_paged_logits_reference", ref)
+    monkeypatch.setattr(shim, "_fused_paged_logits", kern)
+    edge = shim.PAGED_LOGITS_AUTO_MAX_B
+    installed.fp8_paged_mqa_logits(_fake_batch(edge), None, None, None, None, None, 128)
+    installed.fp8_paged_mqa_logits(_fake_batch(edge + 1), None, None, None, None, None, 128)
+    assert kern.calls == 1 and ref.calls == 1
+
+
+def test_paged_logits_auto_degrades_without_a_kernel(installed, monkeypatch):
+    ref = _Recorder("torch")
+    monkeypatch.setenv(shim.PAGED_LOGITS_ENV, "auto")
+    monkeypatch.setattr(shim, "_paged_logits_reference", ref)
+    monkeypatch.setattr(shim, "_fused_paged_logits", None)
+    out = installed.fp8_paged_mqa_logits(_fake_batch(1), None, None, None, None, None, 128)
+    assert out == "torch" and ref.calls == 1
+
+
+def test_paged_logits_rejects_an_unknown_arm(installed, monkeypatch):
+    monkeypatch.setenv(shim.PAGED_LOGITS_ENV, "fastish")
+    with pytest.raises(ValueError, match="expected 'torch', 'fused' or 'auto'"):
+        installed.fp8_paged_mqa_logits(_fake_batch(1), None, None, None, None, None, 128)
