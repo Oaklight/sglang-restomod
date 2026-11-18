@@ -30,6 +30,7 @@ Import is cheap: nothing is imported from sglang at module import, and
 
 from __future__ import annotations
 
+import functools
 import logging
 import os
 from typing import Any
@@ -115,7 +116,12 @@ def register() -> None:
 
     _force_dense_prefill()
 
-    module.resolve_flash_mla = lambda swa_interleaved: (torch_attn.paged_mla, 0)
+    # resolve_flash_mla receives the pool's interleaved flag; the torch
+    # replacement needs it because the two page arrangements differ.
+    module.resolve_flash_mla = lambda swa_interleaved: (
+        functools.partial(torch_attn.paged_mla, _interleaved=bool(swa_interleaved)),
+        0,
+    )
     backend = getattr(module, "DeepseekV4AttnBackend", None)
     if backend is None:
         attest.inactive("attention_dsv4_sm70", f"{BACKEND_MODULE} has no DeepseekV4AttnBackend")
@@ -124,8 +130,7 @@ def register() -> None:
 
     _HOOKED = True
     logger.info(
-        "attention_dsv4_sm70: decode and dense prefill route to torch; %s forced "
-        "off; profile %s",
+        "attention_dsv4_sm70: decode and dense prefill route to torch; %s forced off; profile %s",
         SPARSE_PREFILL_ENV,
         STAGE1_PROFILE,
     )
