@@ -19,7 +19,7 @@
 
 ## 状态
 
-目前有十三个组件，都通过 `SGLANG_RESTOMOD_COMPONENTS` 显式启用：
+目前有十五个组件，都通过 `SGLANG_RESTOMOD_COMPONENTS` 显式启用：
 
 | 组件 | 作用 |
 |---|---|
@@ -37,6 +37,7 @@
 | `gdn_tilelang_sm70` | SM70 上的 TileLang GDN 分块预填内核。pin 的 Triton 分块内核占 27B 单次预填分块的 63.9%；本组件用 TileLang 内核接管同一次调用：8,041 token 时 1,933.6 / 1,924.9 tok/s，31,158 token 时 1,658.3 / 1,655.1，Triton 下分别为 719.9 与 684.6（凭证 `evidence-55cb6e7-gdn-tilelang`）。组件同时把 FLA 包装函数 `chunk_fwd_o` 与 `chunk_gated_delta_rule_fwd_h` 重定向到 `sm70-kernels` 的 TileLang 内核对，因此分块路径的所有调用方都能受益；内核无法精确计算的情况一律回落到 Triton。`SGLANG_V100_GDN_TILELANG_IMPL=auto|pair|whole` 选择替换方式，`SM70_GDN_TILELANG=0` 是 A/B 对比用的 Triton 对照组。 |
 | `lsa_sm70` | SM70 全注意力的 Latent Sparse Attention（LSA）。key 在学习到的隐空间里聚类，每个 query 只对桶中心打分，读取时取选中的 key 加本地窗口和 sink。移植 Qwen3.8-27B 的 flat D-LSA 设计（16 个全注意力层，GQA 24/4），索引按 attention TP 组分片，选择由两个 Triton program 完成，读取走 pin 的 Triton decode 内核。选择 `--attention-backend lsa_sm70`；需要 `SGLANG_RESTOMOD_LSA_MAP`、`--page-size 1` 和 `--disable-cuda-graph`。实现是独立包 `Oaklight/lsa-sm70`，commit 固定在 `UPSTREAM_PIN.toml`；本组件只负责注册，先按该 commit 安装：`pip install 'lsa-sm70 @ git+https://github.com/Oaklight/lsa-sm70@3a4798093224933988175ee685084d521474da0b'`。 |
 | `hc_prenorm_sm70` | `deep_gemm_sm70` shim 中 `fused` 分支使用的融合 DSV4 HC prenorm。把参考实现的三次发射（对 `[T, 20480]` 的 fp32 转换、一次 fp32 `mm`、以及对同一张量求平方和）换成一次确定性的 split-K Triton 内核加一个小型归约，不再物化那份转换。它在图捕获的解码阶段是输的——M=1 时 0.189 ms 对 torch 的 0.027 ms，因此 `auto` 在 M=1024 以下保留 torch——但在不做图捕获的预填阶段是赢的：相对同一参考实现，M=4096 时 1.32x，M=8192 时 1.41x，相对误差 1.1-1.4e-6，多次运行逐位相同。尚未在引擎内做 A/B：这台硬件上还没有 DeepSeek-V4 的前向，所以这些比值只是单算子测量。 |
+| `deep_gemm_sm70` | sm70 上缺失 DeepGEMM 时的替身。仅当真正的包无法解析、且设备是 sm70 时，才把自己装成 `deep_gemm`；并且要 patch 0009 加 `SGLANG_SM70_DEEPGEMM_SUBSTITUTE=1` 才可达——打开这个开关会把分派切到 DeepGEMM 分支，所以在实现体存在之前它是 opt-in。实现了 `bf16_gemm_nt`（走 cuBLAS）、`fp8_paged_mqa_logits`（转发 pin 的 torch 版本）、`fp8_mqa_logits`（torch 参考实现）和 `tf32_hc_prenorm_gemm`（参考实现，另加 `SGLANG_SM70_HC_PRENORM` 的 `fused`/`auto` 开关），以及 `set/get_num_sms`、`set/get_compile_mode`、`set_pdl` 和 layout 对齐这几个常量。`fp8_gemm_nt`、grouped 那一对、`fp8_fp4_gemm_nt` 是**永久拒绝**：底层的 kernel 入口吃的是预打包的 W8A16 权重或路由元数据，转发就等于把量化再实现一遍。`fp8_fp4_mqa_logits`、`fp8_mega_moe`、`mega_moe_pre_dispatch_sm90` 故意不存在，因为 pin 用 `hasattr` 在它们上面选路。其余每个入口都抛 `NotImplementedError`，并给出自己的名字和调用时的形状。 |
 
 ```bash
 SGLANG_RESTOMOD_COMPONENTS=fp8_moe,attention_v100
