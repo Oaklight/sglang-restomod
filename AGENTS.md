@@ -14,6 +14,11 @@ stay light: it contains the plugin, the patch queue, recipes, and scripts, but
 
 Read first: `README.md`, `RESTMOD.md`, `BRANCHES.md`, `patches/README.md`.
 
+**Before any GPU, profiling, or corpus-scale job, read `machines.md`** in the
+repository root. It holds host roles, slot ownership, and the environment each
+run needs. It is local-only and listed in `.gitignore`; never commit it or
+paste its contents into an issue, PR, or chat.
+
 ## This is a mod, not a mirror
 
 The project exists because SGLang does not work well on SM70. Where upstream is
