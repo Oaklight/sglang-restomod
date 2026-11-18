@@ -84,3 +84,15 @@ tuning.
 - Correctness of the fallback itself is unverified on this hardware — no
   forward has run. This kernel must be compared against torch, and torch
   against the model's own reference when one exists.
+
+## Re-priced in the captured regime, 2026-11-17
+
+`docs/runs/2026-11-17-indexer-graph-capture.md` measures this call inside a
+CUDA graph, because decode is graph-captured and the 0.287 ms baseline was not.
+Unlike the prenorm, it does not collapse: at B=1 capture takes it 0.2883 ->
+0.1403 ms (about half), and at B>=8 only ~9% (0.4772 -> 0.4332 at B=8,
+1.4781 -> 1.3425 at B=32). So the per-step cost in the served regime is
+**1.12 ms/step at B=1, 3.47 at B=8, 10.74 at B=32** across the 8 index layers —
+the batch-scaled end is the larger target, and it is real work rather than
+launch overhead. The gate above is left as stated; it is judged against the
+fallback, and this only re-prices that fallback.
