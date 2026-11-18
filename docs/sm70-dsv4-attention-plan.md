@@ -120,7 +120,11 @@ memory floor, not parity with the CUDA path.
 `docs/runs/2026-11-17-fallback-microbench.md` measures the two torch fallbacks
 this component would sit on. At decode shapes `hc_pre_torch_impl` costs
 ~0.117 ms per call — launch overhead, flat from M=1 to M=32 — and `hc_mult`
-is global, so that is **~4.7 ms/step across all 40 layers**.
+is global, so that is **~4.7 ms/step across all 40 layers**. That 4.7 is the
+*uncaptured* baseline, which is the right figure for an eager prefill path; it
+is not the decode cost, because decode is graph-captured and the same chain
+falls to 0.027-0.046 ms/call in a graph (1.1-1.9 ms/step) —
+`docs/runs/2026-11-17-prenorm-kernel-gate.md`.
 `fp8_paged_mqa_logits_torch` costs ~0.29 ms per call regardless of cache size,
 but V4.1-Flash names **8 index layers** (`index_source_layer_ids`), so it is
 **~2.3 ms/step**, not 40 calls. Both are overhead-bound, not bandwidth-bound.

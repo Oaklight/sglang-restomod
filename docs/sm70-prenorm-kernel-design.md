@@ -37,8 +37,17 @@ Launch counts per decode step, from the two measurements and the call sites:
 The prenorm has fewer launches per call but five times the calls, so fusing it
 removes more step time: ~5 launches x 40 = 200 launches against ~10 x 8 = 80.
 Its floor is 0.027 ms (one cuBLAS matmul), so a fused kernel targets ~0.03-0.04
-ms/call, i.e. **~1.3 ms/step against 4.7** — and the post step, unmeasured,
+ms/call, i.e. ~~**~1.3 ms/step against 4.7**~~ — and the post step, unmeasured,
 adds to that. That is why it goes first.
+
+> **Retracted 2026-11-17, the 1.3 is not achievable by the kernel that was
+> written.** The target assumed a fused kernel reaching the 0.027 ms floor. The
+> first implementation measures 0.22 ms/call, 2x *slower* than torch, and a
+> graph-captured arm (the regime decode actually runs in) measures the kernel at
+> 0.19 ms against torch's 0.027 ms at M=1. The 1.3 figure is left struck rather
+> than deleted so the projection stays visible next to its refutation. Evidence:
+> `docs/runs/2026-11-17-prenorm-kernel-gate.md`. The target column for any
+> further geometry work is "re-derived from that page", not 1.3.
 
 ## Shape of the kernel
 

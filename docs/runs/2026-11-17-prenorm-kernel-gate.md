@@ -61,3 +61,54 @@ way.
 - The kernel is not in the tree. It lives at lambda4
   `/tmp/mxfp4-verify/work/prenorm_kernel.py` until it passes, so nothing
   imports an unpassing kernel.
+
+## Second run: both arms inside a captured CUDA graph
+
+The first gate compared uncaptured timings, but decode is graph-captured in the
+serving configuration, so most of torch's 0.11 ms was inter-launch gap — the
+part a graph removes and a two-launch kernel already had less of. This run
+captures each arm **verbatim**, allocations included (in serving
+`hc_pre_torch_impl` runs inside the captured forward, so its allocations are
+captured too), and times **replay only**: a graph launch is inside every
+replay, nothing runs in python outside it.
+
+**Arm.** Same card and stack: Tesla V100-SXM2-32GB cap (7,0), torch 2.9.1+cu128,
+Triton 3.5.1, one graph per arm via `torch.cuda.CUDAGraph().capture` on a side
+stream after 3 warm-up calls, 10 replays discarded, 50 replays timed, median,
+`kernel` geometry unchanged (SPLIT=8, BT=32, BK=128).
+
+| M | torch eager | torch graph | kernel eager | kernel graph | kernel/torch (graph) |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 0.1137 | **0.0266** | 0.2232 | 0.1894 | 7.1x slower |
+| 4 | 0.1167 | **0.0328** | 0.2232 | 0.1894 | 5.8x slower |
+| 32 | 0.1157 | **0.0461** | 0.2232 | 0.1905 | 4.1x slower |
+| 256 | 0.2212 | 0.1997 | 0.2304 | 0.1956 | 1.02x faster (tie) |
+
+Determinism survives capture: both arms give a replay-to-replay delta of
+exactly 0.0, and the kernel's agreement is unchanged at 7.1e-7 to 1.1e-6.
+`torch_graph_rel_err` is 0 by construction (eager reference is the same code).
+
+## Decision
+
+The rule fixed before this run: if torch falls to ~0.06 ms under capture, the
+kernel is not within reach at decode and the answer is a shape-gated dispatch.
+Torch falls to 0.0266 ms — well under it. **The kernel stops here**, with no
+geometry iteration. What the two runs together support:
+
+- **Decode (in-graph, M = 1-32): torch wins by 4-7x.** The kernel's 0.19 ms is
+  real GPU work on 8 CTAs, not launch gap; capture shrank it only 15%.
+- **Large M, eager (prefill): the kernel wins 1.11x at 1024 and 1.28x at 4096.**
+  Prefill is not graph-captured, so the first run's eager numbers are the right
+  comparison there.
+- **Crossover is around M=256**, where the two tie. That is the shape gate
+  upstream already uses.
+
+## Correction to the baseline this work was scoped against
+
+The 4.7 ms/step decode figure is `0.117 x 40` measured **without** graphs. In
+the graph-captured regime the same 40 calls cost 1.06-1.85 ms/step
+(0.027-0.046 x 40), so the prenorm's decode cost is roughly a quarter of what
+the scoping number said. The remaining floor is data, not launches: 40 layers
+x 1.97 MB of `hc_fn` = 79 MB per step, which at V100 bandwidth is ~0.1 ms. A
+win that large needs one kernel reading many layers' `hc_fn` at once — fewer
+calls, per the coordinator's note — not a faster single-layer kernel.
