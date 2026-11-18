@@ -14,3 +14,9 @@
   torch 2.9.1+cu128. Evidence: `docs/runs/2026-11-17-prenorm-kernel-gate.md`.
 - **Status**: `local-only`. It is the large-M arm only. Decode shapes lose by
   4-7x inside a captured graph, so it must not be the default arm.
+- **Not yet A/B'd in an engine.** `hc_pre_torch_impl` lives in
+  `deepseek_v4.py`, and no DeepSeek-V4 forward exists on this hardware yet
+  (Flash-Next's config has no `hc_mult`, so it cannot exercise the call). Every
+  ratio in this component is a single-op measurement, not a serving number.
+  When a bluewhale serve exists, this kernel and the indexer should be A/B'd in
+  one window, on the same prompts, with the switch arms declared.
